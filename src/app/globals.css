@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,4 +23,527 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* --- Login Page Styles Copied from ตัวอย่างอันเก่า 2 --- */
+
+.vehicle-login-page {
+  min-height: 100vh;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 28px;
+  background: linear-gradient(315deg, #7f1d0d 4%, #d1431a 34%, #f59e0b 58%, #0f766e 78%, #172033 100%);
+  background-size: 400% 400%;
+  background-attachment: fixed;
+  animation: vehicleLoginGradient 18s ease infinite;
+}
+
+.vehicle-login-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.vehicle-login-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.48)),
+    radial-gradient(circle at 16% 18%, rgba(255, 214, 194, 0.24), transparent 34%),
+    radial-gradient(circle at 82% 78%, rgba(15, 118, 110, 0.2), transparent 38%);
+  z-index: 1;
+}
+
+.vehicle-login-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.12) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.66), transparent 80%);
+  z-index: 2;
+}
+
+.vehicle-login-sweep {
+  position: absolute;
+  width: 78vw;
+  height: 34vh;
+  border-radius: 28px;
+  filter: blur(34px);
+  opacity: 0.24;
+  transform: rotate(-12deg);
+  z-index: 2;
+}
+
+.vehicle-login-sweep-1 {
+  top: -8vh;
+  left: -18vw;
+  background: linear-gradient(90deg, rgba(255, 214, 194, 0.58), rgba(245, 158, 11, 0.24));
+}
+
+.vehicle-login-sweep-2 {
+  right: -20vw;
+  bottom: -10vh;
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.28), rgba(23, 32, 51, 0.36));
+}
+
+.vehicle-login-shine {
+  position: absolute;
+  inset: -28%;
+  background: conic-gradient(from 40deg, transparent, rgba(255, 255, 255, 0.34), transparent 26%, transparent 100%);
+  animation: vehicleLoginShine 30s linear infinite;
+  z-index: 2;
+}
+
+.vehicle-login-wave {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  width: 200%;
+  height: 12em;
+  border-radius: 1000% 1000% 0 0;
+  background: rgba(255, 255, 255, 0.24);
+  opacity: 0.78;
+  transform: translate3d(0, 0, 0);
+  animation: vehicleLoginWave 10s -3s linear infinite;
+}
+
+.vehicle-login-wave:nth-of-type(6) {
+  bottom: -1.25em;
+  animation: vehicleLoginWave 18s linear reverse infinite;
+  opacity: 0.62;
+}
+
+.vehicle-login-wave:nth-of-type(7) {
+  bottom: -2.5em;
+  animation: vehicleLoginWave 20s -1s linear reverse infinite;
+  opacity: 0.72;
+  background: rgba(255, 242, 207, 0.2);
+}
+
+@keyframes vehicleLoginGradient {
+  0% {
+    background-position: 0% 0%;
+  }
+  50% {
+    background-position: 100% 100%;
+  }
+  100% {
+    background-position: 0% 0%;
+  }
+}
+
+@keyframes vehicleLoginShine {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes vehicleLoginWave {
+  2% {
+    transform: translateX(1%);
+  }
+  25% {
+    transform: translateX(-25%);
+  }
+  50% {
+    transform: translateX(-50%);
+  }
+  75% {
+    transform: translateX(-25%);
+  }
+  100% {
+    transform: translateX(1%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vehicle-login-page,
+  .vehicle-login-hero,
+  .vehicle-login-shine,
+  .vehicle-login-wave,
+  .vehicle-login-hero::after,
+  .vehicle-hero-title-accent {
+    animation: none;
+  }
+}
+
+.vehicle-login-shell {
+  position: relative;
+  z-index: 1;
+  width: min(1120px, 100%);
+  min-height: 680px;
+  display: grid;
+  grid-template-columns: 1fr 0.92fr;
+  gap: 18px;
+}
+
+@media (max-width: 900px) {
+  .vehicle-login-shell {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  .vehicle-login-hero {
+    min-height: 400px;
+  }
+}
+
+.vehicle-login-hero,
+.vehicle-login-card {
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: 26px;
+  box-shadow: 0 28px 70px rgba(15, 23, 42, 0.16);
+}
+
+.vehicle-login-hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 40px;
+  padding: 40px;
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, #d1431a 0%, #b93618 46%, #7f1d0d 100%),
+    #d1431a;
+}
+
+.vehicle-login-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.16), transparent 30%),
+    radial-gradient(circle at 88% 92%, rgba(245, 158, 11, 0.2), transparent 34%),
+    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: auto, auto, 42px 42px, 42px 42px;
+}
+
+.vehicle-login-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(115deg, transparent 28%, rgba(255, 255, 255, 0.1) 50%, transparent 72%);
+  transform: translateX(-34%);
+  animation: vehicleHeroSweep 7s ease-in-out infinite;
+}
+
+@keyframes vehicleHeroSweep {
+  0%,
+  100% {
+    transform: translateX(-34%);
+  }
+  55% {
+    transform: translateX(34%);
+  }
+}
+
+.vehicle-hero-brand,
+.vehicle-hero-copy,
+.vehicle-hero-features {
+  position: relative;
+  z-index: 1;
+}
+
+.vehicle-hero-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.vehicle-brand-mark,
+.vehicle-login-card-mark {
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  background: #d1431a;
+  box-shadow: 0 14px 30px rgba(209, 67, 26, 0.3);
+}
+
+.vehicle-brand-mark {
+  width: 60px;
+  height: 60px;
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
+}
+
+.vehicle-hero-brand strong {
+  display: block;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.vehicle-hero-brand small {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+}
+
+.vehicle-hero-copy {
+  max-width: 560px;
+}
+
+.vehicle-hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.vehicle-hero-copy h1 {
+  margin: 12px 0 8px;
+  max-width: 560px;
+  font-size: clamp(30px, 3.05vw, 42px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+
+.vehicle-hero-copy h1 span {
+  display: block;
+}
+
+.vehicle-hero-title-accent {
+  width: fit-content;
+  color: transparent;
+  background:
+    linear-gradient(100deg, #ffffff 0%, #fff2cf 26%, #ffd166 48%, #ffffff 68%, #ffe6dc 100%);
+  background-size: 240% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: vehicleTitleShine 4.8s ease-in-out infinite;
+  text-shadow: 0 10px 26px rgba(127, 29, 13, 0.22);
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.vehicle-hero-copy p {
+  max-width: 520px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 15px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.vehicle-hero-features {
+  display: grid;
+  gap: 12px;
+}
+
+.vehicle-hero-features article {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 16px;
+  background: rgba(127, 29, 13, 0.28);
+  backdrop-filter: none;
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+.vehicle-hero-features article:hover {
+  transform: translateX(4px);
+  background: rgba(127, 29, 13, 0.4);
+}
+
+.vehicle-hero-features strong,
+.vehicle-hero-features small {
+  display: block;
+}
+
+.vehicle-hero-features strong {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.vehicle-hero-features small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.vehicle-login-panel {
+  display: grid;
+  align-items: center;
+}
+
+.vehicle-login-card {
+  width: 100%;
+  max-width: 470px;
+  justify-self: center;
+  padding: 34px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(18px);
+  animation: vehicleLoginCardIn 520ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes vehicleLoginCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.vehicle-login-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.vehicle-login-card-mark {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 13px;
+}
+
+.vehicle-login-card-head h2 {
+  margin: 0 0 4px;
+  color: #111827;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.vehicle-login-card-head p {
+  margin: 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.vehicle-login-submit {
+  min-height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 14px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #d1431a, #b03411);
+  box-shadow: 0 16px 30px rgba(209, 67, 26, 0.25);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+  width: 100%;
+}
+
+.vehicle-login-submit:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 38px rgba(209, 67, 26, 0.3);
+}
+
+.vehicle-login-submit:disabled {
+  cursor: wait;
+  opacity: 0.84;
+}
+
+.vehicle-login-arrow {
+  transition: transform 160ms ease;
+}
+
+/* Form Fields */
+.vehicle-login-form {
+  display: grid;
+  gap: 20px;
+}
+
+.vehicle-login-field {
+  display: grid;
+  gap: 8px;
+}
+
+.vehicle-login-field span {
+  color: #374151;
+  font-size: 14px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.vehicle-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.vehicle-input-wrap svg:first-child {
+  position: absolute;
+  left: 16px;
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+.vehicle-input-wrap input {
+  width: 100%;
+  min-height: 52px;
+  padding: 0 16px 0 46px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 14px;
+  background: #f9fafb;
+  color: #111827;
+  font-size: 15px;
+  transition: all 200ms ease;
+  outline: none;
+}
+
+.vehicle-input-wrap input:hover {
+  background: #ffffff;
+  border-color: #d1d5db;
+}
+
+.vehicle-input-wrap input:focus {
+  background: #ffffff;
+  border-color: #d1431a;
+  box-shadow: 0 0 0 4px rgba(209, 67, 26, 0.1);
+}
+
+.vehicle-input-wrap input::placeholder {
+  color: #9ca3af;
+}
+
+.vehicle-pass-toggle {
+  position: absolute;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.vehicle-pass-toggle:hover {
+  background: #f3f4f6;
+  color: #4b5563;
 }

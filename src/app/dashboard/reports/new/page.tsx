@@ -1,0 +1,30 @@
+import { findAll } from "@/lib/sheetsCrud";
+import ReportForm from "./ReportForm";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
+
+export default async function NewReportPage() {
+  let projects: any[] = [];
+  
+  try {
+    projects = await findAll("Projects");
+  } catch (e) {
+    console.error("Failed to fetch projects for report form:", e);
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      <div className="flex items-center gap-4">
+        <Link href="/dashboard/reports" className="p-2 bg-white rounded-xl border border-gray-200 text-gray-500 hover:text-gray-900 transition">
+          <ArrowLeft size={20} />
+        </Link>
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">สร้างรายงานประจำวัน</h2>
+          <p className="text-gray-500">บันทึกผลการปฏิบัติงาน ปัญหา และแนบรูปถ่ายหน้างาน</p>
+        </div>
+      </div>
+
+      <ReportForm projects={projects} />
+    </div>
+  );
+}
