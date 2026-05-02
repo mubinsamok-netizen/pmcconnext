@@ -54,6 +54,7 @@ export const authOptions: AuthOptions = {
       return session;
     },
   },
+  secret: process.env.NEXTAUTH_SECRET || "dev-fallback-secret-change-in-production",
   session: {
     strategy: "jwt",
   },
