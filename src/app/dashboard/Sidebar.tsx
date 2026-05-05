@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { getAppRole } from "@/lib/roles";
+import { canAccessSiteSegment, isForemanRole } from "@/lib/siteAccess";
 
 type SidebarUser = {
   name?: string | null;
@@ -80,6 +81,11 @@ export default function Sidebar({ user }: { user?: SidebarUser }) {
 
   const isSiteMode = Boolean(siteId);
   const isAdmin = getAppRole(user?.role) === "Admin";
+  const isForeman = isForemanRole(user?.role);
+  const visibleWorkspaceNavItems = isForeman
+    ? workspaceNavItems.filter((item) => item.href === "/dashboard/projects")
+    : workspaceNavItems;
+  const visibleSiteNavItems = siteNavItems.filter((item) => canAccessSiteSegment(user?.role, item.segment));
 
   const toggleCollapse = () => {
     const nextValue = !collapsed;
@@ -122,7 +128,7 @@ export default function Sidebar({ user }: { user?: SidebarUser }) {
 
         {isSiteMode ? (
           <>
-            {siteNavItems.map((item) => {
+            {visibleSiteNavItems.map((item) => {
               const Icon = item.icon;
               const href = item.segment ? `/dashboard/sites/${siteId}/${item.segment}` : `/dashboard/sites/${siteId}`;
               const isActive = item.exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
@@ -132,7 +138,7 @@ export default function Sidebar({ user }: { user?: SidebarUser }) {
           </>
         ) : (
           <>
-            {workspaceNavItems.map((item) => {
+            {visibleWorkspaceNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return <SidebarLink key={item.href} href={item.href} name={item.name} Icon={Icon} active={isActive} collapsed={collapsed} />;

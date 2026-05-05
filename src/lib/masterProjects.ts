@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { canAccessProject } from "@/lib/authz";
+import { canAccessSiteSegment } from "@/lib/siteAccess";
 import { findAllMaster } from "./sheetsCrud";
 import { ensureMasterSchema } from "./sheetsSetup";
 
@@ -59,7 +60,7 @@ export async function getMasterProjects() {
   }
 }
 
-export async function getMasterProject(projectId: string) {
+export async function getMasterProject(projectId: string, options: { siteSegment?: string } = {}) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     redirect("/");
@@ -69,7 +70,11 @@ export async function getMasterProject(projectId: string) {
   const decodedProjectId = decodeURIComponent(projectId);
   const project = projects.find((item) => item.project_id === decodedProjectId);
 
-  if (!project || !(await canAccessProject(decodedProjectId, session.user))) {
+  if (
+    !project ||
+    !(await canAccessProject(decodedProjectId, session.user)) ||
+    !canAccessSiteSegment(session.user.role, options.siteSegment || "")
+  ) {
     notFound();
   }
 

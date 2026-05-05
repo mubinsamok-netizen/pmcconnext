@@ -3,10 +3,12 @@
 import { Building2, Calendar, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
+import { useSession } from "next-auth/react";
 import { useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
+import { isForemanRole } from "@/lib/siteAccess";
 
 type Project = {
   project_id: string;
@@ -239,10 +241,12 @@ function HealthPill({
 }
 
 export default function ProjectsPage() {
+  const { data: session } = useSession();
   const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
   const projects = data?.data || [];
+  const isForeman = isForemanRole(session?.user?.role);
 
   const handleDelete = async (project: Project) => {
     setDeletingId(project.project_id);
@@ -272,13 +276,15 @@ export default function ProjectsPage() {
           <h2 className="text-2xl font-bold text-gray-900">ไซต์งาน</h2>
           <p className="text-gray-500">เลือกไซต์เพื่อดูภาพรวม แผนงาน รายงานประจำวัน และไฟล์ของโครงการ</p>
         </div>
-        <Link
-          href="/dashboard/projects/new"
-          className="flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700"
-        >
-          <Plus size={20} />
-          สร้างไซต์งาน
-        </Link>
+        {!isForeman && (
+          <Link
+            href="/dashboard/projects/new"
+            className="flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700"
+          >
+            <Plus size={20} />
+            สร้างไซต์งาน
+          </Link>
+        )}
       </div>
 
       {error && (
@@ -359,6 +365,7 @@ export default function ProjectsPage() {
                 </div>
               </Link>
 
+              {!isForeman && (
               <div className="absolute right-4 top-4 z-10 flex items-center gap-2 xl:left-[276px] xl:right-auto">
                 <Link
                   href={`/dashboard/projects/${project.project_id}/edit`}
@@ -379,6 +386,7 @@ export default function ProjectsPage() {
                   <Trash2 size={17} />
                 </button>
               </div>
+              )}
             </div>
           );
         })}

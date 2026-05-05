@@ -1,4 +1,4 @@
-export const APP_ROLES = ["Admin", "Project Manager", "Engineer", "Staff"] as const;
+export const APP_ROLES = ["Admin", "Project Manager", "Engineer", "Foreman", "Staff"] as const;
 
 export type AppRole = (typeof APP_ROLES)[number];
 
@@ -12,6 +12,10 @@ const ROLE_ALIASES: Record<string, AppRole> = {
   engineer: "Engineer",
   "site engineer": "Engineer",
   site_engineer: "Engineer",
+  foreman: "Foreman",
+  "site foreman": "Foreman",
+  site_foreman: "Foreman",
+  fm: "Foreman",
   staff: "Staff",
   accounting: "Staff",
   accountant: "Staff",

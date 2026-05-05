@@ -157,6 +157,7 @@ export default function EditTeamPage() {
                   onChange={(event) => setRole(event.target.value)}
                 >
                   <option value="Engineer">Engineer</option>
+                  <option value="Foreman">Foreman</option>
                   <option value="Project Manager">Project Manager</option>
                   <option value="Admin">Admin</option>
                   <option value="Staff">Staff</option>

@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { ArrowLeft, Building2, CalendarClock, FileText, FolderKanban, PhoneCall, UserRound } from "lucide-react";
 import { authOptions } from "@/lib/authOptions";
 import { isAdminRole } from "@/lib/authz";
+import { isForemanRole } from "@/lib/siteAccess";
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
@@ -67,6 +68,8 @@ export default async function SalesCustomerDetailPage({ params }: { params: Prom
   const { customerId } = await params;
   const decodedCustomerId = decodeURIComponent(customerId);
   const session = await getServerSession(authOptions);
+  if (isForemanRole(session?.user?.role)) notFound();
+
   const isAdmin = isAdminRole(session?.user?.role);
 
   await ensureMasterSchema();

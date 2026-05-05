@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SiteLifecyclePage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = await getMasterProject(projectId);
+  const project = await getMasterProject(projectId, { siteSegment: "lifecycle" });
   const session = await getServerSession(authOptions);
   const isAdmin = isAdminRole(session?.user?.role);
 

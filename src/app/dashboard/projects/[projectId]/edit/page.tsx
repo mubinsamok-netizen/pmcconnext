@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { ArrowLeft, ImagePlus, Loader2, Save, X } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { isForemanRole } from "@/lib/siteAccess";
 
 type Project = {
   project_id: string;
@@ -147,6 +149,7 @@ function getErrorMessage(error: unknown) {
 export default function EditProjectPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
+  const { data: session } = useSession();
   const { data, isLoading } = useSWR<ProjectsResponse>("/api/projects", fetcher);
   const [form, setForm] = useState<ProjectForm>(emptyForm);
   const [coverFile, setCoverFile] = useState<File | null>(null);
@@ -154,6 +157,13 @@ export default function EditProjectPage() {
   const [loadedProjectId, setLoadedProjectId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isForeman = isForemanRole(session?.user?.role);
+
+  useEffect(() => {
+    if (isForeman) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isForeman, router]);
 
   const project = useMemo(() => {
     const decodedProjectId = decodeURIComponent(params.projectId);

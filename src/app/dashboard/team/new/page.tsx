@@ -105,6 +105,7 @@ export default function CreateTeamPage() {
               <Field label="ตำแหน่ง (Role)">
                 <select name="role" className="form-input bg-white" value={role} onChange={(event) => setRole(event.target.value)}>
                   <option value="Engineer">Engineer</option>
+                  <option value="Foreman">Foreman</option>
                   <option value="Project Manager">Project Manager</option>
                   <option value="Admin">Admin</option>
                   <option value="Staff">Staff</option>

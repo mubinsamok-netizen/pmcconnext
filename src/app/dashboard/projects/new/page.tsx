@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -17,6 +18,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { isForemanRole } from "@/lib/siteAccess";
 
 type ProjectForm = {
   project_id: string;
@@ -89,6 +91,7 @@ function getErrorMessage(error: unknown) {
 export default function CreateProjectPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState<ProjectForm>(() => {
     const salesCustomerId = searchParams.get("sales_customer_id");
@@ -108,6 +111,13 @@ export default function CreateProjectPage() {
   const [coverPreview, setCoverPreview] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isForeman = isForemanRole(session?.user?.role);
+
+  useEffect(() => {
+    if (isForeman) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isForeman, router]);
 
   const update = (field: keyof ProjectForm, value: string) => {
     setForm((current) => ({ ...current, [field]: value }));

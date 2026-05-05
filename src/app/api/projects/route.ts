@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { filterProjectsForUser } from "@/lib/authz";
+import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { findAll, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
@@ -39,6 +40,17 @@ function isServiceAccountStorageError(error: unknown) {
 function isDriveStorageQuotaError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return isServiceAccountStorageError(error) || message.toLowerCase().includes("storage quota") || message.includes("storageQuotaExceeded");
+}
+
+async function requireProjectManagementAccess() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (isForemanRole(session.user.role)) {
+    return NextResponse.json({ error: "ไม่มีสิทธิ์จัดการไซต์งาน" }, { status: 403 });
+  }
+  return null;
 }
 
 async function getCoverUploadFolderId(driveFolderId: string) {
@@ -198,6 +210,9 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const forbidden = await requireProjectManagementAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
 
     const { payload: body, coverFile } = await readProjectPayload(req);
@@ -338,6 +353,9 @@ export async function POST(req: Request) {
 
 export async function PUT(req: Request) {
   try {
+    const forbidden = await requireProjectManagementAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
 
     const { payload: body, coverFile } = await readProjectPayload(req);
@@ -445,6 +463,9 @@ export async function PUT(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const forbidden = await requireProjectManagementAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
 
     const body = await req.json();

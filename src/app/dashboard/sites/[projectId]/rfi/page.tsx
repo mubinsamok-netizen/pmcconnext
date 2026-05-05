@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SiteRfiPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = await getMasterProject(projectId);
+  const project = await getMasterProject(projectId, { siteSegment: "rfi" });
 
   return (
     <SiteShell

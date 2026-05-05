@@ -87,6 +87,10 @@ async function upsertGoogleTeamUser({
     };
   }
 
+  if (!isCompanyEmail(email)) {
+    throw new Error("Google sign-in is only available to invited users or company email accounts.");
+  }
+
   const member = {
     member_id: createMemberId(),
     name: name || normalizedEmail,
@@ -126,7 +130,6 @@ export const authOptions: AuthOptions = {
       authorization: {
         params: {
           scope: "openid email profile",
-          hd: COMPANY_DOMAIN,
         },
       },
     }),
@@ -176,7 +179,7 @@ export const authOptions: AuthOptions = {
       const googleSub = account.providerAccountId || getGoogleProfileValue(profile, "sub");
       const emailVerified = (profile as { email_verified?: boolean } | undefined)?.email_verified;
 
-      if (!email || !googleSub || emailVerified === false || !isCompanyEmail(email)) {
+      if (!email || !googleSub || emailVerified === false) {
         console.warn("Google sign-in rejected", {
           hasEmail: Boolean(email),
           hasGoogleSub: Boolean(googleSub),

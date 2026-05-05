@@ -1,19 +1,21 @@
 import Link from "next/link";
+import { getServerSession } from "next-auth";
 import type { ComponentType } from "react";
 import {
   BarChart3,
   CalendarDays,
   Flag,
-  FileQuestion,
   FolderOpen,
   LayoutDashboard,
   ListChecks,
   Sheet,
 } from "lucide-react";
+import { authOptions } from "@/lib/authOptions";
 import { findAll } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
+import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
 import { getSiteWeather } from "@/lib/siteWeather";
 import SiteWeatherCard from "@/components/SiteWeatherCard";
@@ -126,10 +128,12 @@ export default async function SiteDashboardPage({
 }) {
   const { projectId } = await params;
   const project = await getMasterProject(projectId);
-  const [planning, weather] = await Promise.all([
+  const [planning, weather, session] = await Promise.all([
     getPlanningSummary(project),
     getSiteWeather(project),
+    getServerSession(authOptions),
   ]);
+  const isForeman = isForemanRole(session?.user?.role);
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -155,7 +159,7 @@ export default async function SiteDashboardPage({
         </div>
       </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-4">
+      <div className={`grid grid-cols-1 gap-4 ${isForeman ? "" : "xl:grid-cols-[1.6fr_1fr]"}`}>
         <section className="bg-white rounded-3xl border border-gray-200 shadow-sm p-5">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
             <div>
@@ -207,9 +211,10 @@ export default async function SiteDashboardPage({
           )}
         </section>
 
+        {!isForeman && (
         <section className="bg-white rounded-3xl border border-gray-200 shadow-sm p-5">
           <div className="inline-flex items-center gap-2 text-xs font-extrabold uppercase tracking-wide text-orange-600">
-            <FileQuestion size={16} />
+            <Flag size={16} />
             สิ่งที่ควรผูกกับแผน
           </div>
           <h3 className="text-2xl font-extrabold text-gray-950 mt-2">RFA / RFI / Issue</h3>
@@ -231,6 +236,7 @@ export default async function SiteDashboardPage({
             </Link>
           </div>
         </section>
+        )}
       </div>
 
       <section className="bg-white rounded-3xl border border-gray-200 shadow-sm p-5">

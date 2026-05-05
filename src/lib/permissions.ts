@@ -70,6 +70,7 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "payment.uploadAttachment",
     "payment.generateDocument",
   ],
+  Foreman: [],
   Staff: [
     "payment.review",
     "payment.approve",

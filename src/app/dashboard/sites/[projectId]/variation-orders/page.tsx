@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SiteVariationOrdersPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = await getMasterProject(projectId);
+  const project = await getMasterProject(projectId, { siteSegment: "variation-orders" });
   const session = await getServerSession(authOptions);
 
   return (

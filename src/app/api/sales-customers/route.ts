@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/authOptions";
+import { isForemanRole } from "@/lib/siteAccess";
 import { findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
@@ -32,8 +35,22 @@ function createCustomerId() {
   return `CUS-${Date.now().toString(36).toUpperCase()}`;
 }
 
+async function requireSalesCrmAccess() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (isForemanRole(session.user.role)) {
+    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้า Sales CRM" }, { status: 403 });
+  }
+  return null;
+}
+
 export async function GET(req: Request) {
   try {
+    const forbidden = await requireSalesCrmAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
     const url = new URL(req.url);
     const includeClosed = url.searchParams.get("include_closed") === "true";
@@ -53,6 +70,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const forbidden = await requireSalesCrmAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
     const body = await req.json();
     const fullName = String(body.full_name || "").trim();
@@ -93,6 +113,9 @@ export async function POST(req: Request) {
 
 export async function PUT(req: Request) {
   try {
+    const forbidden = await requireSalesCrmAccess();
+    if (forbidden) return forbidden;
+
     await ensureMasterSchema();
     const body = await req.json();
     const id = String(body.id || "").trim();

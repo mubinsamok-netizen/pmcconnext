@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   Archive,
   Bell,
@@ -23,6 +25,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
+import { isForemanRole } from "@/lib/siteAccess";
 
 type LeadStatus = "new" | "scheduled" | "waiting" | "deposited" | "not_interested";
 type InterestLevel = "low" | "medium" | "high";
@@ -141,6 +144,8 @@ function getTodayInputValue() {
 }
 
 export default function SalesCrmPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
   const { data, error, isLoading, mutate } = useSWR<CustomersResponse>("/api/sales-customers", fetcher);
   const [leadForm, setLeadForm] = useState(emptyLead);
   const [editForm, setEditForm] = useState(emptyLead);
@@ -154,6 +159,14 @@ export default function SalesCrmPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pendingCloseLead, setPendingCloseLead] = useState<Customer | null>(null);
+  const isForeman = isForemanRole(session?.user?.role);
+
+  useEffect(() => {
+    if (isForeman) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isForeman, router]);
+
   const customers = useMemo(() => data?.data || [], [data?.data]);
 
   const summary = useMemo(() => {

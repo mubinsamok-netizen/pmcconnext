@@ -73,7 +73,13 @@ function lineStatusText(status?: string | number) {
   return "ยังไม่มีสถานะ";
 }
 
-export function DailyReportsWorkspace({ project }: { project: MasterProject }) {
+export function DailyReportsWorkspace({
+  project,
+  allowAdvancedReports = true,
+}: {
+  project: MasterProject;
+  allowAdvancedReports?: boolean;
+}) {
   const [activeTab, setActiveTab] = useState<"dashboard" | "form" | "weekly" | "monthly">("dashboard");
   const [personnel, setPersonnel] = useState<Row[]>([createEmptyRow(personnelColumns)]);
   const [machinery, setMachinery] = useState<Row[]>([createEmptyRow(machineryColumns)]);
@@ -143,8 +149,12 @@ export function DailyReportsWorkspace({ project }: { project: MasterProject }) {
         <div className="flex gap-2">
           <TabButton active={activeTab === "dashboard"} icon={BarChart3} label="Dashboard" onClick={() => setActiveTab("dashboard")} />
           <TabButton active={activeTab === "form"} icon={FileText} label="กรอก Daily Report" onClick={() => setActiveTab("form")} />
-          <TabButton active={activeTab === "weekly"} icon={FileText} label="Weekly Report" onClick={() => setActiveTab("weekly")} />
-          <TabButton active={activeTab === "monthly"} icon={FileText} label="Monthly Report" onClick={() => setActiveTab("monthly")} />
+          {allowAdvancedReports && (
+            <>
+              <TabButton active={activeTab === "weekly"} icon={FileText} label="Weekly Report" onClick={() => setActiveTab("weekly")} />
+              <TabButton active={activeTab === "monthly"} icon={FileText} label="Monthly Report" onClick={() => setActiveTab("monthly")} />
+            </>
+          )}
         </div>
         <div className="px-3 text-sm text-gray-500">
           LINE: {project.line_group_name || project.line_group_id || "ใช้ค่าเริ่มต้นของระบบ"}
@@ -154,9 +164,9 @@ export function DailyReportsWorkspace({ project }: { project: MasterProject }) {
       {success && <Alert tone="success">{success}</Alert>}
       {(error || loadError) && <Alert tone="error">{error || loadError?.message || "โหลดข้อมูลรายงานไม่สำเร็จ"}</Alert>}
 
-      {activeTab === "weekly" ? (
+      {allowAdvancedReports && activeTab === "weekly" ? (
         <WeeklyReportsPanel project={project} />
-      ) : activeTab === "monthly" ? (
+      ) : allowAdvancedReports && activeTab === "monthly" ? (
         <MonthlyReportsPanel project={project} />
       ) : activeTab === "dashboard" ? (
         <div className="space-y-6">
