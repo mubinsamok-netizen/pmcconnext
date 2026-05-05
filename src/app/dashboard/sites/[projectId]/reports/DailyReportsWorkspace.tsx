@@ -12,6 +12,8 @@ type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
 
+const MAX_PHOTO_UPLOAD_BYTES = 5 * 1024 * 1024;
+
 const weatherOptions = ["แจ่มใส", "มีเมฆบางส่วน", "มีเมฆมาก", "ฝนตกปรอย ๆ", "ฝนตกหนัก", "หยุดงานเนื่องจากสภาพอากาศ"];
 
 const personnelColumns: RowConfig[] = [
@@ -65,6 +67,11 @@ function sumRows(rows: Row[], key: string) {
   }, 0);
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function lineStatusText(status?: string | number) {
   if (status === "sent") return "ส่ง LINE แล้ว";
   if (status === "failed") return "ส่ง LINE ไม่สำเร็จ";
@@ -113,6 +120,13 @@ export function DailyReportsWorkspace({
     setError("");
     setSuccess("");
 
+    const totalPhotoBytes = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalPhotoBytes > MAX_PHOTO_UPLOAD_BYTES) {
+      setError(`รูปภาพรวมใหญ่เกินไป (${formatBytes(totalPhotoBytes)}) กรุณาลดจำนวนรูปหรือบีบอัดให้ไม่เกิน ${formatBytes(MAX_PHOTO_UPLOAD_BYTES)} ต่อการส่งหนึ่งครั้ง`);
+      setLoading(false);
+      return;
+    }
+
     const formData = new FormData(event.currentTarget);
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
@@ -125,8 +139,12 @@ export function DailyReportsWorkspace({
         method: "POST",
         body: formData,
       });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "บันทึกรายงานไม่สำเร็จ");
+      const responseText = await response.text();
+      const result = responseText ? JSON.parse(responseText) : {};
+      if (!response.ok) {
+        const serverError = typeof result?.error === "string" ? result.error : "";
+        throw new Error(serverError || `บันทึกรายงานไม่สำเร็จ (${response.status} ${response.statusText})`);
+      }
 
       setSuccess(`บันทึกรายงาน ${result.data?.document_no || ""} สำเร็จ`);
       setFiles([]);
@@ -137,7 +155,11 @@ export function DailyReportsWorkspace({
       await mutate();
       setActiveTab("dashboard");
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "บันทึกรายงานไม่สำเร็จ");
+      if (submitError instanceof SyntaxError) {
+        setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจากไฟล์แนบใหญ่เกินไป, function timeout, หรือ deploy ยังไม่อัปเดต");
+      } else {
+        setError(submitError instanceof Error ? submitError.message : "บันทึกรายงานไม่สำเร็จ");
+      }
     } finally {
       setLoading(false);
     }

@@ -150,12 +150,15 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  let step = "เริ่มบันทึกรายงาน";
   try {
+    step = "ตรวจสอบผู้ใช้งาน";
     const session = await getServerSession(authOptions);
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    step = "อ่านข้อมูลจากฟอร์ม";
     const formData = await req.formData();
     const project_id = getText(formData, "project_id");
     const date = getText(formData, "date");
@@ -164,8 +167,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    step = "โหลดข้อมูลโครงการ";
     const project = await getProject(project_id);
     const { sheetId, driveFolderId } = await getProjectContext(project_id);
+    step = "ตรวจสอบ schema ของ Google Sheets";
     await ensureSchema(sheetId);
 
     const targetDriveFolderId = getText(formData, "project_drive_folder_id") || project?.drive_folder_id || driveFolderId;
@@ -173,6 +178,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
     }
 
+    step = "อ่านเลขรายงานเดิมจาก Google Sheets";
     const existingReports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
     const document_no = createDocumentNo(project_id, date, existingReports);
     const report_id = `REP-${Date.now().toString().slice(-8)}`;
@@ -184,16 +190,20 @@ export async function POST(req: Request) {
     const workers = getText(formData, "workers") || sumPersonnel(personnel);
     const { files, pdfPhotos } = await readPhotos(formData);
 
+    step = "สร้าง/ค้นหาโฟลเดอร์ Daily Reports ใน Google Drive";
     const dailyReportsFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
     if (!dailyReportsFolder.id) throw new Error("Failed to create Daily Reports folder");
 
+    step = "สร้าง/ค้นหาโฟลเดอร์รายเดือนใน Google Drive";
     const monthFolder = await findOrCreateFolder(monthKey, dailyReportsFolder.id);
     if (!monthFolder.id) throw new Error("Failed to create monthly report folder");
 
+    step = "สร้าง/ค้นหาโฟลเดอร์ PDF และ Photos ใน Google Drive";
     const pdfFolder = await findOrCreateFolder("PDF", monthFolder.id);
     const photosMonthFolder = await findOrCreateFolder("Photos", monthFolder.id);
     if (!pdfFolder.id || !photosMonthFolder.id) throw new Error("Failed to create report subfolders");
 
+    step = "อัปโหลดรูปภาพประกอบไป Google Drive";
     const uploadedPhotoUrls = files.length > 0 ? await uploadPhotos(files, photosMonthFolder.id, document_no) : [];
 
     const reportPayload: DailyReportPayload = {
@@ -220,6 +230,7 @@ export async function POST(req: Request) {
       materials,
     };
 
+    step = "สร้างไฟล์ PDF รายงาน";
     const html = buildDailyReportHtml(reportPayload, pdfPhotos);
     const pdfFile = await createPdf({ html, documentNo: document_no, pdfFolderId: pdfFolder.id });
     const pdfUrl = pdfFile.webViewLink || pdfFile.webContentLink || "";
@@ -261,6 +272,7 @@ export async function POST(req: Request) {
       line_error: "",
     };
 
+    step = "บันทึกข้อมูลรายงานลง Google Sheets";
     await insert("Daily_Reports", baseReportData, sheetId);
     const insertedReports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
     const inserted = insertedReports.find((report) => report.report_id === report_id);
@@ -286,6 +298,7 @@ export async function POST(req: Request) {
       }
 
       if (inserted?._rowIndex) {
+        step = "อัปเดตสถานะ LINE ใน Google Sheets";
         await update("Daily_Reports", Number(inserted._rowIndex), linePatch, sheetId);
       }
     }
@@ -299,6 +312,6 @@ export async function POST(req: Request) {
     });
   } catch (error: unknown) {
     console.error("Failed to create report:", error);
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return NextResponse.json({ error: `${step}: ${getErrorMessage(error)}` }, { status: 500 });
   }
 }
