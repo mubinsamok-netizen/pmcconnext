@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
-import { Bell, FileUp, Loader2, Save } from "lucide-react";
+import { Bell, CheckCircle2, Database, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
@@ -11,6 +11,13 @@ type ApiResponse<T> = {
   success: boolean;
   data: T;
 };
+
+type ProjectMeta = {
+  siteSheetId: string;
+  driveFolderId: string;
+};
+
+type WorkspaceTab = "lifecycle" | "documents" | "warranty";
 
 type LifecycleForm = Record<string, string> & {
   current_status: string;
@@ -61,6 +68,82 @@ const emptyWarranty = {
   architecture_notes: "",
 };
 
+const lifecycleDateFields = [
+  "design_start_date",
+  "design_done_date",
+  "contract_signed_date",
+  "drawing_start_date",
+  "drawing_done_date",
+  "permit_submitted_date",
+  "permit_received_date",
+  "permit_expiry_date",
+  "temporary_electric_install_date",
+  "temporary_electric_expiry_date",
+  "temporary_water_install_date",
+  "temporary_water_expiry_date",
+  "demolition_waiting_date",
+  "demolition_done_date",
+  "construction_start_date",
+  "construction_end_date",
+];
+
+const warrantyDateFields = [
+  "handover_date",
+  "structure_retention_date",
+  "structure_expiry_date",
+  "roof_retention_date",
+  "roof_expiry_date",
+  "architecture_retention_date",
+  "architecture_expiry_date",
+];
+
+function toIsoDate(date?: string | number) {
+  const value = String(date ?? "").trim();
+  if (!value) return "";
+
+  const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0 && numericValue < 100000) {
+    const sheetEpoch = Date.UTC(1899, 11, 30);
+    const parsed = new Date(sheetEpoch + Math.floor(numericValue) * 86400000);
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  const slashMatch = value.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, first, second, yearValue] = slashMatch;
+    let year = Number(yearValue);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+
+    const firstNumber = Number(first);
+    const secondNumber = Number(second);
+    const isMonthFirst = firstNumber <= 12 && secondNumber > 12;
+    const day = isMonthFirst ? secondNumber : firstNumber;
+    const month = isMonthFirst ? firstNumber : secondNumber;
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+}
+
+function normalizeDateFields<T extends Record<string, string>>(data: T, fields: string[]) {
+  const next: Record<string, string> = { ...data };
+  fields.forEach((field) => {
+    if (next[field]) next[field] = toIsoDate(next[field]);
+  });
+  return next as T;
+}
+
 const dateGroups = [
   {
     title: "ออกแบบ",
@@ -110,29 +193,60 @@ const dateGroups = [
   },
 ];
 
-export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: string; isAdmin: boolean }) {
+export default function LifecycleWorkspace({
+  projectId,
+  isAdmin,
+  projectMeta,
+}: {
+  projectId: string;
+  isAdmin: boolean;
+  projectMeta: ProjectMeta;
+}) {
   const lifecycleKey = `/api/sites/${encodeURIComponent(projectId)}/lifecycle`;
   const warrantyKey = `/api/sites/${encodeURIComponent(projectId)}/warranty`;
   const documentsKey = `/api/sites/${encodeURIComponent(projectId)}/documents`;
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("lifecycle");
   const [lifecycleForm, setLifecycleForm] = useState<LifecycleForm>(emptyLifecycle);
   const [warrantyForm, setWarrantyForm] = useState(emptyWarranty);
   const [documentForm, setDocumentForm] = useState({ category: "contract", title: "", notes: "" });
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const { mutate: mutateLifecycle } = useSWR<ApiResponse<Record<string, string> | null>>(lifecycleKey, fetcher, {
+  const {
+    error: lifecycleError,
+    isLoading: lifecycleLoading,
+    mutate: mutateLifecycle,
+  } = useSWR<ApiResponse<Record<string, string> | null>>(lifecycleKey, fetcher, {
     onSuccess(result) {
-      if (result.data) setLifecycleForm({ ...emptyLifecycle, ...result.data });
+      if (result.data) setLifecycleForm(normalizeDateFields({ ...emptyLifecycle, ...result.data }, lifecycleDateFields));
     },
   });
-  const { mutate: mutateWarranty } = useSWR<ApiResponse<Record<string, string> | null>>(warrantyKey, fetcher, {
+  const {
+    error: warrantyError,
+    isLoading: warrantyLoading,
+    mutate: mutateWarranty,
+  } = useSWR<ApiResponse<Record<string, string> | null>>(warrantyKey, fetcher, {
     onSuccess(result) {
-      if (result.data) setWarrantyForm({ ...emptyWarranty, ...result.data });
+      if (result.data) setWarrantyForm(normalizeDateFields({ ...emptyWarranty, ...result.data }, warrantyDateFields));
     },
   });
-  const { data: documentsData, mutate: mutateDocuments } = useSWR<ApiResponse<DocumentRecord[]>>(documentsKey, fetcher);
+  const {
+    data: documentsData,
+    error: documentsError,
+    isLoading: documentsLoading,
+    mutate: mutateDocuments,
+  } = useSWR<ApiResponse<DocumentRecord[]>>(documentsKey, fetcher);
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
+  const apiHasError = Boolean(lifecycleError || warrantyError || documentsError);
+  const apiIsLoading = lifecycleLoading || warrantyLoading || documentsLoading;
+  const filledLifecycleDates = lifecycleDateFields.filter((field) => Boolean(lifecycleForm[field])).length;
+  const filledWarrantyDates = warrantyDateFields.filter((field) => Boolean(warrantyForm[field as keyof typeof emptyWarranty])).length;
+  const tabs: { id: WorkspaceTab; label: string; description: string; meta: string }[] = [
+    { id: "lifecycle", label: "รายละเอียดงาน", description: "สถานะและวันสำคัญ", meta: `${filledLifecycleDates}/${lifecycleDateFields.length}` },
+    { id: "documents", label: "เอกสาร", description: "PDF และ version history", meta: `${documents.length} ไฟล์` },
+    { id: "warranty", label: "ประกันผลงาน", description: "วันส่งมอบและวันหมดอายุ", meta: `${filledWarrantyDates}/${warrantyDateFields.length}` },
+  ];
 
   const saveJson = async (key: string, body: Record<string, string>, next: () => Promise<unknown>, successMessage: string) => {
     if (!isAdmin) return;
@@ -189,11 +303,69 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
       )}
 
       {message && (
-        <div className="rounded-xl border border-orange-100 bg-orange-50 p-4 text-sm font-semibold text-orange-700">
+        <div className="sticky top-20 z-20 rounded-xl border border-orange-100 bg-orange-50 p-4 text-sm font-semibold text-orange-700 shadow-sm">
           {message}
         </div>
       )}
 
+      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
+          <ConnectionCard
+            icon={<Database size={18} />}
+            label="Site Sheet"
+            value={projectMeta.siteSheetId ? "เชื่อมแล้ว" : "ยังไม่ได้เชื่อม"}
+            ok={Boolean(projectMeta.siteSheetId)}
+          />
+          <ConnectionCard
+            icon={<FolderOpen size={18} />}
+            label="Drive Folder"
+            value={projectMeta.driveFolderId ? "พร้อมอัปโหลด" : "ยังไม่มีโฟลเดอร์"}
+            ok={Boolean(projectMeta.driveFolderId)}
+          />
+          <ConnectionCard
+            icon={<ShieldCheck size={18} />}
+            label="สิทธิ์แก้ไข"
+            value={isAdmin ? "Admin" : "ดูอย่างเดียว"}
+            ok={isAdmin}
+          />
+          <ConnectionCard
+            icon={apiIsLoading ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+            label="Backend"
+            value={apiIsLoading ? "กำลังอ่านข้อมูล" : apiHasError ? "อ่านข้อมูลไม่สำเร็จ" : "เชื่อมต่อได้"}
+            ok={!apiHasError && !apiIsLoading}
+          />
+        </div>
+        {!projectMeta.driveFolderId && (
+          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+            การบันทึกรายละเอียดงานและประกันยังใช้ได้ แต่การอัปโหลด PDF ต้องมี Google Drive Folder ID ก่อน
+          </div>
+        )}
+      </section>
+
+      <nav className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`rounded-2xl border p-4 text-left transition ${
+              activeTab === tab.id
+                ? "border-orange-200 bg-orange-50 text-orange-700 shadow-sm"
+                : "border-gray-200 bg-white text-gray-600 hover:border-orange-100 hover:bg-orange-50/40"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-base font-extrabold">{tab.label}</span>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${activeTab === tab.id ? "bg-white text-orange-700" : "bg-gray-100 text-gray-500"}`}>
+                {tab.meta}
+              </span>
+            </div>
+            <p className="mt-1 text-sm font-semibold opacity-75">{tab.description}</p>
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === "lifecycle" && (
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-5 flex items-center justify-between gap-4">
           <div>
@@ -257,7 +429,9 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
           ))}
         </div>
       </section>
+      )}
 
+      {activeTab === "documents" && (
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <form onSubmit={uploadDocument} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-5">
@@ -287,7 +461,7 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
               />
             </Field>
             <Field label="ไฟล์ PDF">
-              <div className="space-y-2">
+              <div className="space-y-3 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4">
                 <label className={`attach-file-button ${!isAdmin ? "attach-file-button-disabled" : ""}`}>
                   <input
                     key={file ? "pdf-selected" : "pdf-empty"}
@@ -301,9 +475,13 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
                   {file ? "เปลี่ยนไฟล์ PDF" : "แนบไฟล์ PDF"}
                 </label>
                 {file && (
-                  <p className="truncate text-sm font-semibold text-gray-600">
-                    {file.name}
-                  </p>
+                  <div className="rounded-lg border border-orange-100 bg-white px-3 py-2">
+                    <p className="truncate text-sm font-extrabold text-gray-800">{file.name}</p>
+                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อบันทึกเข้า Drive และ Version History</p>
+                  </div>
+                )}
+                {!file && (
+                  <p className="text-xs font-semibold text-gray-500">การเลือกไฟล์ยังไม่ใช่การบันทึก ระบบจะบันทึกเมื่อกด “อัปโหลด PDF”</p>
                 )}
               </div>
             </Field>
@@ -315,9 +493,9 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
                 className="form-input min-h-20 resize-y"
               />
             </Field>
-            <button disabled={!isAdmin || !file || loading === "document"} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
+            <button disabled={!isAdmin || !file || loading === "document" || !projectMeta.driveFolderId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
               {loading === "document" ? <Loader2 size={17} className="animate-spin" /> : <FileUp size={17} />}
-              อัปโหลด PDF
+              {projectMeta.driveFolderId ? "อัปโหลดและบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
             </button>
           </div>
         </form>
@@ -362,7 +540,9 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
           </div>
         </div>
       </section>
+      )}
 
+      {activeTab === "warranty" && (
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-5 flex items-center justify-between gap-4">
           <div>
@@ -426,6 +606,7 @@ export default function LifecycleWorkspace({ projectId, isAdmin }: { projectId: 
           />
         </div>
       </section>
+      )}
     </div>
   );
 }
@@ -440,6 +621,30 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <span className="mb-1.5 block text-sm font-semibold text-gray-700">{label}</span>
       {children}
     </label>
+  );
+}
+
+function ConnectionCard({
+  icon,
+  label,
+  value,
+  ok,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  ok: boolean;
+}) {
+  return (
+    <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${ok ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-amber-100 bg-amber-50 text-amber-700"}`}>
+      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/80">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="truncate text-xs font-extrabold opacity-70">{label}</p>
+        <p className="truncate text-sm font-extrabold">{value}</p>
+      </div>
+    </div>
   );
 }
 

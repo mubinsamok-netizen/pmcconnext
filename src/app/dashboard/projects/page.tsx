@@ -91,12 +91,55 @@ function getStatus(status?: string) {
   return status;
 }
 
+function toIsoDate(date?: string | number) {
+  const value = String(date ?? "").trim();
+  if (!value) return "";
+
+  const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0 && numericValue < 100000) {
+    const sheetEpoch = Date.UTC(1899, 11, 30);
+    const parsed = new Date(sheetEpoch + Math.floor(numericValue) * 86400000);
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  const slashMatch = value.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, first, second, yearValue] = slashMatch;
+    let year = Number(yearValue);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+
+    const firstNumber = Number(first);
+    const secondNumber = Number(second);
+    const isMonthFirst = firstNumber <= 12 && secondNumber > 12;
+    const day = isMonthFirst ? secondNumber : firstNumber;
+    const month = isMonthFirst ? firstNumber : secondNumber;
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+}
+
 function getStartDate(startDate?: string) {
+  const normalizedDate = toIsoDate(startDate);
+  if (normalizedDate) return normalizedDate;
   if (!startDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return "ยังไม่กำหนดวันเริ่ม";
   return startDate;
 }
 
 function getEndDate(endDate?: string) {
+  const normalizedDate = toIsoDate(endDate);
+  if (normalizedDate) return normalizedDate;
   if (!endDate || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return "ยังไม่กำหนดวันสิ้นสุด";
   return endDate;
 }

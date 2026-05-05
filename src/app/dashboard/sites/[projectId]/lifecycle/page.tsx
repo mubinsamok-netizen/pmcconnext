@@ -23,7 +23,14 @@ export default async function SiteLifecyclePage({ params }: { params: Promise<{ 
       icon={CalendarClock}
       wide
     >
-      <LifecycleWorkspace projectId={project.project_id} isAdmin={isAdmin} />
+      <LifecycleWorkspace
+        projectId={project.project_id}
+        isAdmin={isAdmin}
+        projectMeta={{
+          siteSheetId: project.site_sheet_id || "",
+          driveFolderId: project.drive_folder_id || "",
+        }}
+      />
     </SiteShell>
   );
 }
