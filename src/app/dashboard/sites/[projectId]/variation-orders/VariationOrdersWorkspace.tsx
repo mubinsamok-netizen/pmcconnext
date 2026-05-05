@@ -12,7 +12,6 @@ import {
   Paperclip,
   Plus,
   Printer,
-  Send,
   Workflow,
 } from "lucide-react";
 import useSWR from "swr";
@@ -116,7 +115,7 @@ const emptyPlan = {
 const tabs = [
   { key: "pipeline", label: "Pipeline", icon: FileText },
   { key: "create", label: "สร้าง VO", icon: Plus },
-  { key: "approval", label: "อนุมัติ", icon: CheckCircle2 },
+  { key: "approval", label: "หลักฐาน", icon: CheckCircle2 },
   { key: "plan", label: "เข้าแผนงาน", icon: Workflow },
   { key: "finance", label: "วางบิล/รับชำระ", icon: Banknote },
   { key: "reports", label: "รายงาน/Audit", icon: BarChart3 },
@@ -173,6 +172,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     client_name: project.client || "",
     contract_before: project.budget || "",
   });
+  const [supportingDocFiles, setSupportingDocFiles] = useState<File[]>([]);
   const [evidence, setEvidence] = useState(emptyEvidence);
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [clientDecision, setClientDecision] = useState({ remarks: "", reject_reason: "" });
@@ -241,27 +241,24 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   };
 
   const createVo = async () => {
-    const result = await postAction("create_vo", createForm);
+    if (!createForm.supporting_docs.trim() && supportingDocFiles.length === 0) {
+      setMessage("");
+      setError("กรุณาแนบรูปแชทหรือระบุหลักฐานจากลูกค้า");
+      return;
+    }
+    const supportingUploads = await Promise.all(supportingDocFiles.map(fileToUploadPayload));
+    const result = await postAction("create_vo", {
+      ...createForm,
+      contract_before: createForm.contract_before || project.budget || "",
+      supporting_doc_uploads: supportingUploads,
+      auto_approve_with_evidence: true,
+    });
     if (result?.data?.vo_id) {
       setSelectedVoId(result.data.vo_id);
       setCreateForm({ ...emptyCreateForm, client_name: project.client || "", contract_before: project.budget || "" });
-      setActiveTab("approval");
+      setSupportingDocFiles([]);
+      setActiveTab(permissions.addToPlan ? "plan" : "pipeline");
     }
-  };
-
-  const submitSelected = async () => {
-    if (!selectedVo?.vo_id) return;
-    await postAction("submit_to_client", {
-      vo_id: selectedVo.vo_id,
-      pm_checklist: {
-        items_correct: true,
-        calculation_verified: true,
-        linked_tasks_set: true,
-        supporting_docs_ok: true,
-        contract_value_ok: true,
-        pm_remarks: "",
-      },
-    });
   };
 
   const approveSelected = async () => {
@@ -395,7 +392,14 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
             <PipelineSection vos={vos} isLoading={isLoading} selectedVoId={selectedVo?.vo_id || ""} onSelect={setSelectedVoId} />
           )}
           {activeTab === "create" && (
-            <CreateSection form={createForm} setForm={setCreateForm} onSubmit={createVo} loading={loadingAction === "create_vo"} />
+            <CreateSection
+              form={createForm}
+              setForm={setCreateForm}
+              supportingDocFiles={supportingDocFiles}
+              setSupportingDocFiles={setSupportingDocFiles}
+              onSubmit={createVo}
+              loading={loadingAction === "create_vo"}
+            />
           )}
           {activeTab === "approval" && (
             <ApprovalSection
@@ -404,7 +408,6 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               setEvidence={setEvidence}
               evidenceFile={evidenceFile}
               setEvidenceFile={setEvidenceFile}
-              onSubmitToClient={submitSelected}
               onApprove={approveSelected}
               userRole={normalizedRole}
               permissions={permissions}
@@ -476,8 +479,8 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               ) : (
                 <>
                   <p>1. สร้างรายการงานเพิ่ม-ลดและตรวจยอด</p>
-                  <p>2. PM ส่งอนุมัติ แล้วออฟฟิศบันทึกหลักฐานแทนลูกค้า</p>
-                  <p>3. หลังอนุมัติ ให้เพิ่มเข้าแผนงานเอง เลือกหัวข้อหลักและวันเวลาได้เหมือน task ปกติ</p>
+                  <p>2. แนบรูปแชทหรือระบุหลักฐานจากลูกค้า ระบบจะบันทึกเป็นอนุมัติจากหลักฐานทันที</p>
+                  <p>3. หลังสร้างแล้ว ให้เพิ่มเข้าแผนงานเอง เลือกหัวข้อหลักและวันเวลาได้เหมือน task ปกติ</p>
                   <p>4. วางบิลและรับชำระเพื่อปิดยอดทางบัญชี</p>
                 </>
               )}
@@ -561,10 +564,32 @@ function fileToUploadPayload(file: File) {
   });
 }
 
-function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm; setForm: (next: CreateForm) => void; onSubmit: () => void; loading: boolean }) {
+function CreateSection({
+  form,
+  setForm,
+  supportingDocFiles,
+  setSupportingDocFiles,
+  onSubmit,
+  loading,
+}: {
+  form: CreateForm;
+  setForm: (next: CreateForm) => void;
+  supportingDocFiles: File[];
+  setSupportingDocFiles: (next: File[]) => void;
+  onSubmit: () => void;
+  loading: boolean;
+}) {
   const updateItem = (index: number, key: keyof VoItemInput, value: string) => {
     const items = form.items.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item);
     setForm({ ...form, items });
+  };
+  const addSupportingFiles = (files: FileList | null) => {
+    const nextFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+    if (nextFiles.length === 0) return;
+    setSupportingDocFiles([...supportingDocFiles, ...nextFiles]);
+  };
+  const removeSupportingFile = (index: number) => {
+    setSupportingDocFiles(supportingDocFiles.filter((_file, fileIndex) => fileIndex !== index));
   };
   const addItem = () => {
     setForm({ ...form, items: [...form.items, { item_no: form.items.length + 1, description: "", unit: "LS", quantity: "1", unit_price: "" }] });
@@ -578,7 +603,7 @@ function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm;
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-5">
         <h3 className="text-lg font-extrabold text-gray-900">สร้างงานเพิ่ม-ลด</h3>
-        <p className="text-sm text-gray-500">กรอกข้อมูลให้ครบ ระบบจะคำนวณยอดและสร้างใบ VO ให้พิมพ์ได้ทันที</p>
+        <p className="text-sm text-gray-500">กรอกข้อมูลและแนบหลักฐานแชทจากลูกค้า ระบบจะคำนวณยอด สร้างใบ VO และบันทึกอนุมัติจากหลักฐานให้ทันที</p>
       </div>
       <div className="grid gap-4 lg:grid-cols-3">
         <Field label="ประเภท">
@@ -593,9 +618,6 @@ function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm;
         </Field>
         <Field label="ลูกค้า">
           <input value={form.client_name} onChange={(event) => setForm({ ...form, client_name: event.target.value })} className="form-input" />
-        </Field>
-        <Field label="มูลค่าสัญญาปัจจุบัน">
-          <input value={form.contract_before} onChange={(event) => setForm({ ...form, contract_before: event.target.value })} className="form-input" inputMode="decimal" />
         </Field>
         <Field label="WHT">
           <select value={form.withholding_tax} onChange={(event) => setForm({ ...form, withholding_tax: event.target.value })} className="form-input bg-white">
@@ -614,7 +636,36 @@ function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm;
           <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={4} className="form-input resize-none" />
         </Field>
         <Field label="เอกสารประกอบ/อ้างอิง">
-          <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" />
+          <div className="space-y-3">
+            <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" />
+            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-orange-100 bg-white px-3 py-2 text-sm font-bold text-orange-700 hover:bg-orange-50">
+                <Paperclip size={16} />
+                แนบรูปแชท
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="sr-only"
+                  onChange={(event) => {
+                    addSupportingFiles(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              <p className="mt-2 text-xs font-semibold text-gray-500">ใช้เป็นหลักฐานจากลูกค้า ไม่ต้องให้ลูกค้า/role อื่นยืนยันซ้ำ</p>
+              {supportingDocFiles.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {supportingDocFiles.map((file, index) => (
+                    <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-600">
+                      <span className="truncate">{file.name}</span>
+                      <button type="button" onClick={() => removeSupportingFile(index)} className="font-bold text-red-600">ลบ</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </Field>
       </div>
       <div className="mt-5 overflow-hidden rounded-xl border border-gray-200">
@@ -622,8 +673,8 @@ function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm;
           <thead className="bg-gray-50 text-xs font-bold text-gray-500">
             <tr>
               <th className="px-3 py-2">รายการ</th>
-              <th className="px-3 py-2 w-24">หน่วย</th>
               <th className="px-3 py-2 w-24">จำนวน</th>
+              <th className="px-3 py-2 w-24">หน่วย</th>
               <th className="px-3 py-2 w-36">ราคา/หน่วย</th>
               <th className="px-3 py-2 w-20"></th>
             </tr>
@@ -632,8 +683,8 @@ function CreateSection({ form, setForm, onSubmit, loading }: { form: CreateForm;
             {form.items.map((item, index) => (
               <tr key={index}>
                 <td className="px-3 py-2"><input value={String(item.description || "")} onChange={(event) => updateItem(index, "description", event.target.value)} className="form-input" /></td>
-                <td className="px-3 py-2"><input value={String(item.unit || "")} onChange={(event) => updateItem(index, "unit", event.target.value)} className="form-input" /></td>
                 <td className="px-3 py-2"><input value={String(item.quantity || "")} onChange={(event) => updateItem(index, "quantity", event.target.value)} className="form-input" inputMode="decimal" /></td>
+                <td className="px-3 py-2"><input value={String(item.unit || "")} onChange={(event) => updateItem(index, "unit", event.target.value)} className="form-input" /></td>
                 <td className="px-3 py-2"><input value={String(item.unit_price || "")} onChange={(event) => updateItem(index, "unit_price", event.target.value)} className="form-input" inputMode="decimal" /></td>
                 <td className="px-3 py-2 text-right"><button type="button" onClick={() => removeItem(index)} className="text-sm font-bold text-red-600">ลบ</button></td>
               </tr>
@@ -661,7 +712,6 @@ function ApprovalSection({
   setEvidence,
   evidenceFile,
   setEvidenceFile,
-  onSubmitToClient,
   onApprove,
   userRole,
   permissions,
@@ -680,7 +730,6 @@ function ApprovalSection({
   setEvidence: (next: typeof emptyEvidence) => void;
   evidenceFile: File | null;
   setEvidenceFile: (file: File | null) => void;
-  onSubmitToClient: () => void;
   onApprove: () => void;
   userRole: string;
   permissions: VoPermissions;
@@ -754,14 +803,11 @@ function ApprovalSection({
 
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-      <h3 className="text-lg font-extrabold text-gray-900">ส่งอนุมัติและบันทึกหลักฐาน</h3>
+      <h3 className="text-lg font-extrabold text-gray-900">บันทึกหลักฐานจากลูกค้า</h3>
       {!vo ? <EmptyText text="เลือก VO ก่อน" /> : (
         <>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button type="button" onClick={onSubmitToClient} disabled={loadingAction === "submit_to_client" || vo.status !== "draft" || !permissions.submitToClient} className="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 font-bold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50">
-              {loadingAction === "submit_to_client" ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
-              PM ส่งอนุมัติ
-            </button>
+          <div className="mt-4 rounded-xl border border-orange-100 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-800">
+            ใช้หน้านี้เฉพาะกรณีต้องเติมหลักฐานให้ VO เก่า ส่วน VO ใหม่ให้แนบรูปแชทตอนสร้าง ระบบจะบันทึกอนุมัติจากหลักฐานให้ทันที
           </div>
           <div className="mt-5 grid gap-4 lg:grid-cols-2">
             <Field label="ผู้ยืนยันฝั่งลูกค้า">

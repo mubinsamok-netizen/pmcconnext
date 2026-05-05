@@ -169,8 +169,8 @@ function renderItems(items: VoItemRecord[]) {
         <tr>
           <th style="width:11mm;">ลำดับ</th>
           <th>รายการ</th>
-          <th style="width:20mm;">หน่วย</th>
           <th style="width:22mm;">จำนวน</th>
+          <th style="width:20mm;">หน่วย</th>
           <th style="width:27mm;">ราคาต่อหน่วย</th>
           <th style="width:27mm;">จำนวนเงิน</th>
         </tr>
@@ -180,8 +180,8 @@ function renderItems(items: VoItemRecord[]) {
           <tr>
             <td class="num">${escapeHtml(item.item_no || index + 1)}</td>
             <td>${escapeHtml(item.description || "-")}</td>
-            <td>${escapeHtml(item.unit || "-")}</td>
             <td class="num">${escapeHtml(item.quantity || "0")}</td>
+            <td>${escapeHtml(item.unit || "-")}</td>
             ${numberCell(item.unit_price)}
             ${numberCell(item.amount)}
           </tr>

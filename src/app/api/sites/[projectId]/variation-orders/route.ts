@@ -51,6 +51,12 @@ type UploadPayload = {
   type?: string;
   dataUrl?: string;
 };
+type UploadedVoFile = {
+  file_id: string;
+  file_name: string;
+  file_url: string;
+  mime_type: string;
+};
 
 function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
@@ -116,6 +122,34 @@ async function uploadEvidenceFile(context: RouteContext, voId: string, file?: Up
     file_name: uploaded.name || file.name,
     file_url: uploaded.webViewLink || uploaded.webContentLink || "",
   };
+}
+
+async function uploadSupportingDocumentFiles(context: RouteContext, voId: string, files: UploadPayload[]) {
+  const uploads = files.filter((file) => file?.dataUrl && file.name);
+  if (uploads.length === 0) return [];
+  const voFolderId = await getVoDriveFolder(context, voId);
+  if (!voFolderId) return [];
+  const supportingFolder = await findOrCreateFolder("Supporting Docs", voFolderId);
+  const folderId = supportingFolder.id || voFolderId;
+
+  const uploadedFiles = await Promise.all(uploads.map(async (file) => {
+    const decoded = decodeDataUrl(file.dataUrl);
+    if (!decoded || !file.name) return null;
+    const uploaded = await uploadFile(
+      `${Date.now()}-${safeFolderName(file.name)}`,
+      file.type || decoded.mimeType || "application/octet-stream",
+      decoded.buffer,
+      folderId
+    );
+    return {
+      file_id: uploaded.id || "",
+      file_name: uploaded.name || file.name,
+      file_url: uploaded.webViewLink || uploaded.webContentLink || "",
+      mime_type: file.type || decoded.mimeType || "application/octet-stream",
+    };
+  }));
+
+  return uploadedFiles.filter((file): file is UploadedVoFile => Boolean(file));
 }
 
 async function getVoData(context: RouteContext) {
@@ -259,6 +293,12 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
 
   const voId = createNextVoId(context.project.project_id, createdDate, data.vos);
   const approvalDeadline = addCalendarDays(createdDate, numberValue(String(body.approval_deadline_days || 14)));
+  const supportingUploads = parseRows<UploadPayload>(body.supporting_doc_uploads);
+  const supportingFiles = await uploadSupportingDocumentFiles(context, voId, supportingUploads);
+  const supportingDocsText = String(body.supporting_docs || "").trim();
+  const supportingDocs = supportingFiles.length > 0
+    ? [supportingDocsText, ...supportingFiles.map((file) => `แนบรูปแชท: ${file.file_name}`)].filter(Boolean).join("\n")
+    : supportingDocsText;
   const voPayload = {
     vo_id: voId,
     project_id: context.project.project_id,
@@ -286,7 +326,7 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     created_by_role: context.session.user.role || "",
     status: "draft",
     client_name: String(body.client_name || context.project.client || ""),
-    supporting_docs: String(body.supporting_docs || ""),
+    supporting_docs: supportingDocs,
     linked_tasks_json: safeJsonStringify(body.linked_tasks || []),
     evidence_json: "",
     rejection_json: "",
@@ -299,12 +339,25 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     amount_paid: 0,
     balance: calculation.grand_total,
     payment_status: "not_billed",
-    document_refs_json: "[]",
+    document_refs_json: safeJsonStringify(supportingFiles),
     notes: String(body.notes || ""),
     created_at: `${createdDate}T00:00:00+07:00`,
   };
 
   await insert("Variation_Orders", voPayload, context.siteSheetId);
+  await Promise.all(supportingFiles.map((file, index) => insert("VO_Documents", {
+    document_id: makeId("VOD"),
+    vo_id: voId,
+    project_id: context.project.project_id,
+    document_type: "supporting-chat-image",
+    document_no: `${voId}-SUP-${String(index + 1).padStart(2, "0")}`,
+    title: `รูปแชทอ้างอิง ${index + 1}`,
+    html_snapshot: "",
+    pdf_file_id: file.file_id,
+    pdf_url: file.file_url,
+    created_by_name: context.session.user.name || "",
+    created_by_email: context.session.user.email || "",
+  }, context.siteSheetId)));
   await Promise.all(calculation.items.map((item) => insert("VO_Items", {
     item_id: makeId("VOI"),
     vo_id: voId,
@@ -399,8 +452,9 @@ async function handleApproveOnBehalf(body: Record<string, unknown>, context: Rou
   const { vos, items } = await getVoData(context);
   const vo = findVo(vos, voId);
   if (!vo?._rowIndex) return NextResponse.json({ error: "ไม่พบ VO" }, { status: 404 });
-  if (asVoStatus(String(vo.status || "")) !== "pending_approval") {
-    return NextResponse.json({ error: "อนุมัติได้เฉพาะ VO ที่รออนุมัติ" }, { status: 400 });
+  const status = asVoStatus(String(vo.status || ""));
+  if (!["draft", "pending_approval"].includes(status)) {
+    return NextResponse.json({ error: "บันทึกหลักฐานได้เฉพาะ VO ที่ยังไม่อนุมัติ" }, { status: 400 });
   }
 
   const uploadedEvidence = await uploadEvidenceFile(context, voId, body.evidence_file_upload as UploadPayload | undefined);

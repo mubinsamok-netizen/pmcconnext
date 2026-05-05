@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { AlertTriangle, Bell, CheckCheck, Clock3, LogOut, Maximize, Minimize, Search } from "lucide-react";
+import { AlertTriangle, Bell, CheckCheck, Clock3, LogOut, Maximize, Menu, Minimize, Search } from "lucide-react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -47,7 +47,13 @@ function getPageTitle(pathname: string) {
   return "Workspace";
 }
 
-export default function DashboardTopBar({ user }: { user?: TopBarUser }) {
+export default function DashboardTopBar({
+  user,
+  onMenuClick,
+}: {
+  user?: TopBarUser;
+  onMenuClick?: () => void;
+}) {
   const pathname = usePathname();
   const [time, setTime] = useState<Date | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -151,11 +157,22 @@ export default function DashboardTopBar({ user }: { user?: TopBarUser }) {
   };
 
   return (
-    <header className="sticky top-0 z-30 h-16 border-b border-gray-200 bg-white/90 px-6 backdrop-blur-md">
+    <header className="sticky top-0 z-30 h-16 border-b border-gray-200 bg-white/90 px-4 backdrop-blur-md sm:px-6">
       <div className="flex h-full items-center justify-between gap-4">
-        <div className="min-w-0 shrink-0">
+        <div className="flex min-w-0 shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onMenuClick}
+            className="grid h-10 w-10 place-items-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-sm transition hover:bg-gray-50 hover:text-orange-600 md:hidden"
+            title="เปิดเมนู"
+            aria-label="เปิดเมนู"
+          >
+            <Menu size={20} />
+          </button>
+          <div className="min-w-0">
           <h1 className="truncate text-lg font-extrabold tracking-tight text-gray-950">{pageTitle}</h1>
           <p className="hidden text-xs font-medium text-gray-400 sm:block">PCM CONNEXT construction workspace</p>
+          </div>
         </div>
 
         <div className="hidden flex-1 justify-center lg:flex">

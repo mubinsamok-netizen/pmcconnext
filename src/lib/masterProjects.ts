@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { canAccessProject } from "@/lib/authz";
+import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { canAccessSiteSegment } from "@/lib/siteAccess";
 import { findAllMaster } from "./sheetsCrud";
 import { ensureMasterSchema } from "./sheetsSetup";
@@ -38,6 +38,19 @@ export type MasterProject = {
 const MASTER_PROJECTS_CACHE_TTL_MS = 60 * 1000;
 let masterProjectsCache: { expiresAt: number; promise: Promise<MasterProject[]> } | null = null;
 
+function isQuotaExceeded(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Quota exceeded");
+}
+
+function fallbackMasterProject(projectId: string): MasterProject {
+  return {
+    project_id: projectId,
+    name: projectId,
+    status: "Planning",
+  };
+}
+
 export async function getMasterProjects() {
   const now = Date.now();
 
@@ -66,8 +79,19 @@ export async function getMasterProject(projectId: string, options: { siteSegment
     redirect("/");
   }
 
-  const projects = await getMasterProjects();
   const decodedProjectId = decodeURIComponent(projectId);
+  let projects: MasterProject[];
+
+  try {
+    projects = await getMasterProjects();
+  } catch (error) {
+    if (isQuotaExceeded(error) && isAdminRole(session.user.role)) {
+      console.warn(`Using minimal project fallback for ${decodedProjectId} because Google Sheets read quota is temporarily exceeded.`);
+      return fallbackMasterProject(decodedProjectId);
+    }
+    throw error;
+  }
+
   const project = projects.find((item) => item.project_id === decodedProjectId);
 
   if (

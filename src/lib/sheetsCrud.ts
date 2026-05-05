@@ -16,6 +16,29 @@ type SheetValue = string | number | boolean | null | undefined;
 type SiteTable = keyof typeof SITE_SCHEMA;
 type MasterTable = keyof typeof MASTER_SCHEMA;
 type SheetSchema = Record<string, readonly string[]>;
+type SheetRow = { _rowIndex: number } & Record<string, string>;
+
+const MASTER_READ_CACHE_TTL_MS = 5 * 60 * 1000;
+const MASTER_READ_STALE_TTL_MS = 30 * 60 * 1000;
+const masterReadCache = new Map<string, {
+  expiresAt: number;
+  staleUntil: number;
+  rows?: SheetRow[];
+  promise?: Promise<SheetRow[]>;
+}>();
+
+function isQuotaExceeded(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Quota exceeded");
+}
+
+function clearMasterReadCache(tableName?: MasterTable) {
+  if (!tableName) {
+    masterReadCache.clear();
+    return;
+  }
+  masterReadCache.delete(`${MASTER_SHEET_ID}:${String(tableName)}`);
+}
 
 async function findAllFromSheet(spreadsheetId: string, tableName: string) {
   try {
@@ -36,10 +59,9 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string) {
         obj[header] = row[colIndex] || "";
       });
       return obj;
-    });
+    }) as SheetRow[];
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("Quota exceeded")) {
+    if (isQuotaExceeded(error)) {
       console.warn(`Read quota exceeded in findAll(${tableName}).`);
     } else {
       console.error(`Error in findAll(${tableName}):`, error);
@@ -172,7 +194,49 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
 }
 
 export async function findAllMaster(tableName: MasterTable) {
-  return findAllFromSheet(MASTER_SHEET_ID, String(tableName));
+  const cacheKey = `${MASTER_SHEET_ID}:${String(tableName)}`;
+  const cached = masterReadCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached?.rows && cached.expiresAt > now) {
+    return cached.rows;
+  }
+
+  if (cached?.promise) {
+    return cached.promise;
+  }
+
+  const promise = findAllFromSheet(MASTER_SHEET_ID, String(tableName))
+    .then((rows) => {
+      masterReadCache.set(cacheKey, {
+        expiresAt: Date.now() + MASTER_READ_CACHE_TTL_MS,
+        staleUntil: Date.now() + MASTER_READ_STALE_TTL_MS,
+        rows,
+      });
+      return rows;
+    })
+    .catch((error) => {
+      if (isQuotaExceeded(error) && cached?.rows && cached.staleUntil > Date.now()) {
+        console.warn(`Using stale master ${String(tableName)} rows because Google Sheets read quota is temporarily exceeded.`);
+        masterReadCache.set(cacheKey, {
+          expiresAt: Date.now() + 30 * 1000,
+          staleUntil: cached.staleUntil,
+          rows: cached.rows,
+        });
+        return cached.rows;
+      }
+      masterReadCache.delete(cacheKey);
+      throw error;
+    });
+
+  masterReadCache.set(cacheKey, {
+    expiresAt: cached?.expiresAt || 0,
+    staleUntil: cached?.staleUntil || 0,
+    rows: cached?.rows,
+    promise,
+  });
+
+  return promise;
 }
 
 export async function insert(tableName: SiteTable, data: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
@@ -180,7 +244,9 @@ export async function insert(tableName: SiteTable, data: Record<string, SheetVal
 }
 
 export async function insertMaster(tableName: MasterTable, data: Record<string, SheetValue>) {
-  return insertToSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), data);
+  const result = await insertToSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), data);
+  clearMasterReadCache(tableName);
+  return result;
 }
 
 export async function update(tableName: SiteTable, rowIndex: number, patch: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
@@ -188,7 +254,9 @@ export async function update(tableName: SiteTable, rowIndex: number, patch: Reco
 }
 
 export async function updateMaster(tableName: MasterTable, rowIndex: number, patch: Record<string, SheetValue>) {
-  return updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), rowIndex, patch);
+  const result = await updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), rowIndex, patch);
+  clearMasterReadCache(tableName);
+  return result;
 }
 
 export async function deleteRow(tableName: SiteTable, rowIndex: number, spreadsheetId: string = SHEET_ID) {
@@ -196,5 +264,7 @@ export async function deleteRow(tableName: SiteTable, rowIndex: number, spreadsh
 }
 
 export async function deleteRowMaster(tableName: MasterTable, rowIndex: number) {
-  return deleteRowFromSheet(MASTER_SHEET_ID, String(tableName), rowIndex);
+  const result = await deleteRowFromSheet(MASTER_SHEET_ID, String(tableName), rowIndex);
+  clearMasterReadCache(tableName);
+  return result;
 }
