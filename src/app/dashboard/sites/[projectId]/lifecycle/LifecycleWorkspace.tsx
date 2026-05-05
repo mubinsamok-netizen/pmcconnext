@@ -374,9 +374,18 @@ export default function LifecycleWorkspace({
       const res = await fetch(documentsKey, { method: "POST", body: formData });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(result.error || "อัปโหลดไฟล์ไม่สำเร็จ");
+      const uploadedDocument = result.data as DocumentRecord | undefined;
       setDocumentForm({ category: "contract", title: "", notes: "" });
       setFile(null);
-      await mutateDocuments();
+      if (uploadedDocument) {
+        void mutateDocuments((current) => ({
+          success: true,
+          data: [uploadedDocument, ...(current?.data || [])],
+        }), { revalidate: false });
+      }
+      void mutateDocuments().catch((error: unknown) => {
+        console.warn("Document list refresh failed after upload:", error);
+      });
       setMessage("อัปโหลดเอกสารและบันทึก version แล้ว");
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");

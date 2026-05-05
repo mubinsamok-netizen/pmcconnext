@@ -7,6 +7,11 @@ function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
 }
 
+function isSheetsReadQuotaError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Quota exceeded") && message.includes("Read requests");
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
@@ -47,7 +52,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const category = String(formData.get("category") || "other");
     const title = String(formData.get("title") || file.name).trim() || file.name;
     const notes = String(formData.get("notes") || "");
-    const rows = await findAll("Project_Documents", context.siteSheetId);
+    let rows: Awaited<ReturnType<typeof findAll>> = [];
+    try {
+      rows = await findAll("Project_Documents", context.siteSheetId);
+    } catch (error: unknown) {
+      if (!isSheetsReadQuotaError(error)) throw error;
+      console.warn("Project document version lookup skipped because Sheets read quota is temporarily exceeded.");
+    }
+
     const currentVersions = rows
       .filter((row) => (
         row.project_id === context.project.project_id &&
