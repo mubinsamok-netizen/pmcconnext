@@ -6,6 +6,7 @@ import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { getAppRole } from "@/lib/roles";
 
 type Project = {
   project_id: string;
@@ -25,6 +26,7 @@ export default function CreateTeamPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [role, setRole] = useState("Engineer");
   const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>("/api/projects", fetcher);
   const projects = projectsData?.data || [];
 
@@ -34,9 +36,10 @@ export default function CreateTeamPage() {
     setError(null);
 
     const formData = new FormData(event.currentTarget);
+    const roleValue = getAppRole(String(formData.get("role") || role));
     const data = {
       ...Object.fromEntries(formData.entries()),
-      project_ids: formData.getAll("project_ids").map(String),
+      project_ids: roleValue === "Admin" ? [] : formData.getAll("project_ids").map(String),
     };
 
     try {
@@ -100,7 +103,7 @@ export default function CreateTeamPage() {
               </Field>
 
               <Field label="ตำแหน่ง (Role)">
-                <select name="role" className="form-input bg-white">
+                <select name="role" className="form-input bg-white" value={role} onChange={(event) => setRole(event.target.value)}>
                   <option value="Engineer">Engineer</option>
                   <option value="Project Manager">Project Manager</option>
                   <option value="Admin">Admin</option>
@@ -115,7 +118,11 @@ export default function CreateTeamPage() {
               <h3 className="font-semibold text-gray-900">สิทธิ์เข้าถึงไซต์งาน</h3>
               <p className="text-sm text-gray-500">เลือกไซต์ที่พนักงานคนนี้รับผิดชอบ</p>
             </div>
-            {projectsLoading ? (
+            {getAppRole(role) === "Admin" ? (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">
+                Admin เข้าได้ทุกไซต์โดยอัตโนมัติ ไม่ต้องเลือก project_ids
+              </div>
+            ) : projectsLoading ? (
               <div className="text-sm text-gray-500">กำลังโหลดไซต์งาน...</div>
             ) : projects.length === 0 ? (
               <div className="text-sm text-gray-400">ยังไม่มีไซต์งานใน Master Sheet</div>

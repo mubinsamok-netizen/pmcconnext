@@ -4,6 +4,7 @@ import { Edit3, Plus, Users, Mail, Phone, ShieldCheck, MapPin } from "lucide-rea
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { getAppRole } from "@/lib/roles";
 
 type Project = {
   project_id: string;
@@ -70,6 +71,7 @@ export default function TeamPage() {
             <tbody className="divide-y divide-gray-100 text-sm">
               {team.map((member) => {
                 const memberProjects = (member.project_ids || "").split(",").filter(Boolean);
+                const isAdmin = getAppRole(member.role) === "Admin";
 
                 return (
                   <tr key={member.member_id} className="hover:bg-gray-50 transition">
@@ -104,7 +106,12 @@ export default function TeamPage() {
                     </td>
                     <td className="p-4 text-gray-600">
                       <div className="flex flex-wrap gap-1.5">
-                        {memberProjects.length ? memberProjects.map((projectId) => (
+                        {isAdmin ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                            <ShieldCheck size={12} />
+                            ทุกไซต์
+                          </span>
+                        ) : memberProjects.length ? memberProjects.map((projectId) => (
                           <span key={projectId} className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-1 text-xs font-medium text-orange-700">
                             <MapPin size={12} />
                             {projectMap.get(projectId) || projectId}

@@ -6,6 +6,7 @@ import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { getAppRole } from "@/lib/roles";
 
 type Project = {
   project_id: string;
@@ -37,6 +38,7 @@ export default function EditTeamPage() {
   const params = useParams<{ memberId: string }>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [role, setRole] = useState("");
   const { data: teamData, isLoading: teamLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
   const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>("/api/projects", fetcher);
   const projects = projectsData?.data || [];
@@ -56,11 +58,12 @@ export default function EditTeamPage() {
     setError(null);
 
     const formData = new FormData(event.currentTarget);
+    const roleValue = getAppRole(String(formData.get("role") || role || member.role || "Staff"));
     const data = {
       _rowIndex: member._rowIndex,
       member_id: member.member_id,
       ...Object.fromEntries(formData.entries()),
-      project_ids: formData.getAll("project_ids").map(String),
+      project_ids: roleValue === "Admin" ? [] : formData.getAll("project_ids").map(String),
     };
 
     try {
@@ -147,7 +150,12 @@ export default function EditTeamPage() {
               </Field>
 
               <Field label="ตำแหน่ง (Role)">
-                <select name="role" className="form-input bg-white" defaultValue={member.role || "Staff"}>
+                <select
+                  name="role"
+                  className="form-input bg-white"
+                  value={role || member.role || "Staff"}
+                  onChange={(event) => setRole(event.target.value)}
+                >
                   <option value="Engineer">Engineer</option>
                   <option value="Project Manager">Project Manager</option>
                   <option value="Admin">Admin</option>
@@ -162,7 +170,11 @@ export default function EditTeamPage() {
               <h3 className="font-semibold text-gray-900">สิทธิ์เข้าถึงไซต์งาน</h3>
               <p className="text-sm text-gray-500">เลือกไซต์ที่พนักงานคนนี้รับผิดชอบ</p>
             </div>
-            {projectsLoading ? (
+            {getAppRole(role || member.role) === "Admin" ? (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">
+                Admin เข้าได้ทุกไซต์โดยอัตโนมัติ ไม่ต้องเลือก project_ids
+              </div>
+            ) : projectsLoading ? (
               <div className="text-sm text-gray-500">กำลังโหลดไซต์งาน...</div>
             ) : projects.length === 0 ? (
               <div className="text-sm text-gray-400">ยังไม่มีไซต์งานใน Master Sheet</div>

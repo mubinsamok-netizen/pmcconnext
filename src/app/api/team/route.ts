@@ -56,6 +56,7 @@ export async function POST(req: Request) {
       ? project_ids.filter(Boolean).join(",")
       : typeof project_ids === "string" ? project_ids : "";
     const roleValue = getAppRole(String(role || "Staff"));
+    const assignedProjectIds = roleValue === "Admin" ? "" : projectIds;
 
     const memberData = {
       member_id: memberId,
@@ -64,13 +65,13 @@ export async function POST(req: Request) {
       password,
       phone: phone || "",
       role: roleValue,
-      project_ids: projectIds,
+      project_ids: assignedProjectIds,
       active: "TRUE",
     };
 
     const result = await insertMaster("Team", memberData);
 
-    await Promise.all(projectIds.split(",").filter(Boolean).map((projectId) => (
+    await Promise.all(assignedProjectIds.split(",").filter(Boolean).map((projectId) => (
       insertMaster("UserSites", {
         user_site_id: `US-${Date.now().toString().slice(-6)}-${projectId}`,
         email,
@@ -106,6 +107,7 @@ export async function PUT(req: Request) {
       ? project_ids.filter(Boolean).join(",")
       : typeof project_ids === "string" ? project_ids : "";
     const roleValue = getAppRole(String(role || "Staff"));
+    const assignedProjectIds = roleValue === "Admin" ? "" : projectIds;
 
     const existingTeam = await findAllMaster("Team");
     const currentMember = existingTeam.find((user) => String(user._rowIndex) === String(_rowIndex));
@@ -124,7 +126,7 @@ export async function PUT(req: Request) {
       password,
       phone: phone || "",
       role: roleValue,
-      project_ids: projectIds,
+      project_ids: assignedProjectIds,
       active: "TRUE",
     });
 
@@ -139,7 +141,7 @@ export async function PUT(req: Request) {
       await deleteRowMaster("UserSites", rowIndex);
     }
 
-    await Promise.all(projectIds.split(",").filter(Boolean).map((projectId) => (
+    await Promise.all(assignedProjectIds.split(",").filter(Boolean).map((projectId) => (
       insertMaster("UserSites", {
         user_site_id: `US-${Date.now().toString().slice(-6)}-${projectId}`,
         email,
