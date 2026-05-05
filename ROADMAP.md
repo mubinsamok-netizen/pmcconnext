@@ -1,76 +1,79 @@
 # PMC CONNEXT Web Application - Roadmap & Architecture
 
-This document serves as the master guide for any developer or AI assistant working on the PMC CONNEXT web application project.
-
 ## Core Objective
-To build a fully functional Construction Management Web Application for a 20-user team, completely eliminating the need for a traditional backend database. 
-- **Database Layer**: Google Sheets (via Google Sheets API v4)
-- **File Storage**: Google Drive (via Google Drive API v3)
-- **Authentication**: NextAuth (Google OAuth2 - purely for user identity)
-- **Framework**: Next.js App Router (React)
-- **Styling**: Tailwind CSS, Lucide React
+To build a high-performance Construction Management Web Application using Google Sheets as the database and Google Drive for storage.
 
-## Architecture: Next.js + Service Account
-To maintain security and avoid the hassle of Google's OAuth verification screens, we use a **Backend-for-Frontend** pattern:
-1. **Frontend**: The user signs in using their Google Workspace account via NextAuth.
-2. **Backend (API Routes)**: Our Next.js API routes act as the intermediary. 
-3. **Service Account**: The API routes use a Google Cloud Service Account (`credentials.json` loaded via `.env.local`) to authenticate with Google APIs. This allows the server to read/write to the central Google Sheet and Drive without the user needing direct Editor access.
+## Architecture: Master Workspace + Separate Site Data
+The current direction is one web application with a central Master Sheet and separated site-level storage.
 
-## Google Sheets Structure (Target Schema)
-The target Spreadsheet (`GOOGLE_SHEET_ID`) uses the following schema:
-- `Projects`: project_id, name, client, start_date, end_date, status, budget, drive_folder_id, created_at, updated_at
-- `Tasks`: task_id, project_id, name, assignee, start, end, status, percent_done, created_at, updated_at
-- `Daily_Reports`: report_id, project_id, date, weather, workers, work_done, issues, photos_folder_id, created_at, updated_at
-- `Budget`: budget_id, project_id, category, planned, actual, variance, created_at, updated_at
-- `Materials`: material_id, project_id, name, unit, qty_plan, qty_actual, cost, created_at, updated_at
-- `Team`: member_id, name, role, phone, email, project_ids, created_at, updated_at
-- `Issues`: issue_id, project_id, title, priority, status, due_date, owner, created_at, updated_at
+1. **Master Sheet (`GOOGLE_MASTER_SHEET_ID`)**
+   - Stores workspace-level registries: `Projects`, `Team`, `UserSites`, and `Customers`.
+   - `Projects` now stores the project registry plus detail metadata: project type, description, address, province, district, contract number, map link, PM/SE, cover metadata, `site_sheet_id`, `drive_folder_id`, `sales_stage`, and `deposit_status`.
+   - `Customers` stores Sales CRM leads, interest/status, unlimited contact logs JSON, deposit handoff metadata, and soft-close state.
+   - Powers the Workspace dashboard, site list, Sales CRM, and Admin-only team management.
+   - Controls which users can access which sites.
 
-## Google Drive Structure
-When a project is created, the system auto-generates the following folder structure inside the `GOOGLE_DRIVE_ROOT_FOLDER_ID`:
-```text
-/Construction Projects/
-  ├── [{project_id} - {name}] 
-  │   ├── Drawings/
-  │   ├── Photos/
-  │   ├── Contracts/
-  │   ├── Daily Reports/
-  │   └── BOQ & Budget/
-```
+2. **Site Sheet + Site Drive Folder**
+   - Each site/project can point to its own `site_sheet_id` and `drive_folder_id`.
+   - Site modules read and write to the selected site's data source after resolving `project_id`.
+   - If a site sheet is not created yet, the system falls back to the legacy `GOOGLE_SHEET_ID` so development can continue.
+
+3. **Navigation Model**
+   - Workspace/Master sidebar: Dashboard, Sites, Sales CRM, Team.
+   - Site sidebar: Project Overview, Project Details, Daily Reports, Schedule, Payment Requests, RFA, RFI, Defect, Files.
+
+4. **Superseded Direction**
+   - The earlier "1 Site = 1 Web App / Deployment" idea is no longer the primary implementation path.
+   - Keep one app deployment and separate data per site through Google Sheet / Drive references from Master.
 
 ## Implementation Phases
 
-### Phase 1: Foundation & Auth (Completed)
-- [x] Initialize Next.js, Tailwind, NextAuth.
-- [x] Implement the `vehicle-login` UI from the legacy project.
-- [x] Configure Google API `googleapis` service account client.
+### Phase 1: Foundation & Auth ✅
+- [x] Initialize Next.js, Tailwind, Lucide React.
+- [x] Credentials Provider login against Team sheet.
 
-### Phase 2: Core Data Services (Completed)
-- [x] Sheets CRUD Helpers (`src/lib/sheetsCrud.ts`) - `findAll`, `insert`, `update`.
-- [x] Sheets Setup Helper (`src/lib/sheetsSetup.ts`) - To auto-generate tabs and columns.
-- [x] Drive Helper (`src/lib/drive.ts`) - To create hierarchical project folders and handle uploads.
-- [x] LINE Notification Helper (`src/lib/line.ts`).
+### Phase 2: Core Data Services ✅
+- [x] Sheets CRUD & Drive Storage automation.
+- [x] LINE Notification & SWR Caching.
 
-### Phase 3: Project & Team Management (In Progress)
-- [x] Dashboard Overview UI (`/dashboard`).
-- [x] Project List UI (`/dashboard/projects`).
-- [x] Create Project Form & API Route (`/api/projects` -> provisions Drive & Sheets).
-- [ ] Team Module (Manage users, restrict roles).
+### Phase 3: Project & Team Management ✅
+- [x] Dashboard, Project List, and Team Management.
+- [x] Master Sheet registry for Projects, Team, and UserSites.
+- [x] Admin-only Team menu and member edit flow.
+- [x] Multi-step project creation wizard adapted from the older sample app.
+- [x] Project Details page reads and displays Master Sheet project metadata.
+- [x] Manual Google Sheet ID / Google Drive Folder ID entry during project creation.
 
-### Phase 4: Operations Modules (Pending)
-- [ ] Daily Reports (Form with Drive Photo uploads -> `Daily_Reports` Sheet).
-- [ ] Task Tracker (Gantt/Kanban view -> `Tasks` Sheet).
-- [ ] Issues & RFI (Issue log with LINE alerts -> `Issues` Sheet).
-- [ ] Budget & Materials (Finance tracking -> `Budget` & `Materials` Sheets).
+### Phase 4: Operations Modules ✅
+- [x] Daily Reports, Kanban Tasks, Issues/RFI, and Materials Tracking.
+- [x] Site-aware API data resolution by `project_id`.
+- [x] Site workspace shell and placeholder pages for upcoming modules.
 
-### Phase 5: Polish & Optimizations (Pending)
-- [ ] Client-side caching (SWR/React Query) to mask Sheets API latency.
-- [ ] Enhanced Mobile responsiveness for on-site engineers.
-- [ ] PDF generation for Daily Reports before uploading to Drive.
+### Phase 5: Deployment & Production ✅
+- [x] Netlify deployment successful at **pmcconnext.netlify.app**.
 
-## AI Developer Guidelines
-1. **Never use Prisma, Supabase, Firebase, or MongoDB**. Google Sheets IS the database.
-2. **Never expose the Service Account private key**. All Sheets/Drive logic must remain in `src/lib/` and only be imported inside `src/app/api/` routes or Server Components.
-3. **Handle API Rate Limits**: Google Sheets API has quotas. Batch your reads/writes when possible.
-4. **Resilience**: Always assume a Sheet fetch might fail or return empty. Use safe fallbacks in the UI.
-5. **Brand Styling**: The brand tone should be clean and professional (White backgrounds, gray borders, orange accents). Use the `vehicle-login-*` styles as a reference for premium UI blocks.
+### Phase 6: Advanced Construction Features (Next)
+- [x] **Schedule Planner Upgrade**: Task order controls, H1/main tasks, subtasks, quick date edit mode, and print order alignment.
+- [x] **Project Health Phase 1**: Projects list calculates schedule health from each site's Schedule tasks.
+- [x] **Construction Schedule Phase 2 Start**: Tasks now support planned dates; Schedule Plan and Gantt share the same task data.
+- [x] **Schedule Weight Removal**: Removed the visible Weight input so Phase 2 stays simple and planning-by-date focused.
+- [x] **Planning Dashboard Summary**: Site dashboards summarize planning coverage, task count, milestone count, plan date range, next milestone, and open issue signals.
+- [x] **H1 Parent Row Collapse**: H1 rows can expand/collapse child tasks, derive dates and planning coverage from children, and drive matching table/Gantt/print visibility.
+- [x] **Spreadsheet Schedule Template UX**: Schedule Plan table supports table-level `+` creation, H1 full-width section bands, inline child-task creation, and outline numbering.
+- [x] **Professional Schedule Print Polish**: Schedule/Gantt print outputs use consistent metadata, H1 section bands, child-task indentation, and dedicated Gantt print styling.
+- [x] **Site Sheet Provisioning Foundation**: Create or attach a dedicated Google Sheet and Drive folder per site, then save the IDs back to Master.
+- [x] **Sales CRM Project Handoff**: Sales Follow-up tabs, Master `Customers` sheet, unlimited contact history, lead edit/close flow, status filtering, deposited-lead project prefill, and professional print report.
+- [ ] **Phase 2 RFA/RFI/Issue Linking**: Link RFA/RFI/Issues/Defects to `task_id` or WBS category so the project dashboard can show schedule-impacting blockers.
+- [ ] **Phase 2 Baseline Reporting**: Reintroduce planned vs actual variance only after the planning workflow is consistently used in the field.
+- [ ] **Sales CRM Reminder/Owner Upgrade**: Lead owner assignment, next follow-up due date reminders, duplicate phone detection, and export support.
+- [ ] **Payment Requests**: Professional payment request workflow with export/email support.
+- [ ] **RFA**: Approval workflow for material/shop drawing/submittal requests.
+- [ ] **RFI**: Question/answer workflow with status tracking and attachments.
+- [ ] **Defect Management**: Floor-plan based defect tagging with client approval workflow.
+- [ ] **VO System (Variation Orders)**: Approval workflow for work changes with PDF export and Drive backup.
+- [ ] **Professional Branding**: Integration of "Pichayamongkol Construction Co., Ltd." logo and address on all exports.
+
+## Branding
+- **Company**: Pichayamongkol Construction Co., Ltd. (พิชยมงคล คอนสตรัคชั่น จำกัด)
+- **Address**: 276/1 Soi Phuttha Bucha 36, Bang Mot, Thung Khru, Bangkok 10140.
+- **Logo**: Integrated from `logo.png`.

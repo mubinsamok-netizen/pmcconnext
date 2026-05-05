@@ -1,20 +1,18 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   BriefcaseBusiness,
-  Building2,
   HardHat,
   LogIn,
   ShieldCheck,
-  Sparkles,
   User,
   Lock,
   Eye,
-  EyeOff,
-  KeyRound
+  EyeOff
 } from "lucide-react";
 import { signIn } from "next-auth/react";
 
@@ -24,6 +22,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -46,88 +45,85 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="vehicle-login-page">
-      <div className="vehicle-login-bg">
-        <div className="vehicle-login-grid" />
-        <div className="vehicle-login-sweep vehicle-login-sweep-1" />
-        <div className="vehicle-login-sweep vehicle-login-sweep-2" />
-        <div className="vehicle-login-shine" />
-        <div className="vehicle-login-wave" />
-        <div className="vehicle-login-wave" />
-        <div className="vehicle-login-wave" />
-      </div>
+    <main className="pmc-split-login-page">
+      <section className="pmc-split-login-shell" aria-label="PMC CONNEXT login">
+        <aside className="pmc-split-visual">
+          <div className="pmc-split-visual-overlay" />
 
-      <section className="vehicle-login-shell">
-        <aside className="vehicle-login-hero">
-          <div className="vehicle-hero-brand">
-            <span className="vehicle-brand-mark">
-              <Building2 size={30} />
-            </span>
-            <div>
+          <div className="pmc-visual-brand">
+            <span className="pmc-visual-brand-main">PICHAYAMONGKOL</span>
+            <span className="pmc-visual-brand-sub">construction co. ltd</span>
+          </div>
+
+          <div className="pmc-visual-copy">
+            <div className="pmc-system-brand">
+              <span className="pmc-system-overline">Project Command Center</span>
               <strong>PMC CONNEXT</strong>
               <small>Construction Operations Platform</small>
+              <em>Plan · Finance · RFI/RFA · QC · Site Reports</em>
             </div>
           </div>
 
-          <div className="vehicle-hero-copy">
-            <span className="vehicle-hero-pill">
-              <Sparkles size={15} />
-              Construction Management
-            </span>
-            <h1>
-              <span>จัดการไซต์งานก่อสร้าง</span>
-              <span className="vehicle-hero-title-accent">แบบครบวงจร</span>
-            </h1>
-            <p>เข้าสู่ระบบด้วยอีเมลและ PIN ที่ได้รับจากผู้ดูแลระบบ</p>
+          <div className="pmc-visual-modules" aria-label="ระบบหลัก">
+            <article>
+              <ShieldCheck size={20} />
+              <span>Role-based access</span>
+            </article>
+            <article>
+              <HardHat size={20} />
+              <span>Site operations</span>
+            </article>
+            <article>
+              <BriefcaseBusiness size={20} />
+              <span>Project modules</span>
+            </article>
           </div>
 
-          <div className="vehicle-hero-features">
-            <article>
-              <ShieldCheck size={22} />
-              <span>
-                <strong>Role-based UX</strong>
-                <small>เมนูและสิทธิ์เปลี่ยนตามบทบาท</small>
-              </span>
-            </article>
-            <article>
-              <HardHat size={22} />
-              <span>
-                <strong>Site-first workflow</strong>
-                <small>เลือกไซต์ก่อนเข้า Project Detail</small>
-              </span>
-            </article>
-            <article>
-              <BriefcaseBusiness size={22} />
-              <span>
-                <strong>ERP modules</strong>
-                <small>Plan, Finance, RFI/RFA, QC ครบวงจร</small>
-              </span>
-            </article>
+          <div className="pmc-visual-footnote">
+            <span>Secure project access</span>
+            <span>Plan · Finance · RFI/RFA · QC</span>
           </div>
         </aside>
 
-        <section className="vehicle-login-panel">
-          <div className="vehicle-login-card">
-            <div className="vehicle-login-card-head">
-              <span className="vehicle-login-card-mark">
-                <Building2 size={24} />
+        <section className="pmc-auth-panel">
+          <div className="pmc-auth-mobile-bg" />
+
+          <div className="pmc-auth-card">
+            <div className="pmc-auth-logo-block">
+              <span className="pmc-auth-logo-wrap">
+                <Image src="/pichayamongkol-logo-transparent.png" alt="Pichayamongkol Construction" width={320} height={76} priority className="pmc-auth-logo" />
               </span>
-              <div>
-                <h2>ยินดีต้อนรับกลับมา</h2>
-                <p>กรุณาเข้าสู่ระบบเพื่อจัดการโครงการและไซต์งาน</p>
-              </div>
             </div>
 
-            <form className="vehicle-login-form mt-6" onSubmit={handleSubmit}>
+            <button
+              type="button"
+              disabled={googleLoading}
+              onClick={() => {
+                setGoogleLoading(true);
+                signIn("google", { callbackUrl: "/dashboard" });
+              }}
+              className="pmc-google-button"
+            >
+              <span className="pmc-google-mark">G</span>
+              <span>{googleLoading ? "กำลังเปิด Google..." : "เข้าสู่ระบบด้วย Google"}</span>
+            </button>
+
+            <div className="pmc-auth-divider">
+              <span />
+              <p>Email / PIN</p>
+              <span />
+            </div>
+
+            <form className="pmc-login-form" onSubmit={handleSubmit}>
               {error && (
-                <div className="p-3 text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl">
+                <div className="pmc-login-error">
                   {error}
                 </div>
               )}
 
-              <label className="vehicle-login-field">
-                <span>อีเมล</span>
-                <div className="vehicle-input-wrap">
+              <label className="pmc-login-field">
+                <span>อีเมล / รหัสผู้ใช้</span>
+                <div className="pmc-input-wrap">
                   <User size={19} />
                   <input
                     value={email}
@@ -135,14 +131,14 @@ export default function LoginPage() {
                     type="email"
                     required
                     autoComplete="username"
-                    placeholder="กรอกอีเมลของคุณ"
+                    placeholder="อีเมลบริษัทหรืออีเมลที่ได้รับ"
                   />
                 </div>
               </label>
 
-              <label className="vehicle-login-field">
+              <label className="pmc-login-field">
                 <span>PIN / รหัสผ่าน</span>
-                <div className="vehicle-input-wrap">
+                <div className="pmc-input-wrap">
                   <Lock size={19} />
                   <input
                     value={password}
@@ -150,11 +146,11 @@ export default function LoginPage() {
                     type={showPassword ? 'text' : 'password'}
                     required
                     autoComplete="current-password"
-                    placeholder="กรอก PIN หรือรหัสผ่าน"
+                    placeholder="PIN สำหรับลูกค้า/โฟร์แมน หรือรหัสผ่าน"
                   />
                   <button
                     type="button"
-                    className="vehicle-pass-toggle"
+                    className="pmc-pass-toggle"
                     onClick={() => setShowPassword((current) => !current)}
                     title="แสดง/ซ่อน PIN"
                   >
@@ -162,29 +158,31 @@ export default function LoginPage() {
                   </button>
                 </div>
               </label>
-              <div className="flex items-center justify-between mt-1 mb-2">
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <div className="relative flex items-center justify-center w-5 h-5 border-2 border-gray-300 rounded-md group-hover:border-orange-500 transition-colors bg-white">
-                    <input type="checkbox" className="peer absolute opacity-0 w-full h-full cursor-pointer" />
-                    <svg className="w-3.5 h-3.5 text-white peer-checked:text-white peer-checked:block hidden pointer-events-none" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M11.6666 3.5L5.24992 9.91667L2.33325 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                    <div className="absolute inset-0 bg-orange-600 rounded-[4px] opacity-0 peer-checked:opacity-100 transition-opacity -z-10 pointer-events-none"></div>
-                  </div>
-                  <span className="text-sm font-medium text-gray-600 select-none group-hover:text-gray-900 transition-colors">จดจำการเข้าระบบ</span>
+
+              <p className="pmc-auth-helper">ลูกค้าและโฟร์แมนใช้ PIN ที่ได้รับจากผู้ดูแลระบบ</p>
+
+              <div className="pmc-login-options">
+                <label className="pmc-remember">
+                  <input type="checkbox" />
+                  <span>จำอุปกรณ์นี้</span>
                 </label>
-                <a href="#" className="text-sm font-semibold text-orange-600 hover:text-orange-700 transition-colors">ลืมรหัสผ่าน?</a>
+                <a href="#" className="pmc-forgot-link">ขอรีเซ็ตรหัสผ่าน</a>
               </div>
 
               <button
-                className={`vehicle-login-submit ${loading ? 'is-loading' : ''}`}
+                className={`pmc-login-submit ${loading ? 'is-loading' : ''}`}
                 disabled={loading}
               >
-                {loading ? <KeyRound size={17} /> : <LogIn size={17} />}
-                <span>{loading ? 'กำลังตรวจสอบ...' : 'เข้าสู่ระบบ'}</span>
-                <ArrowRight className="vehicle-login-arrow" size={18} />
+                <LogIn size={17} />
+                <span>{loading ? 'กำลังตรวจสอบ...' : 'เข้าสู่แดชบอร์ด'}</span>
+                <ArrowRight size={18} />
               </button>
             </form>
+
+            <div className="pmc-auth-meta">
+              <ShieldCheck size={16} />
+              <span>ระบบจะพาคุณไปยังเมนูตามสิทธิ์การใช้งานหลังเข้าสู่ระบบ</span>
+            </div>
           </div>
         </section>
       </section>

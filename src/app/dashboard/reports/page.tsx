@@ -2,11 +2,15 @@
 
 import { Plus, FileText, Image as ImageIcon, MapPin } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 
 export default function ReportsPage() {
-  const { data, error, isLoading } = useSWR("/api/reports", fetcher);
+  const searchParams = useSearchParams();
+  const projectId = searchParams.get("project_id");
+  const reportKey = projectId ? `/api/reports?project_id=${projectId}` : "/api/reports";
+  const { data, error, isLoading } = useSWR(reportKey, fetcher);
   const reports = data?.data || [];
 
   return (

@@ -1,13 +1,17 @@
-import { findAll } from "@/lib/sheetsCrud";
+import { findAllMaster } from "@/lib/sheetsCrud";
+import { ensureMasterSchema } from "@/lib/sheetsSetup";
 import ReportForm from "./ReportForm";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 export default async function NewReportPage() {
   let projects: any[] = [];
   
   try {
-    projects = await findAll("Projects");
+    await ensureMasterSchema();
+    projects = await findAllMaster("Projects");
   } catch (e) {
     console.error("Failed to fetch projects for report form:", e);
   }

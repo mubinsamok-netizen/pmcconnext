@@ -1,6 +1,9 @@
-import { findAll } from "@/lib/sheetsCrud";
+import { findAllMaster } from "@/lib/sheetsCrud";
+import { ensureMasterSchema } from "@/lib/sheetsSetup";
 import TaskBoard from "./TaskBoard";
 import { CheckSquare } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 export default async function TasksPage() {
   let projects: any[] = [];
@@ -8,9 +11,10 @@ export default async function TasksPage() {
   let error: string | null = null;
 
   try {
+    await ensureMasterSchema();
     const [projRes, teamRes] = await Promise.all([
-      findAll("Projects"),
-      findAll("Team")
+      findAllMaster("Projects"),
+      findAllMaster("Team")
     ]);
     projects = projRes;
     team = teamRes;

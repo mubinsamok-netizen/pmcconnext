@@ -11,6 +11,7 @@ export async function createFolder(folderName: string, parentId: string = DRIVE_
 
     const file = await drive.files.create({
       requestBody: fileMetadata,
+      supportsAllDrives: true,
       fields: "id, name, webViewLink",
     });
 
@@ -27,6 +28,8 @@ export async function findOrCreateFolder(folderName: string, parentId: string = 
     
     const response = await drive.files.list({
       q: query,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
       fields: "files(id, name, webViewLink)",
       spaces: "drive",
     });
@@ -66,6 +69,7 @@ export async function uploadFile(
     const file = await drive.files.create({
       requestBody: fileMetadata,
       media: media,
+      supportsAllDrives: true,
       fields: "id, name, webViewLink, webContentLink",
     });
 
@@ -73,6 +77,63 @@ export async function uploadFile(
   } catch (error) {
     console.error(`Error uploading file ${fileName}:`, error);
     throw error;
+  }
+}
+
+export async function createGoogleDocFromHtml(fileName: string, html: string, parentId: string) {
+  try {
+    const stream = new Readable();
+    stream.push(Buffer.from(html, "utf8"));
+    stream.push(null);
+
+    const file = await drive.files.create({
+      requestBody: {
+        name: fileName,
+        mimeType: "application/vnd.google-apps.document",
+        parents: [parentId],
+      },
+      media: {
+        mimeType: "text/html",
+        body: stream,
+      },
+      supportsAllDrives: true,
+      fields: "id, name, webViewLink",
+    });
+
+    return file.data;
+  } catch (error) {
+    console.error(`Error creating Google Doc ${fileName}:`, error);
+    throw error;
+  }
+}
+
+export async function exportGoogleDocToPdf(fileId: string) {
+  try {
+    const response = await drive.files.export(
+      {
+        fileId,
+        mimeType: "application/pdf",
+      },
+      {
+        responseType: "arraybuffer",
+      }
+    );
+
+    return Buffer.from(response.data as ArrayBuffer);
+  } catch (error) {
+    console.error(`Error exporting Google Doc ${fileId} to PDF:`, error);
+    throw error;
+  }
+}
+
+export async function deleteDriveFile(fileId: string) {
+  try {
+    await drive.files.delete({
+      fileId,
+      supportsAllDrives: true,
+    });
+  } catch (error) {
+    console.warn(`Failed to delete Drive file ${fileId}:`, error);
   }
 }
 

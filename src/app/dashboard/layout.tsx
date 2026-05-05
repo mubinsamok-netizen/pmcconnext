@@ -1,9 +1,17 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { LogOut } from "lucide-react";
-import Link from "next/link";
 import Sidebar from "./Sidebar";
+import DashboardTopBar from "./DashboardTopBar";
+
+type SessionUserWithRole = {
+  name?: string | null;
+  email?: string | null;
+  image?: string | null;
+  role?: string | null;
+  googleSub?: string | null;
+  authProvider?: string | null;
+};
 
 export default async function DashboardLayout({
   children,
@@ -17,18 +25,11 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 text-gray-900">
-      <Sidebar user={session.user} />
+    <div className="dashboard-shell flex h-screen bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100">
+      <Sidebar user={session.user as SessionUserWithRole} />
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6">
-          <h1 className="text-xl font-semibold">Workspace</h1>
-          <Link href="/api/auth/signout" className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900">
-            <LogOut size={16} />
-            ออกจากระบบ
-          </Link>
-        </header>
+        <DashboardTopBar user={session.user as SessionUserWithRole} />
         <main className="flex-1 overflow-auto p-6">
           {children}
         </main>

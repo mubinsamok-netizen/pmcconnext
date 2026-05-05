@@ -1,88 +1,413 @@
 "use client";
 
-import { Plus, Building2, MapPin, Calendar } from "lucide-react";
+import { Building2, Calendar, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
+import { useState } from "react";
 import useSWR from "swr";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
 
-export default function ProjectsPage() {
-  const { data, error, isLoading } = useSWR("/api/projects", fetcher);
-  const projects = data?.data || [];
+type Project = {
+  project_id: string;
+  name: string;
+  client?: string;
+  address?: string;
+  province?: string;
+  se_name?: string;
+  start_date?: string;
+  end_date?: string;
+  status?: string;
+  percent_done?: string;
+  cover_file_id?: string;
+  cover_url?: string;
+  site_sheet_id?: string;
+  drive_folder_id?: string;
+  deposit_status?: string;
+  tasks_count?: string;
+  completed_tasks?: string;
+  overdue_tasks?: string;
+  delay_days?: string;
+  progress_source?: string;
+};
+
+type ProjectsResponse = {
+  success: boolean;
+  data: Project[];
+};
+
+const validStatuses = new Set(["Planning", "In Progress", "On Hold", "Completed", "Cancelled"]);
+const statusStyles = {
+  Planning: {
+    badge: "border-sky-100 bg-sky-50 text-sky-700",
+    progress: "bg-sky-500",
+    visual: "from-sky-50 via-white to-orange-50",
+    icon: "bg-white/90 text-sky-500 ring-sky-100",
+    orb: "bg-sky-200/40",
+    label: "bg-sky-500 text-white",
+  },
+  "In Progress": {
+    badge: "border-orange-100 bg-orange-50 text-orange-700",
+    progress: "bg-orange-500",
+    visual: "from-orange-50 via-white to-amber-50",
+    icon: "bg-white/90 text-orange-500 ring-orange-100",
+    orb: "bg-orange-200/45",
+    label: "bg-orange-500 text-white",
+  },
+  "On Hold": {
+    badge: "border-amber-100 bg-amber-50 text-amber-700",
+    progress: "bg-amber-500",
+    visual: "from-amber-50 via-white to-slate-50",
+    icon: "bg-white/90 text-amber-500 ring-amber-100",
+    orb: "bg-amber-200/45",
+    label: "bg-amber-500 text-white",
+  },
+  Completed: {
+    badge: "border-emerald-100 bg-emerald-50 text-emerald-700",
+    progress: "bg-emerald-500",
+    visual: "from-emerald-50 via-white to-teal-50",
+    icon: "bg-white/90 text-emerald-500 ring-emerald-100",
+    orb: "bg-emerald-200/45",
+    label: "bg-emerald-500 text-white",
+  },
+  Cancelled: {
+    badge: "border-rose-100 bg-rose-50 text-rose-700",
+    progress: "bg-rose-500",
+    visual: "from-rose-50 via-white to-slate-50",
+    icon: "bg-white/90 text-rose-500 ring-rose-100",
+    orb: "bg-rose-200/40",
+    label: "bg-rose-500 text-white",
+  },
+};
+
+function getStatusStyle(status: string) {
+  return statusStyles[status as keyof typeof statusStyles] || statusStyles.Planning;
+}
+
+function getStatus(status?: string) {
+  if (!status || !validStatuses.has(status)) return "Planning";
+  return status;
+}
+
+function getStartDate(startDate?: string) {
+  if (!startDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return "ยังไม่กำหนดวันเริ่ม";
+  return startDate;
+}
+
+function getEndDate(endDate?: string) {
+  if (!endDate || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return "ยังไม่กำหนดวันสิ้นสุด";
+  return endDate;
+}
+
+function getProgress(percentDone?: string) {
+  return `${getProgressValue(percentDone)}%`;
+}
+
+function getProgressValue(percentDone?: string) {
+  const value = Number(percentDone || 0);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function getCount(value?: string) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.floor(numeric));
+}
+
+function extractDriveFileId(url?: string) {
+  if (!url) return "";
+  return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
+}
+
+function getCoverSrc(project: Project) {
+  const fileId = project.cover_file_id || extractDriveFileId(project.cover_url);
+  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
+  return project.cover_url || "";
+}
+
+function ProjectCover({
+  src,
+  alt,
+  name,
+  projectId,
+  status,
+  progress,
+}: {
+  src: string;
+  alt: string;
+  name: string;
+  projectId: string;
+  status: string;
+  progress: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  const style = getStatusStyle(status);
+
+  if (!src || failed) {
+    return (
+      <div className={`absolute inset-0 overflow-hidden bg-gradient-to-br ${style.visual}`}>
+        <div className="absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(15,23,42,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.06)_1px,transparent_1px)] [background-size:28px_28px]" />
+        <div className={`absolute -right-10 -top-12 h-36 w-36 rounded-full blur-2xl ${style.orb}`} />
+        <div className={`absolute -bottom-14 left-8 h-36 w-36 rounded-full blur-2xl ${style.orb}`} />
+        <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-5">
+          <div className="min-w-0 space-y-2">
+            <h3 className="line-clamp-2 text-[23px] font-extrabold leading-tight text-slate-950 transition group-hover:text-orange-600">
+              {name}
+            </h3>
+            <span className={`inline-flex max-w-full rounded-full px-3 py-1 text-xs font-extrabold shadow-sm ${style.label}`}>
+              <span className="truncate">{projectId}</span>
+            </span>
+            <div className="h-1.5 w-24 rounded-full bg-white/80 shadow-sm">
+              <div className={`h-full rounded-full ${style.progress}`} style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+          <div className={`grid h-20 w-20 shrink-0 place-items-center rounded-3xl shadow-sm ring-1 ${style.icon}`}>
+            <Building2 size={44} strokeWidth={1.9} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+    <>
+      <Image
+        src={src}
+        alt={alt}
+        fill
+        unoptimized
+        sizes="(max-width: 1280px) 100vw, 380px"
+        onError={() => setFailed(true)}
+        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+      />
+      <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-gray-950/70 via-gray-950/25 to-transparent" />
+      <div className="absolute bottom-5 left-5 right-5 min-w-0 space-y-2">
+        <h3 className="line-clamp-2 text-[23px] font-extrabold leading-tight text-white drop-shadow-sm">
+          {name}
+        </h3>
+        <span className="inline-flex max-w-full rounded-full bg-white/92 px-3 py-1 text-xs font-extrabold text-slate-700 shadow-sm backdrop-blur">
+          <span className="truncate">{projectId}</span>
+        </span>
+      </div>
+    </>
+  );
+}
+
+function DatePill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-2xl bg-slate-50 px-3.5 py-3 ring-1 ring-slate-100">
+      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
+        <Calendar size={14} />
+        {label}
+      </div>
+      <div className="mt-1 truncate text-[15px] font-extrabold text-slate-800">
+        {value}
+      </div>
+
+    </div>
+  );
+}
+
+function HealthPill({
+  label,
+  value,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  tone?: "slate" | "green" | "red";
+}) {
+  const toneClass = {
+    slate: "bg-slate-50 ring-slate-100 text-slate-800",
+    green: "bg-emerald-50 ring-emerald-100 text-emerald-700",
+    red: "bg-red-50 ring-red-100 text-red-700",
+  }[tone];
+
+  const labelClass = {
+    slate: "text-slate-400",
+    green: "text-emerald-500",
+    red: "text-red-400",
+  }[tone];
+
+  return (
+    <div className={`rounded-2xl px-3.5 py-3 ring-1 ${toneClass}`}>
+      <div className={`text-xs font-bold ${labelClass}`}>{label}</div>
+      <div className="mt-1 text-[15px] font-extrabold">{value}</div>
+    </div>
+  );
+}
+
+export default function ProjectsPage() {
+  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
+  const projects = data?.data || [];
+
+  const handleDelete = async (project: Project) => {
+    setDeletingId(project.project_id);
+    try {
+      const response = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: project.project_id }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถลบไซต์งานได้");
+
+      await mutate();
+      setPendingDeleteProject(null);
+    } catch (deleteError) {
+      alert(deleteError instanceof Error ? deleteError.message : "ไม่สามารถลบไซต์งานได้");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">จัดการไซต์งาน (Projects)</h2>
-          <p className="text-gray-500">จัดการรายชื่อโครงการและไซต์งานทั้งหมด</p>
+          <h2 className="text-2xl font-bold text-gray-900">ไซต์งาน</h2>
+          <p className="text-gray-500">เลือกไซต์เพื่อดูภาพรวม แผนงาน รายงานประจำวัน และไฟล์ของโครงการ</p>
         </div>
-        <Link 
+        <Link
           href="/dashboard/projects/new"
-          className="flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-xl font-medium hover:bg-orange-700 transition"
+          className="flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700"
         >
           <Plus size={20} />
-          สร้างโครงการ
+          สร้างไซต์งาน
         </Link>
       </div>
 
       {error && (
-        <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
-          {error}
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
+          ไม่สามารถดึงข้อมูลไซต์งานจาก Master Sheet ได้
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {projects.map((project: any, i: number) => (
-          <Link href={`/dashboard/projects/${project.project_id}`} key={i} className="group">
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-orange-200 transition overflow-hidden">
-              <div className="h-32 bg-gray-100 relative">
-                {/* Fallback Cover Image */}
-                <div className="absolute inset-0 bg-gradient-to-br from-orange-100 to-orange-50 flex items-center justify-center text-orange-200 group-hover:scale-105 transition duration-500">
-                  <Building2 size={64} />
+      <div className="grid grid-cols-1 gap-3">
+        {projects.map((project) => {
+          const status = getStatus(project.status);
+          const statusStyle = getStatusStyle(status);
+          const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
+          const coverSrc = getCoverSrc(project);
+          const progress = getProgressValue(project.percent_done);
+          const tasksCount = getCount(project.tasks_count);
+          const completedTasks = getCount(project.completed_tasks);
+          const overdueTasks = getCount(project.overdue_tasks);
+          const delayDays = getCount(project.delay_days);
+
+          return (
+            <div
+              key={project.project_id}
+              className="group relative overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-[0_10px_26px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_18px_40px_rgba(15,23,42,0.1)]"
+            >
+              <Link href={`/dashboard/sites/${project.project_id}`} className="grid min-h-[210px] grid-cols-1 xl:grid-cols-[380px_minmax(420px,1fr)_310px]">
+                <div className="relative min-h-[170px] overflow-hidden bg-slate-50 lg:min-h-full">
+                  <ProjectCover
+                    src={coverSrc}
+                    alt={project.name || project.project_id}
+                    name={project.name || project.project_id}
+                    projectId={project.project_id}
+                    status={status}
+                    progress={progress}
+                  />
+                  <div className={`absolute left-4 top-4 rounded-full border px-3.5 py-1.5 text-sm font-extrabold shadow-sm backdrop-blur ${statusStyle.badge}`}>
+                    {status}
+                  </div>
                 </div>
-                <div className="absolute top-4 right-4 px-3 py-1 bg-white/90 backdrop-blur text-sm font-semibold rounded-full text-orange-600">
-                  {project.status || "N/A"}
-                </div>
-              </div>
-              
-              <div className="p-5 space-y-4">
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 group-hover:text-orange-600 transition">
-                    {project.name}
-                  </h3>
-                  <p className="text-sm text-gray-500 flex items-center gap-1 mt-1">
-                    <MapPin size={14} />
-                    {project.client || "ไม่ระบุลูกค้า"}
+
+                <div className="flex min-w-0 flex-col justify-between gap-4 p-5 xl:p-6">
+                  <p className="flex items-start gap-2.5 text-[15px] leading-7 text-slate-600">
+                    <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-slate-100 text-slate-500">
+                      <MapPin size={16} />
+                    </span>
+                    <span className="line-clamp-2">{location}</span>
                   </p>
-                </div>
-                
-                <div className="pt-4 border-t border-gray-100 flex items-center justify-between text-sm text-gray-500">
-                  <div className="flex items-center gap-1">
-                    <Calendar size={14} />
-                    {project.start_date || "N/A"}
+
+                  <div className="grid grid-cols-2 gap-3 xl:max-w-[560px]">
+                    <DatePill label="เริ่ม" value={getStartDate(project.start_date)} />
+                    <DatePill label="สิ้นสุด" value={getEndDate(project.end_date)} />
                   </div>
-                  <div>
-                    {project.percent_done ? `${project.percent_done}%` : "0%"}
+
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[15px] font-medium text-slate-600">
+                    <span>Site Engineer: {project.se_name || "-"}</span>
                   </div>
                 </div>
+
+                <div className="flex min-w-0 flex-col justify-between gap-4 border-t border-slate-100 bg-slate-50/60 p-5 xl:border-l xl:border-t-0 xl:p-6">
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-3 text-[15px] font-bold text-slate-700">
+                      <span className="truncate">ความก้าวหน้าโครงการ</span>
+                      <div className="shrink-0 text-lg font-extrabold text-slate-950">{getProgress(project.percent_done)}</div>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                      <div className={`h-full rounded-full transition-all duration-500 ${statusStyle.progress}`} style={{ width: `${progress}%` }} />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <HealthPill label="งานเสร็จ" value={`${completedTasks}/${tasksCount}`} />
+                    <HealthPill
+                      label="งานล่าช้า"
+                      value={overdueTasks > 0 ? `${overdueTasks} งาน / ${delayDays} วัน` : "ไม่มี"}
+                      tone={overdueTasks > 0 ? "red" : "green"}
+                    />
+                  </div>
+                </div>
+              </Link>
+
+              <div className="absolute right-4 top-4 z-10 flex items-center gap-2 xl:left-[276px] xl:right-auto">
+                <Link
+                  href={`/dashboard/projects/${project.project_id}/edit`}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/95 text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:text-orange-600 hover:ring-orange-200"
+                  aria-label={`แก้ไข ${project.name || project.project_id}`}
+                  title="แก้ไขไซต์งาน"
+                >
+                  <Pencil size={17} />
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteProject(project)}
+                  disabled={deletingId === project.project_id}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/95 text-red-600 shadow-sm ring-1 ring-red-200 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={`ลบ ${project.name || project.project_id}`}
+                  title="ลบไซต์งาน"
+                >
+                  <Trash2 size={17} />
+                </button>
               </div>
             </div>
-          </Link>
-        ))}
+          );
+        })}
 
         {isLoading && (
-          <div className="col-span-full py-12 text-center text-gray-500 bg-white rounded-2xl border border-gray-200 border-dashed flex items-center justify-center gap-2">
-            <div className="animate-spin text-xl">↻</div>
-            กำลังโหลดข้อมูล...
+          <div className="col-span-full flex items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
+            <span>กำลังโหลดไซต์งาน...</span>
           </div>
         )}
 
         {projects.length === 0 && !isLoading && !error && (
-          <div className="col-span-full py-12 text-center text-gray-500 bg-white rounded-2xl border border-gray-200 border-dashed">
-            ยังไม่มีโครงการในระบบ
+          <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
+            ยังไม่มีไซต์งานใน Master Sheet
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteProject)}
+        title="ลบไซต์งาน?"
+        message={`ต้องการลบ "${pendingDeleteProject?.name || pendingDeleteProject?.project_id || "-"}" ออกจากรายการใช่ไหม`}
+        confirmLabel="ลบ"
+        cancelLabel="ยกเลิก"
+        loading={Boolean(pendingDeleteProject && deletingId === pendingDeleteProject.project_id)}
+        onConfirm={() => {
+          if (pendingDeleteProject) void handleDelete(pendingDeleteProject);
+        }}
+        onCancel={() => setPendingDeleteProject(null)}
+      />
     </div>
   );
 }

@@ -4,7 +4,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Save, UploadCloud, X } from "lucide-react";
 
-export default function ReportForm({ projects }: { projects: any[] }) {
+type ProjectOption = {
+  project_id: string;
+  name?: string;
+  drive_folder_id?: string;
+};
+
+export default function ReportForm({ projects }: { projects: ProjectOption[] }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,8 +58,8 @@ export default function ReportForm({ projects }: { projects: any[] }) {
 
       router.push("/dashboard/reports");
       router.refresh();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to submit report");
       setLoading(false);
     }
   };
@@ -76,7 +82,7 @@ export default function ReportForm({ projects }: { projects: any[] }) {
               className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none transition bg-white"
             >
               <option value="">-- เลือกโครงการ --</option>
-              {projects.map((p: any, i: number) => (
+              {projects.map((p, i) => (
                 <option key={i} value={p.project_id}>
                   {p.project_id} - {p.name}
                 </option>
@@ -143,20 +149,22 @@ export default function ReportForm({ projects }: { projects: any[] }) {
 
           <div className="space-y-2 col-span-1 md:col-span-2">
             <label className="text-sm font-semibold text-gray-700">แนบรูปถ่ายหน้างาน</label>
-            <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:bg-gray-50 transition relative">
+            <label className="relative block cursor-pointer rounded-xl border-2 border-dashed border-gray-300 p-6 text-center transition hover:bg-gray-50">
               <input 
                 type="file" 
                 multiple 
                 accept="image/*"
                 onChange={handleFileChange}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                className="sr-only"
               />
               <div className="flex flex-col items-center gap-2 text-gray-500">
-                <UploadCloud size={32} className="text-gray-400" />
-                <p><span className="font-semibold text-orange-600">คลิกที่นี่</span> หรือลากไฟล์มาวาง</p>
+                <span className="attach-file-button">
+                  <UploadCloud />
+                  แนบรูป
+                </span>
                 <p className="text-xs">รองรับไฟล์ JPG, PNG, WEBP</p>
               </div>
-            </div>
+            </label>
             
             {files.length > 0 && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">

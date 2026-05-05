@@ -1,59 +1,97 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { 
-  Building2, 
-  LayoutDashboard, 
-  HardHat, 
-  FileText, 
-  Settings, 
-  LogOut, 
-  CheckSquare,
-  AlertTriangle,
+import {
+  Banknote,
+  Bug,
+  Building2,
+  CalendarClock,
   ChevronLeft,
   ChevronRight,
+  FileQuestion,
+  FileText,
   FolderKanban,
+  Images,
+  Info,
+  LayoutDashboard,
+  ListChecks,
+  Megaphone,
+  Presentation,
   Users,
-  Package
 } from "lucide-react";
-import Image from "next/image";
+import type { ComponentType } from "react";
+import { getAppRole } from "@/lib/roles";
 
-export default function Sidebar({ user }: { user: any }) {
+type SidebarUser = {
+  name?: string | null;
+  email?: string | null;
+  image?: string | null;
+  role?: string | null;
+  googleSub?: string | null;
+  authProvider?: string | null;
+};
+
+const workspaceNavItems = [
+  { name: "ไซต์งาน", href: "/dashboard/projects", icon: FolderKanban },
+  { name: "Sales CRM", href: "/dashboard/sales-crm", icon: Presentation },
+];
+
+const siteNavItems = [
+  { name: "ภาพรวมโครงการ", segment: "", icon: LayoutDashboard, exact: true },
+  { name: "รายละเอียดโครงการ", segment: "details", icon: Info },
+  { name: "รายละเอียดงาน/ประกัน", segment: "lifecycle", icon: CalendarClock },
+  { name: "รายงานประจำวัน", segment: "reports", icon: FileText },
+  { name: "แผนงาน", segment: "schedule", icon: ListChecks },
+  { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
+  { name: "ระบบเบิกเงิน", segment: "payments", icon: Banknote },
+  { name: "RFA", segment: "rfa", icon: FileQuestion },
+  { name: "RFI", segment: "rfi", icon: Megaphone },
+  { name: "Defect", segment: "defects", icon: Bug },
+  { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },
+];
+
+export default function Sidebar({ user }: { user?: SidebarUser }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
     const saved = localStorage.getItem("sidebar_collapsed");
-    if (saved) {
-      setCollapsed(saved === "true");
-    }
+    const frame = window.requestAnimationFrame(() => {
+      if (saved) {
+        setCollapsed(saved === "true");
+      }
+      setMounted(true);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  const siteId = useMemo(() => {
+    const segments = pathname.split("/").filter(Boolean);
+    if (segments[0] === "dashboard" && segments[1] === "sites" && segments[2]) {
+      return decodeURIComponent(segments[2]);
+    }
+    return "";
+  }, [pathname]);
+
+  const isSiteMode = Boolean(siteId);
+  const isAdmin = getAppRole(user?.role) === "Admin";
+
   const toggleCollapse = () => {
-    const newVal = !collapsed;
-    setCollapsed(newVal);
-    localStorage.setItem("sidebar_collapsed", String(newVal));
+    const nextValue = !collapsed;
+    setCollapsed(nextValue);
+    localStorage.setItem("sidebar_collapsed", String(nextValue));
   };
 
-  const navItems = [
-    { name: "แดชบอร์ด", href: "/dashboard", icon: <LayoutDashboard size={20} />, exact: true },
-    { name: "โครงการ", href: "/dashboard/projects", icon: <FolderKanban size={20} /> },
-    { name: "รายงานประจำวัน", href: "/dashboard/reports", icon: <FileText size={20} /> },
-    { name: "วัสดุ & งบประมาณ", href: "/dashboard/materials", icon: <Package size={20} /> },
-    { name: "ติดตามงาน", href: "/dashboard/tasks", icon: <CheckSquare size={20} /> },
-    { name: "แจ้งปัญหา (Issues)", href: "/dashboard/issues", icon: <AlertTriangle size={20} /> },
-    { name: "จัดการพนักงาน", href: "/dashboard/team", icon: <Users size={20} /> },
-  ];
-
-  if (!mounted) return null; // Prevent hydration mismatch
+  if (!mounted) return null;
 
   return (
-    <aside 
-      className={`bg-white border-r border-gray-200 flex flex-col hidden md:flex transition-all duration-300 ease-in-out relative ${
+    <aside
+      className={`bg-white border-r border-gray-200 flex-col hidden md:flex transition-all duration-300 ease-in-out relative ${
         collapsed ? "w-[76px]" : "w-[280px]"
       }`}
     >
@@ -63,8 +101,9 @@ export default function Sidebar({ user }: { user: any }) {
             <Image src="/logo.png" alt="PMC CONNEXT" width={160} height={32} className="object-contain" priority />
           </div>
         )}
-        
-        <button 
+
+        <button
+          type="button"
           onClick={toggleCollapse}
           className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
         >
@@ -73,46 +112,99 @@ export default function Sidebar({ user }: { user: any }) {
       </div>
 
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-        {navItems.map((item) => {
-          const isActive = item.exact 
-            ? pathname === item.href 
-            : pathname.startsWith(item.href);
-          
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              title={collapsed ? item.name : undefined}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition-all duration-200 ${
-                isActive 
-                  ? "bg-orange-50 text-orange-600 shadow-sm" 
-                  : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"
-              } ${collapsed ? "justify-center" : ""}`}
-            >
-              <span className={`${isActive ? "text-orange-600" : "text-gray-400"}`}>
-                {item.icon}
-              </span>
-              {!collapsed && <span>{item.name}</span>}
-            </Link>
-          );
-        })}
+        {!collapsed && !isSiteMode && (
+          <div className="px-3 pb-2 pt-1">
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-400">
+              Master Workspace
+            </div>
+          </div>
+        )}
+
+        {isSiteMode ? (
+          <>
+            {siteNavItems.map((item) => {
+              const Icon = item.icon;
+              const href = item.segment ? `/dashboard/sites/${siteId}/${item.segment}` : `/dashboard/sites/${siteId}`;
+              const isActive = item.exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
+
+              return <SidebarLink key={item.name} href={href} name={item.name} Icon={Icon} active={isActive} collapsed={collapsed} />;
+            })}
+          </>
+        ) : (
+          <>
+            {workspaceNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return <SidebarLink key={item.href} href={item.href} name={item.name} Icon={Icon} active={isActive} collapsed={collapsed} />;
+            })}
+            {isAdmin && <SidebarLink href="/dashboard/team" name="จัดการพนักงาน" Icon={Users} active={pathname.startsWith("/dashboard/team")} collapsed={collapsed} />}
+          </>
+        )}
       </nav>
 
-      <div className={`p-4 border-t border-gray-100 flex items-center ${collapsed ? "justify-center" : "justify-between"}`}>
-        <div className="flex items-center gap-3">
-          <img
-            src={user?.image || "https://ui-avatars.com/api/?name=" + user?.name}
-            alt="Avatar"
-            className="w-9 h-9 rounded-full border border-gray-200"
-          />
-          {!collapsed && (
-            <div className="flex flex-col min-w-0">
-              <span className="text-sm font-semibold text-gray-900 truncate">{user?.name}</span>
-              <span className="text-xs text-gray-500 truncate w-32">{user?.email}</span>
+      {isSiteMode && (
+        <div className="border-t border-gray-100 bg-white p-3">
+          {collapsed ? (
+            <Link
+              href={`/dashboard/sites/${siteId}`}
+              className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-orange-600 text-white shadow-sm"
+              title={siteId}
+            >
+              <Building2 size={18} />
+            </Link>
+          ) : (
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-2.5">
+              <Link href={`/dashboard/sites/${siteId}`} className="flex items-center gap-3 rounded-xl bg-white px-3 py-2.5 shadow-sm transition hover:shadow">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-orange-600 text-white">
+                  <Building2 size={17} />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-extrabold uppercase tracking-wide text-gray-400">Current Site</div>
+                  <div className="truncate text-sm font-extrabold text-gray-900">{siteId}</div>
+                </div>
+              </Link>
+              <Link href="/dashboard/projects" className="mt-2 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-gray-500 transition hover:bg-white hover:text-orange-600">
+                <ChevronLeft size={14} />
+                กลับไปไซต์งานทั้งหมด
+              </Link>
             </div>
           )}
         </div>
-      </div>
+      )}
+
     </aside>
+  );
+}
+
+function SidebarLink({
+  href,
+  name,
+  Icon,
+  active,
+  collapsed,
+}: {
+  href: string;
+  name: string;
+  Icon: ComponentType<{ size?: number; className?: string }>;
+  active: boolean;
+  collapsed: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      title={collapsed ? name : undefined}
+      className={`group relative flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium transition-all duration-200 ${
+        active ? "bg-orange-50 text-orange-600 shadow-sm" : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+      } ${collapsed ? "justify-center" : ""}`}
+    >
+      {active && <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-orange-600" />}
+      <Icon size={20} className={active ? "text-orange-600" : "text-gray-400"} />
+      {!collapsed && <span>{name}</span>}
+      {collapsed && (
+        <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-lg bg-gray-900 px-2.5 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+          {name}
+        </span>
+      )}
+    </Link>
   );
 }

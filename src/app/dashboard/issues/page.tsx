@@ -2,6 +2,7 @@
 
 import { Plus, AlertTriangle, CheckCircle2, Clock, CircleDot } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import { useState } from "react";
@@ -19,13 +20,14 @@ const STATUS_ICONS: Record<string, any> = {
 };
 
 export default function IssuesPage() {
-  const { data: issuesData, error, isLoading, mutate } = useSWR("/api/issues", fetcher);
+  const searchParams = useSearchParams();
+  const [selectedProject, setSelectedProject] = useState(searchParams.get("project_id") || "");
+  const issueKey = selectedProject ? `/api/issues?project_id=${selectedProject}` : "/api/issues";
+  const { data: issuesData, error, isLoading, mutate } = useSWR(issueKey, fetcher);
   const { data: projectsData } = useSWR("/api/projects", fetcher);
   
   const issues = issuesData?.data || [];
   const projects = projectsData?.data || [];
-
-  const [selectedProject, setSelectedProject] = useState("");
 
   const filteredIssues = selectedProject 
     ? issues.filter((i: any) => i.project_id === selectedProject) 

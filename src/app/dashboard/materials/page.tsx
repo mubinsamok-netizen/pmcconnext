@@ -2,6 +2,7 @@
 
 import { Plus, Package, Truck, Clock, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import { useState } from "react";
@@ -19,13 +20,14 @@ const STATUS_ICONS: Record<string, any> = {
 };
 
 export default function MaterialsPage() {
-  const { data: materialsData, error, isLoading } = useSWR("/api/materials", fetcher);
+  const searchParams = useSearchParams();
+  const [selectedProject, setSelectedProject] = useState(searchParams.get("project_id") || "");
+  const materialKey = selectedProject ? `/api/materials?project_id=${selectedProject}` : "/api/materials";
+  const { data: materialsData, error, isLoading } = useSWR(materialKey, fetcher);
   const { data: projectsData } = useSWR("/api/projects", fetcher);
   
   const materials = materialsData?.data || [];
   const projects = projectsData?.data || [];
-
-  const [selectedProject, setSelectedProject] = useState("");
 
   const filteredMaterials = selectedProject 
     ? materials.filter((m: any) => m.project_id === selectedProject) 

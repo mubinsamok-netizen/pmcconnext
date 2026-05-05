@@ -75,6 +75,7 @@ export default function TaskBoard({ projects, team }: { projects: any[], team: a
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           _rowIndex: draggedTask._rowIndex,
+          project_id: draggedTask.project_id,
           status
         })
       });
