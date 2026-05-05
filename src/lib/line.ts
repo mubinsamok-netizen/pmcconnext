@@ -5,8 +5,7 @@ type LineMessage = Record<string, unknown>;
 
 export async function sendLineMessages(messages: LineMessage[], to: string = LINE_GROUP_ID) {
   if (!LINE_CHANNEL_ACCESS_TOKEN) {
-    console.warn("LINE_CHANNEL_ACCESS_TOKEN is not set. Skipping notification.");
-    return { skipped: true };
+    throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
   }
 
   if (!to) {
@@ -26,9 +25,10 @@ export async function sendLineMessages(messages: LineMessage[], to: string = LIN
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
+    const errorData = await response.json().catch(() => null);
     console.error("LINE API Error:", errorData);
-    throw new Error(`Failed to send LINE message: ${response.statusText}`);
+    const detail = errorData ? ` ${JSON.stringify(errorData)}` : "";
+    throw new Error(`Failed to send LINE message: ${response.status} ${response.statusText}.${detail}`);
   }
 
   return response.json();

@@ -195,6 +195,11 @@ export function DailyReportsWorkspace({
                     <Info label="LINE" value={lineStatusText(latestReport.line_status)} />
                     <Info label="ผู้จัดทำ" value={String(latestReport.prepared_by_name || "-")} />
                   </div>
+                  {latestReport.line_status === "failed" && latestReport.line_error && (
+                    <div className="rounded-xl border border-red-100 bg-red-50 p-3 text-xs font-medium text-red-700">
+                      LINE error: {String(latestReport.line_error)}
+                    </div>
+                  )}
                   {latestReport.pdf_url && (
                     <a href={String(latestReport.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700">
                       <Printer size={16} />
@@ -229,7 +234,12 @@ export function DailyReportsWorkspace({
                         <td className="px-4 py-3">{formatDate(report.date)}</td>
                         <td className="px-4 py-3 font-semibold text-gray-950">{report.document_no || report.report_id}</td>
                         <td className="px-4 py-3">{report.weather || "-"}</td>
-                        <td className="px-4 py-3">{lineStatusText(report.line_status)}</td>
+                        <td className="px-4 py-3">
+                          <div>{lineStatusText(report.line_status)}</div>
+                          {report.line_status === "failed" && report.line_error && (
+                            <div className="mt-1 max-w-xs text-xs text-red-600">{String(report.line_error)}</div>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-right">
                           {report.pdf_url ? (
                             <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>

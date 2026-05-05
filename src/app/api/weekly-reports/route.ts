@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { findOrCreateFolder } from "@/lib/drive";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
-import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { createPdfReportFile } from "@/lib/reportPdf";
 import { findAll, insert } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
@@ -188,8 +188,7 @@ async function buildWeeklyPayload({
 }
 
 async function createPdf(html: string, documentNo: string, pdfFolderId: string) {
-  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
-  return await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolderId);
+  return await createPdfReportFile({ html, documentNo, pdfFolderId });
 }
 
 export async function GET(req: Request) {
