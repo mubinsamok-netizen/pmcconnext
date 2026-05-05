@@ -4,6 +4,7 @@
 
 [build.environment]
   NEXTAUTH_URL = "https://pmcconnext.netlify.app"
+  NODE_VERSION = "22"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

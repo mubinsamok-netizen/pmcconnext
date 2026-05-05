@@ -9,6 +9,14 @@ const execFileAsync = promisify(execFile);
 
 let kanitCssPromise: Promise<string> | null = null;
 
+function shouldUseServerlessChromium() {
+  return (
+    process.env.PDF_USE_PUPPETEER === "true" ||
+    Boolean(process.env.NETLIFY) ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+  );
+}
+
 function getChromePath() {
   const configuredPath = process.env.CHROME_PATH || process.env.PDF_CHROME_PATH;
   if (configuredPath) return configuredPath;
@@ -118,14 +126,58 @@ async function prepareHtml(html: string) {
   return `${printCss}${html}`;
 }
 
+async function renderWithPuppeteer(html: string) {
+  const [{ default: chromium }, puppeteer] = await Promise.all([
+    import("@sparticuz/chromium"),
+    import("puppeteer-core"),
+  ]);
+
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+
+  try {
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        "--disable-web-security",
+        "--font-render-hinting=medium",
+      ],
+      defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 1 },
+      executablePath: await chromium.executablePath(),
+      headless: true,
+    });
+
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
+    await page.evaluate(() => document.fonts.ready);
+    const pdf = await page.pdf({
+      printBackground: true,
+      preferCSSPageSize: true,
+      tagged: true,
+      timeout: 60000,
+    });
+
+    return Buffer.from(pdf);
+  } finally {
+    await browser?.close().catch((error) => {
+      console.warn("Failed to close PDF browser:", error);
+    });
+  }
+}
+
 export async function renderHtmlToPdfBuffer(html: string, fileName = "report") {
+  const preparedHtml = await prepareHtml(html);
+
+  if (shouldUseServerlessChromium()) {
+    return await renderWithPuppeteer(preparedHtml);
+  }
+
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pmc-report-"));
   const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "report";
   const htmlPath = path.join(tempDir, `${safeFileName}.html`);
   const pdfPath = path.join(tempDir, `${safeFileName}.pdf`);
 
   try {
-    await fs.writeFile(htmlPath, await prepareHtml(html), "utf8");
+    await fs.writeFile(htmlPath, preparedHtml, "utf8");
     const chromePath = await resolveChromePath();
     const htmlUrl = pathToFileURL(htmlPath).href;
 
