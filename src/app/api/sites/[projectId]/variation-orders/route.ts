@@ -124,6 +124,31 @@ async function uploadEvidenceFile(context: RouteContext, voId: string, file?: Up
   };
 }
 
+async function uploadPaymentEvidenceFile(context: RouteContext, voId: string, file?: UploadPayload) {
+  if (!file?.dataUrl || !file.name) return null;
+  const decoded = decodeDataUrl(file.dataUrl);
+  if (!decoded) return null;
+  try {
+    const voFolderId = await getVoDriveFolder(context, voId);
+    if (!voFolderId) return null;
+    const paymentsFolder = await findOrCreateFolder("Payment Evidence", voFolderId);
+    const uploaded = await uploadFile(
+      `${Date.now()}-${safeFolderName(file.name)}`,
+      file.type || decoded.mimeType || "application/octet-stream",
+      decoded.buffer,
+      paymentsFolder.id || voFolderId
+    );
+    return {
+      file_id: uploaded.id || "",
+      file_name: uploaded.name || file.name,
+      file_url: uploaded.webViewLink || uploaded.webContentLink || "",
+    };
+  } catch (error) {
+    console.warn(`Failed to upload VO payment evidence ${file.name}:`, error);
+    return null;
+  }
+}
+
 async function uploadSupportingDocumentFiles(context: RouteContext, voId: string, files: UploadPayload[]) {
   const uploads = files.filter((file) => file?.dataUrl && file.name);
   if (uploads.length === 0) return [];
@@ -762,6 +787,11 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     return NextResponse.json({ error: "บันทึกชำระได้หลังวางบิลแล้วเท่านั้น" }, { status: 400 });
   }
 
+  const uploadedEvidence = await uploadPaymentEvidenceFile(context, voId, body.payment_evidence_upload as UploadPayload | undefined);
+  const evidenceFileValue = uploadedEvidence
+    ? [uploadedEvidence.file_name, uploadedEvidence.file_url].filter(Boolean).join(" | ")
+    : String(body.evidence_file || "");
+  const paymentRef = String(body.payment_ref || uploadedEvidence?.file_name || "");
   const cumulativePaid = numberValue(vo.amount_paid) + amountPaid;
   const balance = Math.max(0, numberValue(vo.amount_due || vo.grand_total) - cumulativePaid);
   const nextStatus = balance <= 0 ? "paid" : "partial_payment";
@@ -774,8 +804,8 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     paid_date: paidDate,
     amount_paid: amountPaid,
     payment_method: String(body.payment_method || "bank_transfer"),
-    payment_ref: String(body.payment_ref || ""),
-    evidence_file: String(body.evidence_file || ""),
+    payment_ref: paymentRef,
+    evidence_file: evidenceFileValue,
     recorded_by_name: context.session.user.name || "",
     recorded_by_email: context.session.user.email || "",
   }, context.siteSheetId);
@@ -807,7 +837,7 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     paid_date: paidDate,
     amount_paid: amountPaid,
     payment_method: String(body.payment_method || "bank_transfer"),
-    payment_ref: String(body.payment_ref || ""),
+    payment_ref: paymentRef,
   };
   const receiptHtml = buildReceiptHtml({
     vo: nextVo,

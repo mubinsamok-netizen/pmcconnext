@@ -180,6 +180,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const [plan, setPlan] = useState(emptyPlan);
   const [invoice, setInvoice] = useState({ invoice_no: "", invoice_date: todayBangkok(), due_days: "7" });
   const [payment, setPayment] = useState({ receipt_no: "", paid_date: todayBangkok(), amount_paid: "", payment_method: "bank_transfer", payment_ref: "", evidence_file: "" });
+  const [paymentEvidenceFile, setPaymentEvidenceFile] = useState<File | null>(null);
   const [reportMonth, setReportMonth] = useState(todayBangkok().slice(0, 7));
   const [loadingAction, setLoadingAction] = useState("");
   const [message, setMessage] = useState("");
@@ -311,11 +312,21 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
 
   const recordPayment = async () => {
     if (!selectedVo?.vo_id) return;
+    if (!paymentEvidenceFile) {
+      setMessage("");
+      setError("กรุณาแนบหลักฐานการชำระเงิน");
+      return;
+    }
+    const upload = await fileToUploadPayload(paymentEvidenceFile);
     await postAction("record_payment", {
       vo_id: selectedVo.vo_id,
       ...payment,
       receipt_no: payment.receipt_no || `RCP-${selectedVo.vo_id}`,
+      payment_ref: payment.payment_ref || paymentEvidenceFile.name,
+      evidence_file: payment.evidence_file || paymentEvidenceFile.name,
+      payment_evidence_upload: upload,
     });
+    setPaymentEvidenceFile(null);
   };
 
   const runOverdueCheck = async () => {
@@ -441,6 +452,8 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               setInvoice={setInvoice}
               payment={payment}
               setPayment={setPayment}
+              paymentEvidenceFile={paymentEvidenceFile}
+              setPaymentEvidenceFile={setPaymentEvidenceFile}
               onCreateInvoice={createInvoice}
               onRecordPayment={recordPayment}
               onOverdueCheck={runOverdueCheck}
@@ -983,6 +996,8 @@ function FinanceSection({
   setInvoice,
   payment,
   setPayment,
+  paymentEvidenceFile,
+  setPaymentEvidenceFile,
   onCreateInvoice,
   onRecordPayment,
   onOverdueCheck,
@@ -998,6 +1013,8 @@ function FinanceSection({
   setInvoice: (next: { invoice_no: string; invoice_date: string; due_days: string }) => void;
   payment: { receipt_no: string; paid_date: string; amount_paid: string; payment_method: string; payment_ref: string; evidence_file: string };
   setPayment: (next: { receipt_no: string; paid_date: string; amount_paid: string; payment_method: string; payment_ref: string; evidence_file: string }) => void;
+  paymentEvidenceFile: File | null;
+  setPaymentEvidenceFile: (file: File | null) => void;
   onCreateInvoice: () => void;
   onRecordPayment: () => void;
   onOverdueCheck: () => void;
@@ -1039,9 +1056,6 @@ function FinanceSection({
               <Field label="วันที่วางบิล">
                 <input type="date" value={invoice.invoice_date} onChange={(event) => setInvoice({ ...invoice, invoice_date: event.target.value })} className="form-input" />
               </Field>
-              <Field label="เครดิต (วันทำการ)">
-                <input value={invoice.due_days} onChange={(event) => setInvoice({ ...invoice, due_days: event.target.value })} className="form-input" />
-              </Field>
               <button type="button" onClick={onCreateInvoice} disabled={loadingAction === "create_invoice" || vo.status !== "approved" || !canCreateInvoice} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {loadingAction === "create_invoice" ? <Loader2 size={17} className="animate-spin" /> : <Banknote size={17} />}
                 ออก Invoice
@@ -1057,8 +1071,35 @@ function FinanceSection({
               <Field label="วันที่ชำระ">
                 <input type="date" value={payment.paid_date} onChange={(event) => setPayment({ ...payment, paid_date: event.target.value })} className="form-input" />
               </Field>
-              <Field label="เลขอ้างอิง/สลิป">
-                <input value={payment.payment_ref} onChange={(event) => setPayment({ ...payment, payment_ref: event.target.value })} className="form-input" />
+              <Field label="แนบหลักฐานการชำระเงิน">
+                <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4">
+                  <label className="flex cursor-pointer items-center gap-3 text-sm font-bold text-gray-700">
+                    <Paperclip size={18} className="text-orange-600" />
+                    <span className="min-w-0 flex-1 truncate">{paymentEvidenceFile ? paymentEvidenceFile.name : "เลือกไฟล์สลิป/หลักฐาน"}</span>
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="sr-only"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] || null;
+                        setPaymentEvidenceFile(file);
+                        setPayment({
+                          ...payment,
+                          payment_ref: file?.name || "",
+                          evidence_file: file?.name || "",
+                        });
+                      }}
+                    />
+                  </label>
+                  {paymentEvidenceFile && (
+                    <button type="button" onClick={() => {
+                      setPaymentEvidenceFile(null);
+                      setPayment({ ...payment, payment_ref: "", evidence_file: "" });
+                    }} className="mt-3 text-xs font-bold text-red-600">
+                      ลบไฟล์แนบ
+                    </button>
+                  )}
+                </div>
               </Field>
               <button type="button" onClick={onRecordPayment} disabled={loadingAction === "record_payment" || !canRecordPayment || !["billed", "partial_payment", "overdue"].includes(String(vo.status || ""))} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 font-bold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50">
                 {loadingAction === "record_payment" ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}
