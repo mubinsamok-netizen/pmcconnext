@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
-import { Bell, CheckCircle2, Database, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, Bell, CheckCircle2, Database, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
@@ -18,6 +19,20 @@ type ProjectMeta = {
 };
 
 type WorkspaceTab = "lifecycle" | "documents" | "warranty";
+
+type StatusDestination =
+  | {
+      kind: "tab";
+      tab: WorkspaceTab;
+      label: string;
+      description: string;
+    }
+  | {
+      kind: "href";
+      href: string;
+      label: string;
+      description: string;
+    };
 
 type LifecycleForm = Record<string, string> & {
   current_status: string;
@@ -144,6 +159,80 @@ function normalizeDateFields<T extends Record<string, string>>(data: T, fields: 
   return next as T;
 }
 
+function getStatusDestination(status: string, projectId: string): StatusDestination {
+  const siteBase = `/dashboard/sites/${encodeURIComponent(projectId)}`;
+  const destinations: Record<string, StatusDestination> = {
+    design: {
+      kind: "tab",
+      tab: "lifecycle",
+      label: "กรอกวันออกแบบ",
+      description: "บันทึกวันเริ่มและวันออกแบบเสร็จในรายละเอียดงาน",
+    },
+    contract: {
+      kind: "tab",
+      tab: "documents",
+      label: "ไปที่เอกสารสัญญา",
+      description: "แนบสัญญาและเก็บ version history ของไฟล์ PDF",
+    },
+    construction_drawing: {
+      kind: "tab",
+      tab: "documents",
+      label: "แนบแบบก่อสร้าง",
+      description: "อัปโหลดแบบก่อสร้างและดูประวัติเอกสาร",
+    },
+    permit_submitted: {
+      kind: "tab",
+      tab: "documents",
+      label: "ไปที่เอกสารใบอนุญาต",
+      description: "แนบเอกสารยื่นขออนุญาตและติดตามกำหนด 45 วัน",
+    },
+    permit_issued: {
+      kind: "tab",
+      tab: "documents",
+      label: "แนบใบอนุญาต",
+      description: "เก็บใบอนุญาตก่อสร้างและวันหมดอายุ",
+    },
+    temporary_electric: {
+      kind: "tab",
+      tab: "lifecycle",
+      label: "กรอกวันไฟฟ้าชั่วคราว",
+      description: "บันทึกวันติดตั้งและวันหมดอายุเพื่อสร้างแจ้งเตือน",
+    },
+    temporary_water: {
+      kind: "tab",
+      tab: "lifecycle",
+      label: "กรอกวันประปาชั่วคราว",
+      description: "บันทึกวันติดตั้งและวันหมดอายุเพื่อสร้างแจ้งเตือน",
+    },
+    waiting_demolition: {
+      kind: "href",
+      href: `${siteBase}/schedule`,
+      label: "ไปที่แผนงานรื้อถอน",
+      description: "เปิดหน้าแผนงานเพื่อจัดลำดับงานรื้อถอน",
+    },
+    demolition_done: {
+      kind: "href",
+      href: `${siteBase}/schedule`,
+      label: "ไปที่แผนงานก่อสร้าง",
+      description: "ตรวจงานถัดไปหลังรื้อถอนเสร็จ",
+    },
+    construction: {
+      kind: "href",
+      href: `${siteBase}/schedule`,
+      label: "ไปที่แผนงานก่อสร้าง",
+      description: "ติดตามแผนงานและงานที่กำลังดำเนินการ",
+    },
+    handover: {
+      kind: "tab",
+      tab: "warranty",
+      label: "ไปที่ประกันผลงาน",
+      description: "บันทึกวันส่งมอบและคำนวณวันหมดประกัน",
+    },
+  };
+
+  return destinations[status] || destinations.design;
+}
+
 const dateGroups = [
   {
     title: "ออกแบบ",
@@ -247,6 +336,8 @@ export default function LifecycleWorkspace({
     { id: "documents", label: "เอกสาร", description: "PDF และ version history", meta: `${documents.length} ไฟล์` },
     { id: "warranty", label: "ประกันผลงาน", description: "วันส่งมอบและวันหมดอายุ", meta: `${filledWarrantyDates}/${warrantyDateFields.length}` },
   ];
+  const currentStatusLabel = lifecycleStatusOptions.find((option) => option.value === lifecycleForm.current_status)?.label || lifecycleForm.current_status;
+  const currentStatusDestination = getStatusDestination(lifecycleForm.current_status, projectId);
 
   const saveJson = async (key: string, body: Record<string, string>, next: () => Promise<unknown>, successMessage: string) => {
     if (!isAdmin) return;
@@ -407,6 +498,12 @@ export default function LifecycleWorkspace({
             </Field>
           </div>
         </div>
+
+        <StatusDestinationCard
+          statusLabel={currentStatusLabel}
+          destination={currentStatusDestination}
+          onTabClick={setActiveTab}
+        />
 
         <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
           {dateGroups.map((group) => (
@@ -621,6 +718,39 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <span className="mb-1.5 block text-sm font-semibold text-gray-700">{label}</span>
       {children}
     </label>
+  );
+}
+
+function StatusDestinationCard({
+  statusLabel,
+  destination,
+  onTabClick,
+}: {
+  statusLabel: string;
+  destination: StatusDestination;
+  onTabClick: Dispatch<SetStateAction<WorkspaceTab>>;
+}) {
+  const actionClass = "inline-flex items-center justify-center gap-2 rounded-xl bg-gray-950 px-4 py-2 text-sm font-extrabold text-white transition hover:bg-orange-700";
+
+  return (
+    <div className="mt-4 flex flex-col gap-3 rounded-xl border border-orange-100 bg-orange-50/70 p-4 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <p className="text-xs font-extrabold uppercase text-orange-600">ทางไปทำงานต่อจากสถานะนี้</p>
+        <h4 className="mt-1 text-base font-extrabold text-gray-950">{statusLabel}</h4>
+        <p className="mt-1 text-sm font-semibold text-gray-600">{destination.description}</p>
+      </div>
+      {destination.kind === "href" ? (
+        <Link href={destination.href} className={actionClass}>
+          {destination.label}
+          <ArrowRight size={16} />
+        </Link>
+      ) : (
+        <button type="button" onClick={() => onTabClick(destination.tab)} className={actionClass}>
+          {destination.label}
+          <ArrowRight size={16} />
+        </button>
+      )}
+    </div>
   );
 }
 
