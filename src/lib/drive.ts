@@ -80,6 +80,39 @@ export async function uploadFile(
   }
 }
 
+export async function downloadFile(fileId: string) {
+  try {
+    const [metadataResponse, fileResponse] = await Promise.all([
+      drive.files.get({
+        fileId,
+        supportsAllDrives: true,
+        fields: "id, name, mimeType, size",
+      }),
+      drive.files.get(
+        {
+          fileId,
+          alt: "media",
+          supportsAllDrives: true,
+        },
+        {
+          responseType: "arraybuffer",
+        }
+      ),
+    ]);
+
+    return {
+      id: metadataResponse.data.id || fileId,
+      name: metadataResponse.data.name || fileId,
+      mimeType: metadataResponse.data.mimeType || "application/octet-stream",
+      size: Number(metadataResponse.data.size || 0),
+      buffer: Buffer.from(fileResponse.data as ArrayBuffer),
+    };
+  } catch (error) {
+    console.error(`Error downloading file ${fileId}:`, error);
+    throw error;
+  }
+}
+
 export async function createGoogleDocFromHtml(fileName: string, html: string, parentId: string) {
   try {
     const stream = new Readable();

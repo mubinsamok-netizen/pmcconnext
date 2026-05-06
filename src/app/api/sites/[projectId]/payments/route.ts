@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
-import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { sendGmailWithAttachments, type GmailAttachment } from "@/lib/gmailSender";
 import { createNotification } from "@/lib/notifications";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
@@ -8,6 +9,7 @@ import { findAll, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
   PAYMENT_STATUS_LABELS,
+  buildAccountingEmail,
   buildPaymentClaimPrintHtml,
   todayBangkok,
   type PaymentClaim,
@@ -43,11 +45,19 @@ function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
 }
 
-async function getPaymentClaimDriveFolder(context: RouteContext, docNo: string, claimId: string) {
+function getClaimMonthKey(dateValue?: string) {
+  const value = String(dateValue || todayBangkok()).trim();
+  const match = value.match(/^(\d{4})-(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}`;
+  return todayBangkok().slice(0, 7);
+}
+
+async function getPaymentClaimDriveFolder(context: RouteContext, docNo: string, claimId: string, dateValue?: string) {
   const driveFolderId = String(context.project.drive_folder_id || "").trim();
   if (!driveFolderId) return null;
   const paymentsFolder = await findOrCreateFolder("Payment Claims", driveFolderId);
-  return findOrCreateFolder(safeFolderName(docNo || claimId), paymentsFolder.id || driveFolderId);
+  const monthFolder = await findOrCreateFolder(getClaimMonthKey(dateValue), paymentsFolder.id || driveFolderId);
+  return findOrCreateFolder(safeFolderName(docNo || claimId), monthFolder.id || paymentsFolder.id || driveFolderId);
 }
 
 const validStatuses = new Set<PaymentClaimStatus>([
@@ -429,7 +439,7 @@ async function handleUploadAttachment(req: Request, context: RouteContext) {
   const current = claimRows.find((row) => (claimId && row.claim_id === claimId) || (docNo && row.doc_no === docNo));
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ Payment Claim" }, { status: 404 });
 
-  const claimFolder = await getPaymentClaimDriveFolder(context, current.doc_no, current.claim_id);
+  const claimFolder = await getPaymentClaimDriveFolder(context, current.doc_no, current.claim_id, String(current.created_date || ""));
   if (!claimFolder?.id) {
     return NextResponse.json({ error: "สร้างโฟลเดอร์ Payment Claim ไม่สำเร็จ" }, { status: 500 });
   }
@@ -520,7 +530,7 @@ async function handleGenerateDocument(body: Record<string, unknown>, context: Ro
   if (!claim) return NextResponse.json({ error: "ไม่พบ Payment Claim" }, { status: 404 });
 
   const html = buildPaymentClaimPrintHtml(claim);
-  const claimFolder = await getPaymentClaimDriveFolder(context, claim.docNo, claim.id);
+  const claimFolder = await getPaymentClaimDriveFolder(context, claim.docNo, claim.id, claim.createdDate);
   if (!claimFolder?.id) {
     return NextResponse.json({ error: "สร้างโฟลเดอร์ Payment Claim ไม่สำเร็จ" }, { status: 500 });
   }
@@ -572,6 +582,190 @@ async function handleGenerateDocument(body: Record<string, unknown>, context: Ro
   });
 }
 
+function parseEmailList(value: unknown) {
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "");
+  return Array.from(new Set(
+    raw
+      .split(/[,\s;]+/g)
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+  ));
+}
+
+async function createPaymentClaimPdfAttachment(
+  claim: PaymentClaim,
+  context: RouteContext,
+  documentType: string,
+) {
+  const html = buildPaymentClaimPrintHtml(claim);
+  const claimFolder = await getPaymentClaimDriveFolder(context, claim.docNo, claim.id, claim.createdDate);
+  if (!claimFolder?.id) {
+    throw new Error("Cannot create Payment Claim Drive folder");
+  }
+
+  const documentNo = `${claim.docNo}-${documentType.toUpperCase()}`;
+  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
+  const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, claimFolder.id);
+  const actor = userActor(context);
+  await insert("Payment_Claim_Documents", {
+    document_id: makeId("PCD"),
+    claim_id: claim.id,
+    project_id: context.project.project_id,
+    document_type: documentType,
+    document_no: documentNo,
+    title: `PDF ${claim.docNo}`,
+    html_snapshot: html,
+    pdf_file_id: uploaded.id || "",
+    pdf_url: uploaded.webViewLink || uploaded.webContentLink || "",
+    created_by_name: actor.name,
+    created_by_email: actor.email,
+    created_at: nowIso(),
+  }, context.siteSheetId);
+
+  return {
+    documentNo,
+    pdfUrl: uploaded.webViewLink || uploaded.webContentLink || "",
+    attachment: {
+      filename: `${documentNo}.pdf`,
+      mimeType: "application/pdf",
+      content: pdfBuffer,
+    } satisfies GmailAttachment,
+  };
+}
+
+async function buildPaymentEvidenceEmailAttachments(claim: PaymentClaim) {
+  const maxBytes = 18 * 1024 * 1024;
+  const attachments: GmailAttachment[] = [];
+  const skipped: string[] = [];
+  let totalBytes = 0;
+
+  for (const evidence of claim.attachments) {
+    if (!evidence.present || !evidence.fileId) continue;
+    try {
+      const downloaded = await downloadFile(evidence.fileId);
+      if (totalBytes + downloaded.buffer.length > maxBytes) {
+        skipped.push(`${evidence.name}: ${downloaded.name} (ไฟล์ใหญ่เกินสำหรับแนบอีเมล)`);
+        continue;
+      }
+      totalBytes += downloaded.buffer.length;
+      attachments.push({
+        filename: downloaded.name,
+        mimeType: downloaded.mimeType,
+        content: downloaded.buffer,
+      });
+    } catch (error) {
+      console.warn(`Payment evidence attachment skipped for ${claim.docNo}:`, error);
+      skipped.push(`${evidence.name}: ${evidence.fileName || evidence.fileId}`);
+    }
+  }
+
+  return { attachments, skipped };
+}
+
+async function handleSubmitClaimEmail(body: Record<string, unknown>, context: RouteContext) {
+  const forbidden = requirePermission(context, "payment.submit");
+  if (forbidden) return forbidden;
+
+  const recipients = parseEmailList(body.recipients || body.recipient_email || body.to);
+  if (recipients.length === 0) {
+    return NextResponse.json({ error: "กรุณากรอกอีเมลผู้รับให้ถูกต้อง" }, { status: 400 });
+  }
+
+  const claimId = String(body.claim_id || body.id || "");
+  const docNo = String(body.doc_no || body.docNo || "");
+  if (!claimId && !docNo) return NextResponse.json({ error: "ไม่พบ claim_id หรือ doc_no" }, { status: 400 });
+
+  const { claims, claimRows } = await getPaymentData(context);
+  const claim = claims.find((item) => (claimId && item.id === claimId) || (docNo && item.docNo === docNo));
+  const current = claimRows.find((row) => (claimId && row.claim_id === claimId) || (docNo && row.doc_no === docNo));
+  if (!claim || !current?._rowIndex) return NextResponse.json({ error: "ไม่พบ Payment Claim" }, { status: 404 });
+
+  const actor = userActor(context);
+  const pdf = await createPaymentClaimPdfAttachment(claim, context, "payment-claim-email");
+  const evidence = await buildPaymentEvidenceEmailAttachments(claim);
+  const generatedEmail = buildAccountingEmail(claim, {
+    name: actor.name || claim.preparedBy,
+    position: "SE / Engineering",
+  });
+  const evidenceLinks = claim.attachments
+    .filter((attachment) => attachment.present && attachment.fileUrl)
+    .map((attachment, index) => `${index + 1}. ${attachment.name}: ${attachment.fileUrl}`);
+  const skippedLines = evidence.skipped.length
+    ? ["", "หมายเหตุไฟล์หลักฐานที่ไม่ได้แนบในอีเมล:", ...evidence.skipped.map((item, index) => `${index + 1}. ${item}`)]
+    : [];
+  const bodyText = [
+    generatedEmail.body,
+    "",
+    `แนบ PDF ใบเบิก: ${pdf.documentNo}`,
+    `แนบไฟล์หลักฐาน: ${evidence.attachments.length} ไฟล์`,
+    evidenceLinks.length ? "" : "",
+    evidenceLinks.length ? "ลิงก์หลักฐานบน Google Drive:" : "",
+    ...evidenceLinks,
+    ...skippedLines,
+  ].filter((line) => line !== "").join("\n");
+
+  const emailResult = await sendGmailWithAttachments({
+    to: recipients,
+    subject: generatedEmail.subject,
+    text: bodyText,
+    attachments: [pdf.attachment, ...evidence.attachments],
+  });
+
+  const note = [
+    String(body.note || "ส่งขอเบิกแล้ว"),
+    `to: ${recipients.join(", ")}`,
+    `gmail_message_id: ${emailResult.messageId || "-"}`,
+    `pdf: ${pdf.documentNo}`,
+    evidence.attachments.length ? `evidence_attachments: ${evidence.attachments.length}` : "",
+  ].filter(Boolean).join(" | ");
+  const patch: Record<string, string | number> = {
+    status: "SUBMITTED_TO_ACCOUNTING",
+    remarks: appendRemark(current.remarks, note),
+    updated_by_name: actor.name,
+    updated_by_email: actor.email,
+  };
+
+  await update("Payment_Claims", Number(current._rowIndex), patch, context.siteSheetId);
+  await insertPaymentAudit(context, {
+    claimId: claim.id,
+    action: "submit_email",
+    fromStatus: current.status,
+    toStatus: "SUBMITTED_TO_ACCOUNTING",
+    note,
+  });
+  await notifyPaymentWorkflow(context, {
+    claimId: claim.id,
+    docNo: claim.docNo,
+    status: "SUBMITTED_TO_ACCOUNTING",
+    action: "submit_email",
+    note: "ส่งขอเบิกแล้ว",
+  });
+  await writeAuditLog({
+    actor,
+    projectId: context.project.project_id,
+    module: "payment_claims",
+    action: "submit_email",
+    targetId: claim.id,
+    summary: `ส่งอีเมลขอเบิก ${claim.docNo}`,
+    before: current,
+    after: { ...current, ...patch, recipients, messageId: emailResult.messageId, pdfUrl: pdf.pdfUrl },
+  });
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      claim_id: claim.id,
+      status: "SUBMITTED_TO_ACCOUNTING",
+      recipients,
+      gmail_message_id: emailResult.messageId,
+      gmail_thread_id: emailResult.threadId,
+      pdf_url: pdf.pdfUrl,
+      evidence_attached_count: evidence.attachments.length,
+      evidence_skipped: evidence.skipped,
+    },
+  });
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
@@ -614,6 +808,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     if (action === "create_claim") return handleCreateClaim(body, routeContext);
     if (action === "update_status") return handleUpdateStatus(body, routeContext);
     if (action === "generate_document") return handleGenerateDocument(body, routeContext);
+    if (action === "submit_claim_email") return handleSubmitClaimEmail(body, routeContext);
 
     return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });
   } catch (error: unknown) {

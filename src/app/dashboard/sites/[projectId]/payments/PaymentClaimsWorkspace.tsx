@@ -90,6 +90,13 @@ type GeneratedDocumentResult = {
   pdf_url?: string;
 };
 
+type SendClaimEmailResult = {
+  recipients?: string[];
+  pdf_url?: string;
+  evidence_attached_count?: number;
+  evidence_skipped?: string[];
+};
+
 const typeFilters: Array<{ value: "ALL" | PaymentClaimType; label: string }> = [
   { value: "ALL", label: "ทุกประเภท" },
   { value: "PETTY_CASH", label: "ใบสำคัญจ่าย" },
@@ -395,6 +402,34 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     if (!response.ok) throw new Error(result.error || "สร้าง PDF ไม่สำเร็จ");
     await mutatePayments();
     setFormMessage(`สร้าง PDF ${result.data?.document_no || claim.docNo} และบันทึกลง Drive แล้ว`);
+    return result.data || null;
+  };
+
+  const sendClaimEmail = async (claim: PaymentClaim, recipients: string): Promise<SendClaimEmailResult | null> => {
+    if (!persistEnabled) {
+      setFallbackClaims((current) => current.map((item) => (
+        item.id === claim.id ? { ...item, status: "SUBMITTED_TO_ACCOUNTING" } : item
+      )));
+      setSelectedId(claim.id);
+      setFormMessage(`ส่งขอเบิกแล้ว (mock): ${claim.docNo}`);
+      return { recipients: recipients.split(/[,\s;]+/g).filter(Boolean), evidence_attached_count: claim.attachments.filter((item) => item.present).length };
+    }
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "submit_claim_email",
+        claim_id: claim.id,
+        doc_no: claim.docNo,
+        recipients,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "ส่งอีเมลขอเบิกไม่สำเร็จ");
+    await mutatePayments();
+    setSelectedId(claim.id);
+    setFormMessage(`ส่งขอเบิกแล้ว: ${claim.docNo} ไปที่ ${(result.data?.recipients || []).join(", ")}`);
     return result.data || null;
   };
 
@@ -1088,6 +1123,7 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
         <EmailGeneratorModal
           claim={emailModal.claim}
           mode={emailModal.mode}
+          onSend={sendClaimEmail}
           onClose={() => setEmailModal(null)}
         />
       )}
@@ -2352,13 +2388,19 @@ function PrintPreviewModal({ claim, onClose }: { claim: PaymentClaim; onClose: (
 function EmailGeneratorModal({
   claim,
   mode,
+  onSend,
   onClose,
 }: {
   claim: PaymentClaim;
   mode: "accounting" | "followup";
+  onSend: (claim: PaymentClaim, recipients: string) => Promise<SendClaimEmailResult | null>;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState("");
+  const [recipients, setRecipients] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const [sendResult, setSendResult] = useState<SendClaimEmailResult | null>(null);
   const generated = mode === "accounting"
     ? buildAccountingEmail(claim, { name: claim.preparedBy, position: "SE / Engineering", urgency: claim.status === "APPROVED" ? "เร่งด่วน" : "ปกติ" })
     : buildFollowupEmail(claim, { name: claim.preparedBy, reasonUrgent: claim.status === "APPROVED" ? "รายการอนุมัติแล้ว รอบัญชีโอนเงิน" : "ติดตามสถานะเอกสาร" });
@@ -2368,6 +2410,25 @@ function EmailGeneratorModal({
     await navigator.clipboard.writeText(text).catch(() => undefined);
     setCopied(label);
     window.setTimeout(() => setCopied(""), 1600);
+  };
+
+  const sendEmail = async () => {
+    setSendError("");
+    setSendResult(null);
+    if (!recipients.trim()) {
+      setSendError("กรุณากรอกอีเมลผู้รับ");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const result = await onSend(claim, recipients);
+      setSendResult(result);
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : "ส่งอีเมลขอเบิกไม่สำเร็จ");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -2404,6 +2465,43 @@ function EmailGeneratorModal({
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
             <main className="space-y-4">
+              {mode === "accounting" && (
+                <section className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                  <label className="text-sm font-extrabold text-blue-800">อีเมลผู้รับ</label>
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      value={recipients}
+                      onChange={(event) => setRecipients(event.target.value)}
+                      type="text"
+                      placeholder="accounting@example.com"
+                      className="form-input bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void sendEmail()}
+                      disabled={sending}
+                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-extrabold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {sending ? <Loader2 size={16} className="animate-spin" /> : <Mail size={16} />}
+                      ส่งขอเบิกแล้ว
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs font-semibold leading-5 text-blue-700">
+                    ระบบจะสร้าง PDF ใบเบิก แนบไฟล์หลักฐานที่อัปโหลดไว้ แล้วส่งผ่าน Gmail จาก backend
+                  </p>
+                  {sendError && (
+                    <div className="mt-3 rounded-xl border border-red-100 bg-white px-3 py-2 text-sm font-bold text-red-600">
+                      {sendError}
+                    </div>
+                  )}
+                  {sendResult && (
+                    <div className="mt-3 rounded-xl border border-emerald-100 bg-white px-3 py-2 text-sm font-bold text-emerald-700">
+                      ส่งสำเร็จ แนบหลักฐาน {sendResult.evidence_attached_count || 0} ไฟล์
+                    </div>
+                  )}
+                </section>
+              )}
+
               <section className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <label className="text-sm font-extrabold text-gray-700">Subject</label>
@@ -3227,6 +3325,7 @@ function formatAuditStatusLabel(value?: string) {
 }
 
 function formatAuditAction(value?: string) {
+  if (value === "submit_email") return "ส่งขอเบิกแล้ว";
   const labels: Record<string, string> = {
     created: "สร้างรายการ",
     submit: "ส่งบัญชี",

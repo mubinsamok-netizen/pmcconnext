@@ -76,6 +76,8 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentClaimStatus, string> = {
   REJECTED: "ตีกลับ",
 };
 
+PAYMENT_STATUS_LABELS.SUBMITTED_TO_ACCOUNTING = "ส่งขอเบิกแล้ว";
+
 export const PAYMENT_STATUS_STYLES: Record<PaymentClaimStatus, string> = {
   DRAFT: "bg-gray-100 text-gray-700",
   SUBMITTED_TO_ACCOUNTING: "bg-blue-50 text-blue-700",
@@ -315,7 +317,7 @@ export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
   <style>
     @page { size: A4 portrait; margin: 12mm; }
     * { box-sizing: border-box; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-    body { margin: 0; background: #f3f4f6; color: #111827; font-family: Arial, "Noto Sans Thai", Tahoma, sans-serif; }
+    body { margin: 0; background: #f3f4f6; color: #111827; font-family: "Sarabun", "Noto Sans Thai", Tahoma, Arial, sans-serif; }
     .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 13mm; }
     .header { display: grid; grid-template-columns: 1fr auto; gap: 18px; border-bottom: 2px solid #111827; padding-bottom: 12px; }
     .company h1 { margin: 0; font-size: 19px; line-height: 1.25; }

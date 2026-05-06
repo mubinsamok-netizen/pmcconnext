@@ -7,7 +7,7 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 
-let kanitCssPromise: Promise<string> | null = null;
+let sarabunCssPromise: Promise<string> | null = null;
 
 function shouldUseServerlessChromium() {
   return (
@@ -70,14 +70,14 @@ async function resolveChromePath() {
   return configuredPath;
 }
 
-async function loadKanitFontCss() {
-  const cssUrl = "https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700;800&display=swap";
+async function loadSarabunFontCss() {
+  const cssUrl = "https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&display=swap";
   const cssResponse = await fetch(cssUrl, {
     headers: {
       "user-agent": "Mozilla/5.0 Chrome PDF Renderer",
     },
   });
-  if (!cssResponse.ok) throw new Error(`Failed to load Kanit CSS: ${cssResponse.status}`);
+  if (!cssResponse.ok) throw new Error(`Failed to load Sarabun CSS: ${cssResponse.status}`);
 
   const css = await cssResponse.text();
   const fontUrls = Array.from(css.matchAll(/url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g)).map((match) => match[1]);
@@ -86,7 +86,7 @@ async function loadKanitFontCss() {
 
   await Promise.all(uniqueUrls.map(async (fontUrl) => {
     const response = await fetch(fontUrl);
-    if (!response.ok) throw new Error(`Failed to load Kanit font: ${response.status}`);
+    if (!response.ok) throw new Error(`Failed to load Sarabun font: ${response.status}`);
     const buffer = Buffer.from(await response.arrayBuffer());
     replacements.set(fontUrl, `data:font/woff2;base64,${buffer.toString("base64")}`);
   }));
@@ -96,17 +96,17 @@ async function loadKanitFontCss() {
   });
 }
 
-async function getKanitFontCss() {
-  kanitCssPromise ||= loadKanitFontCss().catch((error) => {
-    kanitCssPromise = null;
-    console.warn("Kanit font embedding failed; Chrome may fall back to system fonts:", error);
+async function getSarabunFontCss() {
+  sarabunCssPromise ||= loadSarabunFontCss().catch((error) => {
+    sarabunCssPromise = null;
+    console.warn("Sarabun font embedding failed; Chrome may fall back to system fonts:", error);
     return "";
   });
-  return kanitCssPromise;
+  return sarabunCssPromise;
 }
 
 async function prepareHtml(html: string) {
-  const fontCss = await getKanitFontCss();
+  const fontCss = await getSarabunFontCss();
   const printCss = `
     <style>
       ${fontCss}
@@ -115,7 +115,7 @@ async function prepareHtml(html: string) {
         print-color-adjust: exact !important;
       }
       body, table, th, td, input, textarea, select, button {
-        font-family: "Kanit", "Noto Sans Thai", "Tahoma", "Arial", sans-serif !important;
+        font-family: "Sarabun", "Noto Sans Thai", "Tahoma", "Arial", sans-serif !important;
       }
     </style>
   `;
