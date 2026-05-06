@@ -12,6 +12,7 @@ let kanitCssPromise: Promise<string> | null = null;
 function shouldUseServerlessChromium() {
   return (
     process.env.PDF_USE_PUPPETEER === "true" ||
+    Boolean(process.env.VERCEL) ||
     Boolean(process.env.NETLIFY) ||
     Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
   );

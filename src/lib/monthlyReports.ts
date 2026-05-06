@@ -160,22 +160,22 @@ export function buildMonthlyReportHtml(report: MonthlyReportPayload) {
     .cover {
       min-height: 270mm;
       border: 1px solid #111111;
-      padding: 18mm 15mm 14mm;
+      padding: 10mm 15mm 12mm;
       position: relative;
     }
-    .cover-top { display: table; width: 100%; border-bottom: 3px solid #111111; padding-bottom: 9mm; }
+    .cover-top { display: table; width: 100%; border-bottom: 2px solid #111111; padding-bottom: 5mm; }
     .cover-logo { display: table-cell; width: 34mm; vertical-align: middle; }
     .cover-logo img { width: 30mm; height: auto; display: block; }
     .cover-company { display: table-cell; vertical-align: middle; }
     .company { font-size: 18px; font-weight: 800; line-height: 1.08; }
     .address { color: #475569; font-size: 8.8px; margin-top: 2px; }
-    .cover-title { margin-top: 28mm; }
+    .cover-title { margin-top: 13mm; }
     .cover-title .eyebrow { color: #f97316; font-size: 11px; font-weight: 800; text-transform: uppercase; }
     .cover-title h1 { margin: 3mm 0 2mm; font-size: 27px; line-height: 1.12; font-weight: 800; }
     .cover-title .thai-title { font-size: 18px; font-weight: 700; color: #111111; }
-    .cover-grid { margin-top: 18mm; }
+    .cover-grid { margin-top: 7mm; }
     .cover-grid th { width: 32%; background: #f3f4f6; text-align: left; font-weight: 800; }
-    .cover-footer { position: absolute; left: 15mm; right: 15mm; bottom: 14mm; border-top: 2px solid #111111; padding-top: 7mm; }
+    .cover-footer { margin-top: 10mm; border-top: 2px solid #111111; padding-top: 5mm; }
     .header { border-bottom: 2px solid #111111; margin-bottom: 7px; }
     .header td { border: 0; padding: 0 0 7px; vertical-align: middle; }
     .logo-cell { width: 112px; padding-right: 12px !important; }
