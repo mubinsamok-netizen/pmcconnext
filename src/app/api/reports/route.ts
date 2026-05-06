@@ -173,7 +173,7 @@ export async function POST(req: Request) {
     step = "ตรวจสอบ schema ของ Google Sheets";
     await ensureSchema(sheetId);
 
-    const targetDriveFolderId = getText(formData, "project_drive_folder_id") || project?.drive_folder_id || driveFolderId;
+    const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) {
       return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
     }

@@ -30,7 +30,6 @@ import {
   buildVoMonthlyReportHtml,
   buildReceiptHtml,
   buildVoClearanceReportHtml,
-  buildVoSheetHtml,
 } from "@/lib/variationOrderDocuments";
 
 type RouteContext = {
@@ -322,8 +321,21 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
   const supportingFiles = await uploadSupportingDocumentFiles(context, voId, supportingUploads);
   const supportingDocsText = String(body.supporting_docs || "").trim();
   const supportingDocs = supportingFiles.length > 0
-    ? [supportingDocsText, ...supportingFiles.map((file) => `แนบรูปแชท: ${file.file_name}`)].filter(Boolean).join("\n")
+    ? [supportingDocsText, ...supportingFiles.map((file) => `แนบไฟล์หลักฐาน: ${file.file_name}`)].filter(Boolean).join("\n")
     : supportingDocsText;
+  const requestedStatus = String(body.status || "approved").trim();
+  const initialStatus = ["draft", "pending_approval", "approved", "rejected"].includes(requestedStatus) ? requestedStatus : "approved";
+  const extensionDays = Math.max(0, numberValue(String(body.extension_days || 0)));
+  const evidencePayload = supportingFiles.length > 0
+    ? {
+        method: "engineer_uploaded_evidence",
+        confirmed_by_office: context.session.user.name || "",
+        confirm_date: todayBangkok(),
+        evidence_type: "external_documents",
+        evidence_description: supportingDocsText,
+        files: supportingFiles,
+      }
+    : null;
   const voPayload = {
     vo_id: voId,
     project_id: context.project.project_id,
@@ -349,14 +361,14 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     created_by_name: context.session.user.name || "",
     created_by_email: context.session.user.email || "",
     created_by_role: context.session.user.role || "",
-    status: "draft",
+    status: initialStatus,
     client_name: String(body.client_name || context.project.client || ""),
     supporting_docs: supportingDocs,
     linked_tasks_json: safeJsonStringify(body.linked_tasks || []),
-    evidence_json: "",
+    evidence_json: evidencePayload && initialStatus === "approved" ? safeJsonStringify(evidencePayload) : "",
     rejection_json: "",
     revision_history_json: "[]",
-    task_plan_status: "not_planned",
+    task_plan_status: initialStatus === "approved" ? "pending_plan" : "not_planned",
     invoice_no: "",
     invoice_date: "",
     due_date: "",
@@ -367,6 +379,7 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     document_refs_json: safeJsonStringify(supportingFiles),
     notes: String(body.notes || ""),
     created_at: `${createdDate}T00:00:00+07:00`,
+    extension_days: extensionDays,
   };
 
   await insert("Variation_Orders", voPayload, context.siteSheetId);
@@ -374,9 +387,9 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     document_id: makeId("VOD"),
     vo_id: voId,
     project_id: context.project.project_id,
-    document_type: "supporting-chat-image",
+    document_type: "supporting-evidence",
     document_no: `${voId}-SUP-${String(index + 1).padStart(2, "0")}`,
-    title: `รูปแชทอ้างอิง ${index + 1}`,
+    title: file.file_name || `หลักฐานแนบ ${index + 1}`,
     html_snapshot: "",
     pdf_file_id: file.file_id,
     pdf_url: file.file_url,
@@ -402,8 +415,6 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     project_id: context.project.project_id,
     ...item,
   })) as VoItemRecord[];
-  const html = buildVoSheetHtml({ vo: insertedVo, items: insertedItems, project: context.project });
-  await insertVoDocument({ context, vo: insertedVo, items: insertedItems, documentType: "vo-sheet", title: "ใบงานเพิ่ม-ลด", html });
   await writeAuditLog({
     actor: userActor(context),
     projectId: context.project.project_id,
@@ -414,7 +425,7 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     after: voPayload,
   });
 
-  return NextResponse.json({ success: true, data: insertedVo, items: insertedItems, document_html: html });
+  return NextResponse.json({ success: true, data: insertedVo, items: insertedItems });
 }
 
 async function handleSubmitVo(body: Record<string, unknown>, context: RouteContext) {

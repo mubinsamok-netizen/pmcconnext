@@ -23,14 +23,23 @@ export async function getProjectContext(projectId?: string | null) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("Quota exceeded")) {
-      console.warn("Using legacy site context fallback because Google Sheets quota is temporarily exceeded.");
+      throw new Error("Google Sheets quota exceeded while resolving project workspace");
     } else {
       throw error;
     }
   }
 
+  if (!project) {
+    throw new Error(`Project not found: ${projectId}`);
+  }
+
+  const siteSheetId = String(project.site_sheet_id || "").trim();
+  if (!siteSheetId) {
+    throw new Error(`Project ${projectId} has no site sheet`);
+  }
+
   return {
-    sheetId: project?.site_sheet_id || SHEET_ID,
+    sheetId: siteSheetId,
     driveFolderId: project?.drive_folder_id || "",
   };
 }

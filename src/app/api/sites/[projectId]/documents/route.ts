@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { findAll, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
@@ -32,8 +33,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId), true);
+    const context = await getSiteApiContext(decodeURIComponent(projectId));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    if (!hasPermission(context.session.user?.role, "siteDocument.upload")) {
+      return NextResponse.json({ error: permissionDeniedMessage("siteDocument.upload") }, { status: 403 });
+    }
 
     const driveFolderId = String(context.project.drive_folder_id || "").trim();
     if (!driveFolderId) {

@@ -42,6 +42,11 @@ function text(value: unknown) {
   return String(value || "").trim();
 }
 
+function numberValue(value: unknown) {
+  const numeric = Number(String(value || "").replace(/,/g, "").trim());
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 function actor(context: RouteContext) {
   return {
     email: context.session.user.email || "",
@@ -181,6 +186,7 @@ async function handleCreateRound(body: Record<string, unknown>, context: RouteCo
     status: "draft",
     item_count: 0,
     open_count: 0,
+    extension_days: Math.max(0, Math.round(numberValue(body.extension_days))),
     acknowledged_by: "",
     acknowledged_channel: "",
     acknowledged_date: "",

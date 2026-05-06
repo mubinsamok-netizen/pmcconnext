@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/authOptions";
 import { filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
+import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { findAll, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
@@ -40,6 +41,10 @@ function isServiceAccountStorageError(error: unknown) {
 function isDriveStorageQuotaError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return isServiceAccountStorageError(error) || message.toLowerCase().includes("storage quota") || message.includes("storageQuotaExceeded");
+}
+
+function makeProjectFolderName(projectId: string, name: string) {
+  return `${projectId} - ${name || "Site"}`;
 }
 
 async function requireProjectManagementAccess() {
@@ -246,11 +251,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    const projects = await findAllMaster("Projects");
+    const existingProject = projects.find((project) => project.project_id === project_id);
+    if (existingProject) {
+      return NextResponse.json({ error: "Project ID นี้ถูกใช้งานแล้ว กรุณาใช้รหัสไซต์ใหม่" }, { status: 409 });
+    }
+
     let driveFolderId = typeof drive_folder_id === "string" ? drive_folder_id.trim() : "";
     let driveProvisionWarning = "";
-    if (!driveFolderId) {
+    const projectFolderName = makeProjectFolderName(project_id, name);
+    if (!driveFolderId || driveFolderId === DRIVE_ROOT_FOLDER_ID) {
       try {
-        const folders = await setupProjectFolders(`${project_id} - ${name}`);
+        const folders = await setupProjectFolders(projectFolderName, driveFolderId || DRIVE_ROOT_FOLDER_ID);
         driveFolderId = folders.root;
       } catch (error: unknown) {
         console.error("Drive setup failed:", error);
@@ -383,7 +395,7 @@ export async function PUT(req: Request) {
 
     if (!driveFolderId && coverFile) {
       try {
-        const folders = await setupProjectFolders(`${projectId} - ${value("name", current.name || "")}`);
+        const folders = await setupProjectFolders(makeProjectFolderName(projectId, value("name", current.name || "")));
         driveFolderId = folders.root;
       } catch (error: unknown) {
         console.error("Drive setup failed while updating cover:", error);
@@ -397,6 +409,20 @@ export async function PUT(req: Request) {
 
     if (siteSheetId && siteSheetId !== current.site_sheet_id) {
       await ensureSchema(siteSheetId);
+    }
+
+    if (driveFolderId === DRIVE_ROOT_FOLDER_ID) {
+      try {
+        const folders = await setupProjectFolders(makeProjectFolderName(projectId, value("name", current.name || "")), DRIVE_ROOT_FOLDER_ID);
+        driveFolderId = folders.root;
+      } catch (error: unknown) {
+        console.error("Drive setup failed while isolating root folder:", error);
+        if (isDriveStorageQuotaError(error)) {
+          warning = getErrorMessage(error);
+        } else {
+          return NextResponse.json({ error: `ไม่สามารถสร้าง Drive folder เฉพาะไซต์ได้: ${getErrorMessage(error)}` }, { status: 500 });
+        }
+      }
     }
 
     let coverFileId = value("cover_file_id", current.cover_file_id || "");

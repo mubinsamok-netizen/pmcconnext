@@ -238,7 +238,7 @@ export async function POST(req: Request) {
     const project = await getProject(projectId);
     const { sheetId, driveFolderId } = await getProjectContext(projectId);
     await ensureSchema(sheetId);
-    const targetDriveFolderId = getText(formData, "project_drive_folder_id") || project?.drive_folder_id || driveFolderId;
+    const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
 
     const existingReports = await findAll("Weekly_Reports", sheetId) as SheetRecord[];

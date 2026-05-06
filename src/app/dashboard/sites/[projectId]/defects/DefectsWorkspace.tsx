@@ -30,6 +30,7 @@ type DefectRound = Record<string, string | number | undefined> & {
   status?: string;
   item_count?: string | number;
   open_count?: string | number;
+  extension_days?: string | number;
   pdf_url?: string;
   locked_at?: string;
 };
@@ -296,6 +297,7 @@ function buildTrackingReportHtml({
       <div class="box">รายการทั้งหมด<strong>${items.length}</strong></div>
       <div class="box">คงค้าง<strong>${openCount}</strong></div>
       <div class="box">แก้ไขแล้ว/ผ่าน<strong>${fixedCount}</strong></div>
+      <div class="box">จำนวนวันที่ต้องบวก<strong>${escapeHtml(round.extension_days || 0)} วัน</strong></div>
       <div class="box">ผู้ตรวจ<strong>${escapeHtml(round.inspector_name || "-")}</strong></div>
       <div class="box">วันที่พิมพ์<strong>${escapeHtml(formatPrintDate(new Date().toISOString()))}</strong></div>
       <div class="box">สถานะรอบ<strong>${escapeHtml(statusLabel(round.status))}</strong></div>
@@ -322,16 +324,23 @@ async function filesToUploads(files: FileList | null, maxFiles = 4): Promise<Upl
 }
 
 function openPrintDialog(html: string) {
-  const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1024,height=768");
+  const printWindow = window.open("", "_blank", "width=1024,height=768");
   if (!printWindow) {
     window.alert("เบราว์เซอร์บล็อกหน้าต่าง print กรุณาอนุญาต popup แล้วลองใหม่");
     return;
   }
+  let hasPrinted = false;
+  const triggerPrint = () => {
+    if (hasPrinted || printWindow.closed) return;
+    hasPrinted = true;
+    printWindow.focus();
+    printWindow.print();
+  };
   printWindow.document.open();
   printWindow.document.write(html);
   printWindow.document.close();
-  printWindow.focus();
-  window.setTimeout(() => printWindow.print(), 700);
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 900);
 }
 
 function stepState(tab: TabKey, selectedRound: DefectRound | undefined, itemCount: number, evidenceCount: number) {
@@ -419,6 +428,7 @@ export function DefectsWorkspace({
       inspection_date: formData.get("inspection_date"),
       inspector_name: formData.get("inspector_name"),
       client_name: formData.get("client_name"),
+      extension_days: formData.get("extension_days"),
       notes: formData.get("notes"),
     });
     await mutate();
@@ -620,6 +630,7 @@ export function DefectsWorkspace({
                 <div className="mt-4 space-y-3">
                   <input name="title" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="เช่น ตรวจส่งมอบครั้งที่ 1" />
                   <input name="inspection_date" type="date" defaultValue={todayInputValue()} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" />
+                  <input name="extension_days" type="number" min="0" step="1" defaultValue="0" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="จำนวนวันที่ต้องบวกเพิ่ม" />
                   <input name="inspector_name" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="ผู้ตรวจ/วิศวกร" />
                   <input name="client_name" defaultValue={clientName || ""} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="ชื่อลูกค้า/ผู้แทน" />
                   <textarea name="notes" rows={3} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="หมายเหตุรอบตรวจ" />

@@ -12,6 +12,10 @@ export type AppPermission =
   | "payment.close"
   | "payment.uploadAttachment"
   | "payment.generateDocument"
+  | "siteDocument.upload"
+  | "siteMemo.create"
+  | "siteMemo.issue"
+  | "siteMemo.acknowledge"
   | "vo.create"
   | "vo.submitToClient"
   | "vo.approveOnBehalf"
@@ -37,6 +41,10 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "payment.close",
     "payment.uploadAttachment",
     "payment.generateDocument",
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
     "vo.create",
     "vo.submitToClient",
     "vo.approveOnBehalf",
@@ -54,6 +62,9 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "payment.submit",
     "payment.uploadAttachment",
     "payment.generateDocument",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
     "vo.create",
     "vo.submitToClient",
     "vo.approveOnBehalf",
@@ -69,8 +80,17 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "payment.submit",
     "payment.uploadAttachment",
     "payment.generateDocument",
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
   ],
-  Foreman: [],
+  Foreman: [
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
+  ],
   Staff: [
     "payment.review",
     "payment.approve",

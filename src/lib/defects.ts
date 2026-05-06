@@ -38,6 +38,7 @@ export type DefectRoundRecord = Record<string, string | number | undefined> & {
   project_name?: string;
   project_location?: string;
   status?: string;
+  extension_days?: string | number;
   pdf_url?: string;
   issued_at?: string;
   acknowledged_by?: string;
@@ -476,6 +477,10 @@ export function buildDefectReportHtml(snapshot: DefectReportSnapshot) {
       <tr>
         <th>ผู้ตรวจ</th><td>${escapeHtml(round.inspector_name || "-")}</td>
         <th>จำนวนรายการ</th><td>${snapshot.items.length} รายการ / คงค้าง ${openCount} รายการ</td>
+      </tr>
+      <tr>
+        <th>จำนวนวันที่ต้องบวก</th><td>${escapeHtml(round.extension_days || 0)} วัน</td>
+        <th>หมายเหตุ</th><td>${nl2br(round.notes || "-")}</td>
       </tr>
     </table>
   </div>

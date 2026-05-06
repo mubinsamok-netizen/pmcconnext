@@ -70,6 +70,7 @@ export type VoRecord = Record<string, string | number | undefined> & {
   evidence_json?: string;
   linked_tasks_json?: string;
   document_refs_json?: string;
+  extension_days?: string | number;
   created_at?: string | number;
   updated_at?: string | number;
 };

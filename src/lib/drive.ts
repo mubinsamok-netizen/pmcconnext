@@ -170,8 +170,8 @@ export async function deleteDriveFile(fileId: string) {
   }
 }
 
-export async function setupProjectFolders(projectName: string) {
-  const projectFolder = await findOrCreateFolder(projectName);
+export async function setupProjectFolders(projectName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
+  const projectFolder = await findOrCreateFolder(projectName, parentId);
   if (!projectFolder.id) throw new Error("Failed to create project folder");
 
   const subfolders = [

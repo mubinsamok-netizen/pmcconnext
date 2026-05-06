@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-05-05 - Data Architecture Direction
+
+### Session 14: Demo Sheets Now, Supabase Later
+- **Accomplished**:
+    - Documented the near-term demo strategy: keep using Google Sheets as the working data layer so the team can demo and validate workflows quickly.
+    - Documented the future production direction: migrate core structured data to Supabase/Postgres when the workflow stabilizes and concurrency becomes more important.
+    - Kept Google Drive as the long-term home for files, photos, attachments, generated PDFs, and project folders.
+
+### Notes
+- Google Sheets is treated as a demo/prototyping data source, not the final production database.
+- Future Supabase tables should become the source of truth for searchable/editable records, while rows can continue to store Google Drive file and folder IDs for attachments.
+- This keeps the team's familiar Drive-based file workflow while reducing reliability issues from using Sheets/Drive as the full application database under multi-user load.
+
 ## 2026-05-03 - Remove Schedule Weight Field
 
 ### Session 13: Planning Form Simplification
