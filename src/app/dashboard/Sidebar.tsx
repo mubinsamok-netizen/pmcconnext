@@ -12,14 +12,12 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
-  FileQuestion,
   FileText,
   FolderKanban,
   Images,
   Info,
   LayoutDashboard,
   ListChecks,
-  Megaphone,
   Presentation,
   Users,
 } from "lucide-react";
@@ -49,8 +47,6 @@ const siteNavItems = [
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
   { name: "ระบบเบิกเงิน", segment: "payments", icon: Banknote },
-  { name: "RFA", segment: "rfa", icon: FileQuestion },
-  { name: "RFI", segment: "rfi", icon: Megaphone },
   { name: "Defect", segment: "defects", icon: Bug },
   { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },
 ];
