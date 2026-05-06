@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Presentation,
+  StickyNote,
   Users,
 } from "lucide-react";
 import type { ComponentType } from "react";
@@ -44,6 +45,7 @@ const siteNavItems = [
   { name: "รายละเอียดโครงการ", segment: "details", icon: Info },
   { name: "รายละเอียดงาน/ประกัน", segment: "lifecycle", icon: CalendarClock },
   { name: "รายงานประจำวัน", segment: "reports", icon: FileText },
+  { name: "บันทึกหน้างาน", segment: "notes", icon: StickyNote },
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
   { name: "ระบบเบิกเงิน", segment: "payments", icon: Banknote },

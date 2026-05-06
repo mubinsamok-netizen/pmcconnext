@@ -297,7 +297,6 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [formMessage, setFormMessage] = useState("");
   const [printPreviewClaim, setPrintPreviewClaim] = useState<PaymentClaim | null>(null);
-  const [emailModal, setEmailModal] = useState<{ claim: PaymentClaim; mode: "accounting" | "followup" } | null>(null);
   const canCreatePayment = hasPermission(userRole, "payment.create");
   const canUploadPaymentAttachment = hasPermission(userRole, "payment.uploadAttachment");
   const canGeneratePaymentDocument = hasPermission(userRole, "payment.generateDocument");
@@ -396,7 +395,12 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "generate_document", claim_id: claim.id, doc_no: claim.docNo }),
+      body: JSON.stringify({
+        action: "generate_document",
+        claim_id: claim.id,
+        doc_no: claim.docNo,
+        base_url: window.location.origin,
+      }),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "สร้าง PDF ไม่สำเร็จ");
@@ -523,6 +527,7 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     setCreateMode("CLOSED");
     setPettyCashForm(emptyPettyCashForm());
     setFormErrors([]);
+    setPrintPreviewClaim(savedClaim);
     setFormMessage(`สร้าง ${docNo} เป็นฉบับร่างแล้ว ยอดสุทธิ ${formatMoney(totals.netPayable)} บาท (${numberToThaiBahtText(totals.netPayable)})`);
   };
 
@@ -607,6 +612,7 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     setCreateMode("CLOSED");
     setDcWorkerForm(emptyDcWorkerForm());
     setFormErrors([]);
+    setPrintPreviewClaim(savedClaim);
     setFormMessage(`สร้าง ${docNo} เป็นฉบับร่างแล้ว หัก WHT 3% ยอดสุทธิ ${formatMoney(totals.netPayable)} บาท (${numberToThaiBahtText(totals.netPayable)})`);
   };
 
@@ -708,6 +714,7 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     setCreateMode("CLOSED");
     setDcBatchForm(emptyDcBatchForm());
     setFormErrors([]);
+    setPrintPreviewClaim(savedClaim);
     setFormMessage(`สร้าง ${docNo} เป็นฉบับร่างแล้ว รวม ${normalizedWorkers.length} คน ยอดสุทธิ ${formatMoney(totals.netPayable)} บาท (${numberToThaiBahtText(totals.netPayable)})`);
   };
 
@@ -814,6 +821,7 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     setCreateMode("CLOSED");
     setSubcontractorForm(emptySubcontractorForm());
     setFormErrors([]);
+    setPrintPreviewClaim(savedClaim);
     setFormMessage(`สร้าง ${docNo} เป็นฉบับร่างแล้ว หัก Retention 5% และ WHT 3% ยอดสุทธิ ${formatMoney(totals.netPayable)} บาท (${numberToThaiBahtText(totals.netPayable)})`);
   };
 
@@ -898,6 +906,8 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
     }
     updateClaimStatus(claim, "CLOSED", `ปิดรายการ ${claim.docNo} แล้ว`, note || "Accounting closed", action);
   };
+  void sendClaimEmail;
+  void handleAccountingAction;
 
   return (
     <div className="space-y-5">
@@ -910,19 +920,10 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
             </div>
             <h3 className="mt-1 text-2xl font-extrabold text-gray-950">ภาพรวมการเบิกจ่ายไซต์งาน</h3>
             <p className="mt-1 text-sm font-medium text-gray-500">
-              Frontend mock สำหรับฝั่ง SE / Engineering ก่อนเชื่อม backend และฐานข้อมูลใน phase ถัดไป
+              วิศวกรกรอกใบเบิกและแนบหลักฐาน จากนั้นระบบเปิด Draft สำหรับ Print / Save PDF ส่วนการส่ง Gmail ให้ทำเองนอกระบบ
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => selectedClaim && setEmailModal({ claim: selectedClaim, mode: "accounting" })}
-              disabled={!selectedClaim}
-              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50"
-            >
-              <Mail size={16} />
-              สร้างอีเมลบัญชี
-            </button>
             <button
               type="button"
               onClick={() => {
@@ -1093,14 +1094,12 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
           <SelectedClaimPanel
             claim={selectedClaim}
             onPreview={setPrintPreviewClaim}
-            onEmail={(claim) => setEmailModal({ claim, mode: "accounting" })}
-            onReminder={(claim) => setEmailModal({ claim, mode: "followup" })}
             onUploadAttachment={uploadClaimAttachment}
             onGenerateDocument={generateClaimDocument}
             canUploadAttachment={canUploadPaymentAttachment}
             canGenerateDocument={canGeneratePaymentDocument}
           />
-          <AccountingWorkflowPanel claim={selectedClaim} userRole={userRole} onAction={handleAccountingAction} />
+          <EngineerHandoffPanel claim={selectedClaim} onPreview={setPrintPreviewClaim} />
           <PaymentAuditTimeline logs={selectedAuditLogs} claim={selectedClaim} />
           <TypeBreakdownPanel breakdown={typeBreakdown} />
           <TopPayeesPanel payees={topPayees} />
@@ -1119,14 +1118,6 @@ export default function PaymentClaimsWorkspace({ project, userRole }: { project:
         />
       )}
 
-      {emailModal && (
-        <EmailGeneratorModal
-          claim={emailModal.claim}
-          mode={emailModal.mode}
-          onSend={sendClaimEmail}
-          onClose={() => setEmailModal(null)}
-        />
-      )}
     </div>
   );
 }
@@ -2331,7 +2322,7 @@ function buildTopPayees(claims: PaymentClaim[]) {
 }
 
 function printClaimDocument(claim: PaymentClaim) {
-  const html = buildPaymentClaimPrintHtml(claim);
+  const html = buildPaymentClaimPrintHtml(claim, { baseUrl: window.location.origin });
   const win = window.open("", "_blank", "noopener,noreferrer,width=980,height=1200");
   if (!win) return;
   win.document.write(html);
@@ -2343,7 +2334,9 @@ function printClaimDocument(claim: PaymentClaim) {
 }
 
 function PrintPreviewModal({ claim, onClose }: { claim: PaymentClaim; onClose: () => void }) {
-  const html = buildPaymentClaimPrintHtml(claim);
+  const html = buildPaymentClaimPrintHtml(claim, {
+    baseUrl: typeof window === "undefined" ? "" : window.location.origin,
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/55 p-4 backdrop-blur-sm">
@@ -2728,8 +2721,6 @@ function PipelineTable({
 function SelectedClaimPanel({
   claim,
   onPreview,
-  onEmail,
-  onReminder,
   onUploadAttachment,
   onGenerateDocument,
   canUploadAttachment,
@@ -2737,8 +2728,6 @@ function SelectedClaimPanel({
 }: {
   claim?: PaymentClaim;
   onPreview: (claim: PaymentClaim) => void;
-  onEmail: (claim: PaymentClaim) => void;
-  onReminder: (claim: PaymentClaim) => void;
   onUploadAttachment: (input: UploadAttachmentInput) => Promise<void>;
   onGenerateDocument: (claim: PaymentClaim) => Promise<GeneratedDocumentResult | null>;
   canUploadAttachment: boolean;
@@ -2819,25 +2808,7 @@ function SelectedClaimPanel({
           className="inline-flex items-center justify-center gap-2 rounded-xl bg-orange-600 px-3 py-2 text-sm font-extrabold text-white transition hover:bg-orange-700"
         >
           <Printer size={16} />
-          Print
-        </button>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => onEmail(claim)}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-extrabold text-blue-700 transition hover:bg-blue-100"
-        >
-          <Mail size={16} />
-          Email บัญชี
-        </button>
-        <button
-          type="button"
-          onClick={() => onReminder(claim)}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-extrabold text-amber-700 transition hover:bg-amber-100"
-        >
-          <Clock3 size={16} />
-          Reminder
+          Print / Save PDF
         </button>
       </div>
       <div className="mt-2">
@@ -2915,6 +2886,80 @@ function SelectedClaimPanel({
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+function EngineerHandoffPanel({
+  claim,
+  onPreview,
+}: {
+  claim?: PaymentClaim;
+  onPreview: (claim: PaymentClaim) => void;
+}) {
+  if (!claim) {
+    return (
+      <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <EmptyState text="เลือกใบเบิกก่อนดูขั้นตอนส่งต่อ" />
+      </section>
+    );
+  }
+
+  const missingAttachments = getMissingAttachments(claim);
+  const steps = [
+    {
+      title: "1. กรอกใบเบิก",
+      detail: `${PAYMENT_TYPE_LABELS[claim.type]} / ${claim.payeeName}`,
+      done: Boolean(claim.docNo),
+    },
+    {
+      title: "2. แนบหลักฐาน",
+      detail: missingAttachments.length ? `ยังขาด ${missingAttachments.map((item) => item.name).join(", ")}` : "เอกสารบังคับครบ",
+      done: missingAttachments.length === 0,
+    },
+    {
+      title: "3. เปิด Draft แล้ว Print",
+      detail: "เลือก Save as PDF ใน print dialog เพื่อบันทึกลงเครื่อง",
+      done: true,
+    },
+    {
+      title: "4. ส่ง Gmail เอง",
+      detail: "ระบบไม่ส่งอีเมลและไม่แตะ Gmail ของวิศวกร",
+      done: true,
+    },
+  ];
+
+  return (
+    <section className="rounded-2xl border border-orange-100 bg-orange-50 p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-extrabold uppercase tracking-wide text-orange-700">Engineer Handoff</div>
+          <h3 className="mt-1 font-extrabold text-gray-950">Draft พร้อมให้บันทึกเป็น PDF</h3>
+        </div>
+        <Printer className="text-orange-600" size={22} />
+      </div>
+      <div className="mt-4 space-y-2">
+        {steps.map((step) => (
+          <div key={step.title} className="rounded-xl border border-orange-100 bg-white px-3 py-2">
+            <div className="flex items-center gap-2 text-sm font-extrabold text-gray-900">
+              {step.done ? <CheckCircle2 className="text-emerald-600" size={16} /> : <AlertCircle className="text-amber-600" size={16} />}
+              {step.title}
+            </div>
+            <p className="mt-1 text-xs font-semibold leading-5 text-gray-500">{step.detail}</p>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onPreview(claim)}
+        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-extrabold text-white transition hover:bg-orange-700"
+      >
+        <Printer size={16} />
+        เปิด Draft / Print / Save PDF
+      </button>
+      <p className="mt-3 text-xs font-semibold leading-5 text-orange-800">
+        หลังจากบันทึก PDF ลงเครื่องแล้ว ให้วิศวกรแนบไฟล์และส่ง Gmail เองตามกระบวนการหน้างาน
+      </p>
     </section>
   );
 }
@@ -3134,6 +3179,9 @@ function AccountingWorkflowPanel({
     </section>
   );
 }
+
+void EmailGeneratorModal;
+void AccountingWorkflowPanel;
 
 function PaymentAuditTimeline({ logs, claim }: { logs: PaymentAuditRecord[]; claim?: PaymentClaim }) {
   return (

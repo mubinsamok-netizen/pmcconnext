@@ -458,6 +458,7 @@ async function handleUploadAttachment(req: Request, context: RouteContext) {
       fileName: file.name,
       fileId: uploaded.id || "",
       fileUrl: uploaded.webViewLink || uploaded.webContentLink || "",
+      mimeType: file.type || "application/octet-stream",
       uploadedAt,
       uploadedBy: actor.name || actor.email,
     };
@@ -471,6 +472,7 @@ async function handleUploadAttachment(req: Request, context: RouteContext) {
       fileName: file.name,
       fileId: uploaded.id || "",
       fileUrl: uploaded.webViewLink || uploaded.webContentLink || "",
+      mimeType: file.type || "application/octet-stream",
       uploadedAt,
       uploadedBy: actor.name || actor.email,
     });
@@ -529,7 +531,9 @@ async function handleGenerateDocument(body: Record<string, unknown>, context: Ro
   const claim = claims.find((item) => (claimId && item.id === claimId) || (docNo && item.docNo === docNo));
   if (!claim) return NextResponse.json({ error: "ไม่พบ Payment Claim" }, { status: 404 });
 
-  const html = buildPaymentClaimPrintHtml(claim);
+  const html = buildPaymentClaimPrintHtml(claim, {
+    baseUrl: String(body.base_url || ""),
+  });
   const claimFolder = await getPaymentClaimDriveFolder(context, claim.docNo, claim.id, claim.createdDate);
   if (!claimFolder?.id) {
     return NextResponse.json({ error: "สร้างโฟลเดอร์ Payment Claim ไม่สำเร็จ" }, { status: 500 });

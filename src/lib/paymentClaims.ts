@@ -24,6 +24,7 @@ export type PaymentClaimAttachment = {
   fileName?: string;
   fileId?: string;
   fileUrl?: string;
+  mimeType?: string;
   uploadedAt?: string;
   uploadedBy?: string;
 };
@@ -269,7 +270,21 @@ function escapeHtml(value?: string | number | null) {
     .replace(/'/g, "&#039;");
 }
 
-export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
+function isImageAttachment(attachment: PaymentClaimAttachment) {
+  const mimeType = String(attachment.mimeType || "").toLowerCase();
+  const fileName = String(attachment.fileName || "").toLowerCase();
+  return mimeType.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(fileName);
+}
+
+function attachmentImageSrc(attachment: PaymentClaimAttachment, baseUrl?: string) {
+  if (attachment.fileId) {
+    const prefix = baseUrl ? baseUrl.replace(/\/$/, "") : "";
+    return `${prefix}/api/drive/files/${encodeURIComponent(attachment.fileId)}`;
+  }
+  return attachment.fileUrl || "";
+}
+
+export function buildPaymentClaimPrintHtml(claim: PaymentClaim, options: { baseUrl?: string } = {}) {
   const deductionTotal = claim.whtAmount + claim.retentionAmount;
   const title = claim.type === "SUBCONTRACTOR"
     ? "ใบเบิกค่างวดงานรับเหมา"
@@ -300,6 +315,23 @@ export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
       ${attachment.required ? "<strong>บังคับ</strong>" : ""}
     </li>
   `).join("");
+  const evidenceRows = claim.attachments
+    .filter((attachment) => attachment.present && isImageAttachment(attachment) && attachmentImageSrc(attachment, options.baseUrl))
+    .map((attachment) => `
+      <figure class="evidence-card">
+        <img src="${escapeHtml(attachmentImageSrc(attachment, options.baseUrl))}" alt="${escapeHtml(attachment.name)}">
+        <figcaption>
+          <strong>${escapeHtml(attachment.name)}</strong>
+          <span>${escapeHtml(attachment.fileName || "")}</span>
+        </figcaption>
+      </figure>
+    `).join("");
+  const evidenceSection = evidenceRows ? `
+    <section class="section evidence-section">
+      <h3 class="section-title">ภาพหลักฐานแนบ</h3>
+      <div class="evidence-grid">${evidenceRows}</div>
+    </section>
+  ` : "";
 
   const signatures = signatureLabels.map((label) => `
     <div class="signature">
@@ -313,6 +345,7 @@ export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
 <html lang="th">
 <head>
   <meta charset="utf-8" />
+  ${options.baseUrl ? `<base href="${escapeHtml(options.baseUrl.replace(/\/$/, "") + "/")}">` : ""}
   <title>${escapeHtml(claim.docNo)} - ${escapeHtml(title)}</title>
   <style>
     @page { size: A4 portrait; margin: 12mm; }
@@ -343,6 +376,12 @@ export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
     .attachments li { border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
     .attachments span { margin-right: 6px; font-weight: 900; }
     .attachments strong { margin-left: 6px; color: #dc2626; font-size: 10px; }
+    .evidence-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .evidence-card { margin: 0; break-inside: avoid; border: 1px solid #d1d5db; padding: 7px; }
+    .evidence-card img { display: block; width: 100%; height: 68mm; object-fit: contain; background: #f9fafb; border: 1px solid #e5e7eb; }
+    .evidence-card figcaption { margin-top: 6px; font-size: 10px; line-height: 1.4; color: #4b5563; }
+    .evidence-card strong { display: block; color: #111827; }
+    .evidence-card span { display: block; word-break: break-all; }
     .remarks { min-height: 42px; border: 1px solid #d1d5db; padding: 8px; font-size: 11px; line-height: 1.5; }
     .signatures { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 34px; text-align: center; }
     .line { height: 42px; border-bottom: 1px solid #111827; margin-bottom: 7px; }
@@ -426,6 +465,7 @@ export function buildPaymentClaimPrintHtml(claim: PaymentClaim) {
       <h3 class="section-title">เอกสารแนบ</h3>
       <ul class="attachments">${attachmentRows}</ul>
     </section>
+    ${evidenceSection}
 
     <section class="section">
       <h3 class="section-title">หมายเหตุ</h3>

@@ -1,6 +1,6 @@
 import { getAppRole } from "@/lib/roles";
 
-export const FOREMAN_SITE_SEGMENTS = ["", "details", "files", "schedule", "reports"] as const;
+export const FOREMAN_SITE_SEGMENTS = ["", "details", "files", "schedule", "reports", "notes"] as const;
 
 export type SiteSegment = (typeof FOREMAN_SITE_SEGMENTS)[number];
 
