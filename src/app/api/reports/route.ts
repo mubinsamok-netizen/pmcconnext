@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPhoto, type DailyReportPayload } from "@/lib/dailyReports";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPayload } from "@/lib/dailyReports";
+import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { createPdfReportFile } from "@/lib/reportPdf";
@@ -96,19 +96,10 @@ async function getProject(projectId: string) {
   }
 }
 
-async function readPhotos(formData: FormData): Promise<{ files: File[]; uploadedPhotos: UploadedReportPhoto[]; pdfPhotos: DailyReportPhoto[] }> {
+async function readPhotos(formData: FormData): Promise<{ files: File[]; uploadedPhotos: UploadedReportPhoto[] }> {
   const uploadedPhotos = getUploadedPhotos(formData);
   if (uploadedPhotos.length > 0) {
-    const pdfPhotos = await Promise.all(uploadedPhotos.map(async (photo) => {
-      const file = await downloadFile(String(photo.id));
-      return {
-        name: photo.name || file.name,
-        mimeType: photo.mimeType || file.mimeType,
-        dataUrl: `data:${photo.mimeType || file.mimeType};base64,${file.buffer.toString("base64")}`,
-      };
-    }));
-
-    return { files: [], uploadedPhotos, pdfPhotos };
+    return { files: [], uploadedPhotos };
   }
 
   const files = formData
@@ -116,20 +107,9 @@ async function readPhotos(formData: FormData): Promise<{ files: File[]; uploaded
     .filter((item): item is File => item instanceof File && item.size > 0)
     .slice(0, 10);
 
-  const pdfPhotos = await Promise.all(files.map(async (file) => {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    return {
-      name: file.name,
-      mimeType: file.type || "application/octet-stream",
-      dataUrl: `data:${file.type || "application/octet-stream"};base64,${buffer.toString("base64")}`,
-      buffer,
-    };
-  }));
-
   return {
     files,
     uploadedPhotos: [],
-    pdfPhotos: pdfPhotos.map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl })),
   };
 }
 
@@ -231,7 +211,7 @@ export async function POST(req: Request) {
     const machinery = parseJsonRows(formData.get("machinery_json"));
     const materials = parseJsonRows(formData.get("materials_json"));
     const workers = getText(formData, "workers") || sumPersonnel(personnel);
-    const { files, uploadedPhotos, pdfPhotos } = await readPhotos(formData);
+    const { files, uploadedPhotos } = await readPhotos(formData);
 
     step = "สร้าง/ค้นหาโฟลเดอร์ Daily Reports ใน Google Drive";
     const dailyReportsFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
@@ -278,7 +258,7 @@ export async function POST(req: Request) {
     };
 
     step = "สร้างไฟล์ PDF รายงาน";
-    const html = buildDailyReportHtml(reportPayload, pdfPhotos);
+    const html = buildDailyReportHtml(reportPayload, [], uploadedPhotoUrls.length);
     const pdfFile = await createPdf({ html, documentNo: document_no, pdfFolderId: pdfFolder.id });
     const pdfUrl = pdfFile.webViewLink || pdfFile.webContentLink || "";
     const photosFolderUrl = photosMonthFolder.webViewLink || `https://drive.google.com/drive/folders/${photosMonthFolder.id}`;
