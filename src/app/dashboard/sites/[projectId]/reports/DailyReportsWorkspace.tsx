@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, CalendarDays, CheckCircle2, CloudSun, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, UploadCloud, Users } from "lucide-react";
+import { BarChart3, CalendarDays, CheckCircle2, CloudSun, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, Users } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
@@ -11,23 +11,6 @@ import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
 type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
-type DriveUploadedPhoto = {
-  id: string;
-  name: string;
-  mimeType: string;
-  webViewLink?: string;
-  webContentLink?: string;
-};
-
-const MAX_PHOTO_UPLOAD_BYTES = 4 * 1024 * 1024;
-const MAX_PHOTO_COUNT = 10;
-const PHOTO_COMPRESSION_ATTEMPTS = [
-  { maxDimension: 1600, quality: 0.78 },
-  { maxDimension: 1400, quality: 0.72 },
-  { maxDimension: 1200, quality: 0.66 },
-  { maxDimension: 1100, quality: 0.6 },
-  { maxDimension: 1000, quality: 0.55 },
-];
 
 const weatherOptions = ["แจ่มใส", "มีเมฆบางส่วน", "มีเมฆมาก", "ฝนตกปรอย ๆ", "ฝนตกหนัก", "หยุดงานเนื่องจากสภาพอากาศ"];
 
@@ -82,165 +65,21 @@ function sumRows(rows: Row[], key: string) {
   }, 0);
 }
 
-function compressedPhotoName(fileName: string) {
-  const withoutExtension = fileName.replace(/\.[^.]+$/, "");
-  return `${withoutExtension || "photo"}.jpg`;
-}
-
-function loadImage(file: File) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(file);
-
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("Cannot read selected image"));
-    };
-    image.src = objectUrl;
-  });
-}
-
-function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number) {
-  return new Promise<Blob | null>((resolve) => {
-    canvas.toBlob(resolve, "image/jpeg", quality);
-  });
-}
-
-async function compressPhoto(file: File, maxDimension: number, quality: number) {
-  if (!file.type.startsWith("image/")) return file;
-
-  const image = await loadImage(file);
-  const sourceWidth = image.naturalWidth || image.width;
-  const sourceHeight = image.naturalHeight || image.height;
-  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
-  const width = Math.max(1, Math.round(sourceWidth * scale));
-  const height = Math.max(1, Math.round(sourceHeight * scale));
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-
-  if (!context) return file;
-
-  canvas.width = width;
-  canvas.height = height;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-
-  const blob = await canvasToJpegBlob(canvas, quality);
-  if (!blob || blob.size >= file.size) return file;
-
-  return new File([blob], compressedPhotoName(file.name), {
-    type: "image/jpeg",
-    lastModified: file.lastModified,
-  });
-}
-
-async function preparePhotosForUpload(photoFiles: File[]) {
-  const originalBytes = photoFiles.reduce((sum, file) => sum + file.size, 0);
-  if (originalBytes <= MAX_PHOTO_UPLOAD_BYTES) {
-    return { files: photoFiles, totalBytes: originalBytes, compressed: false };
-  }
-
-  let bestFiles = photoFiles;
-  let bestBytes = originalBytes;
-
-  for (const attempt of PHOTO_COMPRESSION_ATTEMPTS) {
-    const compressedFiles = await Promise.all(
-      photoFiles.map((file) => compressPhoto(file, attempt.maxDimension, attempt.quality).catch(() => file))
-    );
-    const totalBytes = compressedFiles.reduce((sum, file) => sum + file.size, 0);
-
-    if (totalBytes < bestBytes) {
-      bestFiles = compressedFiles;
-      bestBytes = totalBytes;
-    }
-
-    if (totalBytes <= MAX_PHOTO_UPLOAD_BYTES) {
-      return { files: compressedFiles, totalBytes, compressed: true };
-    }
-  }
-
-  return { files: bestFiles, totalBytes: bestBytes, compressed: bestBytes < originalBytes };
-}
-
-async function createPhotoUploadSession({
-  projectId,
-  date,
-  file,
-}: {
-  projectId: string;
-  date: string;
-  file: File;
-}) {
-  const response = await fetch("/api/reports/photos/upload-session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      project_id: projectId,
-      date,
-      file_name: file.name,
-      mime_type: file.type || "application/octet-stream",
-      size: file.size,
-    }),
-  });
-  const result = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(typeof result?.error === "string" ? result.error : "สร้าง session อัปโหลดรูปไม่สำเร็จ");
-  }
-
-  const uploadUrl = String(result?.data?.upload_url || "");
-  if (!uploadUrl) throw new Error("ไม่พบ URL สำหรับอัปโหลดรูปไป Google Drive");
-  return uploadUrl;
-}
-
-async function uploadPhotoDirectToDrive(projectId: string, date: string, file: File) {
-  const uploadUrl = await createPhotoUploadSession({ projectId, date, file });
-  const response = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": file.type || "application/octet-stream",
-    },
-    body: file,
-  });
-  const responseText = await response.text();
-  const result = responseText ? JSON.parse(responseText) : {};
-
-  if (!response.ok) {
-    throw new Error(typeof result?.error?.message === "string" ? result.error.message : "อัปโหลดรูปไป Google Drive ไม่สำเร็จ");
-  }
-
-  return {
-    id: String(result.id || ""),
-    name: String(result.name || file.name),
-    mimeType: String(result.mimeType || file.type || "application/octet-stream"),
-    webViewLink: result.webViewLink,
-    webContentLink: result.webContentLink,
-  } satisfies DriveUploadedPhoto;
-}
-
-async function uploadPhotosDirectToDrive(projectId: string, date: string, photoFiles: File[]) {
-  const uploadedPhotos: DriveUploadedPhoto[] = [];
-
-  for (const file of photoFiles) {
-    const uploaded = await uploadPhotoDirectToDrive(projectId, date, file);
-    if (!uploaded.id) throw new Error("Google Drive ไม่ส่ง file id กลับมา");
-    uploadedPhotos.push(uploaded);
-  }
-
-  return uploadedPhotos;
-}
-
 function lineStatusText(status?: string | number) {
   if (status === "sent") return "ส่ง LINE แล้ว";
   if (status === "failed") return "ส่ง LINE ไม่สำเร็จ";
   if (status === "disabled") return "ปิดการส่ง LINE";
   if (status === "pending") return "รอส่ง LINE";
   return "ยังไม่มีสถานะ";
+}
+
+function driveFolderUrl(folderId?: string | number) {
+  const id = String(folderId || "").trim();
+  return id ? `https://drive.google.com/drive/folders/${encodeURIComponent(id)}` : "";
+}
+
+function reportPhotosUrl(report?: ReportRecord) {
+  return driveFolderUrl(report?.photos_month_folder_id || report?.photos_folder_id);
 }
 
 export function DailyReportsWorkspace({
@@ -254,7 +93,6 @@ export function DailyReportsWorkspace({
   const [personnel, setPersonnel] = useState<Row[]>([createEmptyRow(personnelColumns)]);
   const [machinery, setMachinery] = useState<Row[]>([createEmptyRow(machineryColumns)]);
   const [materials, setMaterials] = useState<Row[]>([createEmptyRow(materialColumns)]);
-  const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -266,17 +104,9 @@ export function DailyReportsWorkspace({
   const latestReport = reports[0];
   const sentCount = reports.filter((report) => report.line_status === "sent").length;
   const failedCount = reports.filter((report) => report.line_status === "failed").length;
-  const photoCount = reports.filter((report) => report.photos_folder_id).length;
+  const photoCount = reports.filter((report) => report.photos_month_folder_id || report.photos_folder_id).length;
   const totalWorkers = latestReport?.workers || sumRows(personnel, "qty");
-
-  const addFiles = (selectedFiles: FileList | null) => {
-    if (!selectedFiles) return;
-    setFiles((current) => [...current, ...Array.from(selectedFiles)].slice(0, MAX_PHOTO_COUNT));
-  };
-
-  const removeFile = (index: number) => {
-    setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
-  };
+  const latestPhotosUrl = reportPhotosUrl(latestReport);
 
   const submitReport = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -286,17 +116,12 @@ export function DailyReportsWorkspace({
     setLineWarning("");
 
     const formData = new FormData(event.currentTarget);
-    const reportDate = String(formData.get("date") || todayValue());
-    const preparedPhotos = await preparePhotosForUpload(files);
-    const uploadedPhotos = preparedPhotos.files.length > 0
-      ? await uploadPhotosDirectToDrive(project.project_id, reportDate, preparedPhotos.files)
-      : [];
 
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
     formData.set("materials_json", JSON.stringify(materials));
     formData.set("workers", String(sumRows(personnel, "qty") || formData.get("workers") || ""));
-    formData.set("uploaded_photos_json", JSON.stringify(uploadedPhotos));
+    formData.set("uploaded_photos_json", "[]");
 
     try {
       const response = await fetch("/api/reports", {
@@ -324,7 +149,6 @@ export function DailyReportsWorkspace({
       } else {
         setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว`);
       }
-      setFiles([]);
       setPersonnel([createEmptyRow(personnelColumns)]);
       setMachinery([createEmptyRow(machineryColumns)]);
       setMaterials([createEmptyRow(materialColumns)]);
@@ -333,7 +157,7 @@ export function DailyReportsWorkspace({
       setActiveTab("dashboard");
     } catch (submitError) {
       if (submitError instanceof SyntaxError) {
-        setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจากไฟล์แนบใหญ่เกินไป, function timeout, หรือ deploy ยังไม่อัปเดต");
+        setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจาก function timeout หรือ deploy ยังไม่อัปเดต");
       } else {
         setError(submitError instanceof Error ? submitError.message : "บันทึกรายงานไม่สำเร็จ");
       }
@@ -373,7 +197,7 @@ export function DailyReportsWorkspace({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <Metric icon={FileText} label="รายงานทั้งหมด" value={`${reports.length}`} />
             <Metric icon={Send} label="ส่ง LINE สำเร็จ" value={`${sentCount}`} />
-            <Metric icon={ImageIcon} label="รายงานที่มีรูป" value={`${photoCount}`} />
+            <Metric icon={ImageIcon} label="ลิงก์รูปพร้อมใช้" value={`${photoCount}`} />
             <Metric icon={Users} label="คนงานล่าสุด" value={`${totalWorkers || 0}`} />
           </div>
 
@@ -400,12 +224,20 @@ export function DailyReportsWorkspace({
                       LINE error: {String(latestReport.line_error)}
                     </div>
                   )}
-                  {latestReport.pdf_url && (
-                    <a href={String(latestReport.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700">
-                      <Printer size={16} />
-                      เปิด/พิมพ์ PDF
-                    </a>
-                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {latestReport.pdf_url && (
+                      <a href={String(latestReport.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700">
+                        <Printer size={16} />
+                        เปิด/พิมพ์ PDF
+                      </a>
+                    )}
+                    {latestPhotosUrl && (
+                      <a href={latestPhotosUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                        <ImageIcon size={16} />
+                        เปิดโฟลเดอร์รูปภาพ
+                      </a>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-gray-200 p-6 text-center text-sm text-gray-500">ยังไม่มีรายงานประจำวันของไซต์นี้</div>
@@ -429,24 +261,33 @@ export function DailyReportsWorkspace({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 bg-white">
-                    {reports.map((report) => (
-                      <tr key={String(report.report_id)} className="text-gray-700">
-                        <td className="px-4 py-3">{formatDate(report.date)}</td>
-                        <td className="px-4 py-3 font-semibold text-gray-950">{report.document_no || report.report_id}</td>
-                        <td className="px-4 py-3">{report.weather || "-"}</td>
-                        <td className="px-4 py-3">
-                          <div>{lineStatusText(report.line_status)}</div>
-                          {report.line_status === "failed" && report.line_error && (
-                            <div className="mt-1 max-w-xs text-xs text-red-600">{String(report.line_error)}</div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {report.pdf_url ? (
-                            <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>
-                          ) : "-"}
-                        </td>
-                      </tr>
-                    ))}
+                    {reports.map((report) => {
+                      const photosUrl = reportPhotosUrl(report);
+                      return (
+                        <tr key={String(report.report_id)} className="text-gray-700">
+                          <td className="px-4 py-3">{formatDate(report.date)}</td>
+                          <td className="px-4 py-3 font-semibold text-gray-950">{report.document_no || report.report_id}</td>
+                          <td className="px-4 py-3">{report.weather || "-"}</td>
+                          <td className="px-4 py-3">
+                            <div>{lineStatusText(report.line_status)}</div>
+                            {report.line_status === "failed" && report.line_error && (
+                              <div className="mt-1 max-w-xs text-xs text-red-600">{String(report.line_error)}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex justify-end gap-3">
+                              {report.pdf_url ? (
+                                <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>
+                              ) : null}
+                              {photosUrl ? (
+                                <a href={photosUrl} target="_blank" rel="noreferrer" className="font-semibold text-gray-600 hover:underline">รูป</a>
+                              ) : null}
+                              {!report.pdf_url && !photosUrl ? "-" : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {reports.length === 0 && !isLoading && (
                       <tr>
                         <td colSpan={5} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายงาน</td>
@@ -514,29 +355,9 @@ export function DailyReportsWorkspace({
           </FormSection>
 
           <FormSection title="รูปภาพประกอบรายงาน" icon={ImageIcon}>
-            <label className="relative flex min-h-36 cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 text-center transition hover:border-orange-300 hover:bg-orange-50/40">
-              <input type="file" multiple accept="image/*" className="sr-only" onChange={(event) => addFiles(event.target.files)} />
-              <div className="space-y-2 text-gray-500">
-                <span className="attach-file-button mx-auto">
-                  <UploadCloud />
-                  แนบรูป
-                </span>
-                <div>สูงสุด 10 รูปต่อรายงาน</div>
-                <div className="text-xs">ระบบจะแนบเฉพาะรูปของรายงานครั้งนี้ และแยกโฟลเดอร์ใน Google Drive</div>
-              </div>
-            </label>
-            {files.length > 0 && (
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                {files.map((file, index) => (
-                  <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm">
-                    <span className="truncate text-gray-700">{index + 1}. {file.name}</span>
-                    <button type="button" onClick={() => removeFile(index)} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600" aria-label="ลบรูป" title="ลบรูป">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="rounded-xl border border-dashed border-orange-200 bg-orange-50/50 p-4 text-sm text-gray-700">
+              บันทึกรายงานก่อน แล้วอัปโหลดรูปภาพโดยตรงใน Google Drive จากปุ่ม “ดูรูปภาพประกอบ” ใน LINE หรือปุ่มโฟลเดอร์รูปภาพบน Dashboard
+            </div>
           </FormSection>
 
           <div className="flex flex-wrap justify-end gap-3 border-t border-gray-100 pt-6">
@@ -545,7 +366,7 @@ export function DailyReportsWorkspace({
             </button>
             <button disabled={loading} type="submit" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-6 py-2 font-semibold text-white transition hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
               {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-              {loading ? "กำลังสร้าง PDF และส่ง LINE..." : "บันทึกและส่ง LINE"}
+              {loading ? "กำลังบันทึกและส่ง LINE..." : "บันทึกและส่ง LINE"}
             </button>
           </div>
         </form>
