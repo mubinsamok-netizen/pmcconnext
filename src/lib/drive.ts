@@ -1,4 +1,4 @@
-import { drive, DRIVE_ROOT_FOLDER_ID } from "./google";
+import { auth, drive, DRIVE_ROOT_FOLDER_ID } from "./google";
 import { Readable } from "stream";
 
 export async function createFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
@@ -78,6 +78,52 @@ export async function uploadFile(
     console.error(`Error uploading file ${fileName}:`, error);
     throw error;
   }
+}
+
+async function getDriveAccessToken() {
+  const client = await auth.getClient();
+  const tokenResponse = await client.getAccessToken();
+  const token = typeof tokenResponse === "string" ? tokenResponse : tokenResponse?.token;
+  if (!token) throw new Error("Unable to create Google Drive upload session");
+  return token;
+}
+
+export async function createResumableUploadSession({
+  fileName,
+  mimeType,
+  size,
+  parentId,
+}: {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  parentId: string;
+}) {
+  const token = await getDriveAccessToken();
+  const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,mimeType,size,webViewLink,webContentLink", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Type": mimeType || "application/octet-stream",
+      "X-Upload-Content-Length": String(size || 0),
+    },
+    body: JSON.stringify({
+      name: fileName,
+      mimeType: mimeType || "application/octet-stream",
+      parents: [parentId],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Google Drive upload session failed: ${errorText || response.statusText}`);
+  }
+
+  const uploadUrl = response.headers.get("location");
+  if (!uploadUrl) throw new Error("Google Drive did not return an upload URL");
+
+  return { uploadUrl };
 }
 
 export async function downloadFile(fileId: string) {

@@ -36,6 +36,30 @@ function isWithinRange(date: string, start: string, end: string) {
   return date >= start && date <= end;
 }
 
+function firstText(row: SheetRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = String(row[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function dateText(row: SheetRecord, keys: string[]) {
+  const value = firstText(row, keys);
+  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : "";
+}
+
+function rowDateInRange(row: SheetRecord, start: string, end: string, keys: string[]) {
+  const date = dateText(row, keys);
+  return Boolean(date && isWithinRange(date, start, end));
+}
+
+function moneyText(value?: string | number) {
+  const numeric = Number(String(value || "").replace(/,/g, ""));
+  if (!Number.isFinite(numeric) || numeric === 0) return "";
+  return `${new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 }).format(numeric)} บาท`;
+}
+
 function safeJsonRows(value?: string | number) {
   if (!value || typeof value !== "string") return [] as WeeklyReportTableRow[];
   try {
@@ -115,6 +139,88 @@ function buildWorkQuantitiesFromTasks(tasks: SheetRecord[]) {
   }));
 }
 
+function buildInstructionsFromExistingData({
+  dailyReports,
+  defectItems,
+  memos,
+}: {
+  dailyReports: SheetRecord[];
+  defectItems: SheetRecord[];
+  memos: SheetRecord[];
+}) {
+  const dailyInstructions = dailyReports
+    .filter((report) => report.issues || report.solutions)
+    .map((report) => ({
+      date: String(report.date || ""),
+      description: [report.issues, report.solutions].filter(Boolean).join(" / "),
+      ordered_by: "Daily Report",
+      impact: "",
+      status: report.solutions ? "resolved/follow-up" : "pending",
+    }));
+
+  const defectInstructions = defectItems.map((item) => ({
+    date: dateText(item, ["reported_date", "due_date", "created_at"]),
+    description: `Defect ${firstText(item, ["item_no", "item_id"])}: ${firstText(item, ["description", "remarks"])}`,
+    ordered_by: firstText(item, ["owner", "created_by_name"]) || "Defect",
+    impact: firstText(item, ["zone", "discipline", "work_category", "due_date"]),
+    status: String(item.status || "-"),
+  }));
+
+  const memoInstructions = memos.map((memo) => ({
+    date: dateText(memo, ["event_date", "issue_date", "created_at"]),
+    description: `${firstText(memo, ["document_no", "memo_id"])}: ${firstText(memo, ["title", "detail"])}`,
+    ordered_by: firstText(memo, ["prepared_by_name", "prepared_by_email"]) || "Memo",
+    impact: memo.has_time_impact === "TRUE" || memo.has_time_impact === "true"
+      ? `Time impact ${String(memo.extension_days || 0)} days`
+      : firstText(memo, ["related_module", "memo_type"]),
+    status: String(memo.status || "-"),
+  }));
+
+  return [...dailyInstructions, ...defectInstructions, ...memoInstructions];
+}
+
+function buildApprovalsFromExistingData({
+  variationOrders,
+  paymentClaims,
+  documents,
+}: {
+  variationOrders: SheetRecord[];
+  paymentClaims: SheetRecord[];
+  documents: SheetRecord[];
+}) {
+  const voRows = variationOrders.map((vo) => ({
+    document_no: firstText(vo, ["vo_id", "document_no"]),
+    type: `VO ${String(vo.vo_type || "")}`.trim(),
+    subject: firstText(vo, ["title", "description"]),
+    submitted_date: dateText(vo, ["created_at", "updated_at", "approval_deadline"]),
+    status: String(vo.status || "-"),
+    owner: firstText(vo, ["created_by_name", "created_by_email", "client_name"]),
+    note: [moneyText(vo.grand_total), vo.extension_days ? `extension ${vo.extension_days} days` : ""].filter(Boolean).join(" / "),
+  }));
+
+  const paymentRows = paymentClaims.map((claim) => ({
+    document_no: firstText(claim, ["doc_no", "claim_id"]),
+    type: `Payment ${String(claim.type || "")}`.trim(),
+    subject: firstText(claim, ["description", "payee_name"]),
+    submitted_date: dateText(claim, ["created_date", "created_at", "due_date"]),
+    status: String(claim.status || "-"),
+    owner: firstText(claim, ["prepared_by", "created_by_name", "created_by_email"]),
+    note: [moneyText(claim.net_payable), claim.due_date ? `due ${claim.due_date}` : ""].filter(Boolean).join(" / "),
+  }));
+
+  const documentRows = documents.map((document) => ({
+    document_no: firstText(document, ["document_id", "version_number"]),
+    type: firstText(document, ["category", "mime_type"]) || "Document",
+    subject: firstText(document, ["title", "file_name"]),
+    submitted_date: dateText(document, ["created_at", "updated_at"]),
+    status: "uploaded",
+    owner: firstText(document, ["uploaded_by_name", "uploaded_by_email"]),
+    note: firstText(document, ["notes", "drive_url"]),
+  }));
+
+  return [...voRows, ...paymentRows, ...documentRows];
+}
+
 async function buildWeeklyPayload({
   projectId,
   weekStart,
@@ -134,12 +240,32 @@ async function buildWeeklyPayload({
   documentNo?: string;
   reportId?: string;
 }): Promise<WeeklyReportPayload> {
-  const allDaily = await findAll("Daily_Reports", sheetId) as SheetRecord[];
-  const allTasks = await findAll("Tasks", sheetId) as SheetRecord[];
+  const [
+    allDaily,
+    allTasks,
+    allDefectItems,
+    allVariationOrders,
+    allPaymentClaims,
+    allMemos,
+    allDocuments,
+  ] = await Promise.all([
+    findAll("Daily_Reports", sheetId) as Promise<SheetRecord[]>,
+    findAll("Tasks", sheetId) as Promise<SheetRecord[]>,
+    findAll("Defect_Items", sheetId) as Promise<SheetRecord[]>,
+    findAll("Variation_Orders", sheetId) as Promise<SheetRecord[]>,
+    findAll("Payment_Claims", sheetId) as Promise<SheetRecord[]>,
+    findAll("Site_Memos", sheetId) as Promise<SheetRecord[]>,
+    findAll("Project_Documents", sheetId) as Promise<SheetRecord[]>,
+  ]);
   const dailyReports = allDaily
     .filter((report) => report.project_id === projectId && isWithinRange(String(report.date || ""), weekStart, weekEnd))
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
   const weeklyTasks = allTasks.filter((task) => task.project_id === projectId && taskDateInRange(task, weekStart, weekEnd));
+  const weeklyDefectItems = allDefectItems.filter((item) => item.project_id === projectId && rowDateInRange(item, weekStart, weekEnd, ["reported_date", "due_date", "created_at", "updated_at"]));
+  const weeklyVariationOrders = allVariationOrders.filter((vo) => vo.project_id === projectId && rowDateInRange(vo, weekStart, weekEnd, ["created_at", "updated_at", "approval_deadline", "due_date"]));
+  const weeklyPaymentClaims = allPaymentClaims.filter((claim) => claim.project_id === projectId && rowDateInRange(claim, weekStart, weekEnd, ["created_date", "due_date", "transfer_date", "created_at", "updated_at"]));
+  const weeklyMemos = allMemos.filter((memo) => memo.project_id === projectId && rowDateInRange(memo, weekStart, weekEnd, ["event_date", "issue_date", "created_at", "updated_at"]));
+  const weeklyDocuments = allDocuments.filter((document) => document.project_id === projectId && rowDateInRange(document, weekStart, weekEnd, ["created_at", "updated_at"]));
 
   const dailyMaterials = dailyReports.flatMap((report) => safeJsonRows(report.materials_json));
   const dailyMachinery = dailyReports.flatMap((report) => safeJsonRows(report.machinery_json));
@@ -162,16 +288,16 @@ async function buildWeeklyPayload({
     machinery: groupSum(dailyMachinery, "name", "qty", "qty").map((row) => ({ ...row, usage: row.hours || "", note: row.note || "" })),
     personnel: groupSum(dailyPersonnel, "role", "qty", "avg_qty").map((row) => ({ ...row, work_days: String(dailyReports.length), note: row.note || "" })),
     progress: buildProgressFromTasks(weeklyTasks),
-    instructions: dailyReports
-      .filter((report) => report.issues || report.solutions)
-      .map((report) => ({
-        date: String(report.date || ""),
-        description: [report.issues, report.solutions].filter(Boolean).join(" / "),
-        ordered_by: "Daily Report",
-        impact: "",
-        status: report.solutions ? "ดำเนินการแล้ว/ติดตามผล" : "รอติดตาม",
-      })),
-    approvals: [],
+    instructions: buildInstructionsFromExistingData({
+      dailyReports,
+      defectItems: weeklyDefectItems,
+      memos: weeklyMemos,
+    }),
+    approvals: buildApprovalsFromExistingData({
+      variationOrders: weeklyVariationOrders,
+      paymentClaims: weeklyPaymentClaims,
+      documents: weeklyDocuments,
+    }),
     daily_summaries: dailyReports.map((report) => ({
       date: String(report.date || ""),
       weather: String(report.weather || ""),

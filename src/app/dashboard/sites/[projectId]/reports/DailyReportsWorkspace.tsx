@@ -11,8 +11,23 @@ import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
 type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
+type DriveUploadedPhoto = {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink?: string;
+  webContentLink?: string;
+};
 
-const MAX_PHOTO_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_PHOTO_UPLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_PHOTO_COUNT = 10;
+const PHOTO_COMPRESSION_ATTEMPTS = [
+  { maxDimension: 1600, quality: 0.78 },
+  { maxDimension: 1400, quality: 0.72 },
+  { maxDimension: 1200, quality: 0.66 },
+  { maxDimension: 1100, quality: 0.6 },
+  { maxDimension: 1000, quality: 0.55 },
+];
 
 const weatherOptions = ["แจ่มใส", "มีเมฆบางส่วน", "มีเมฆมาก", "ฝนตกปรอย ๆ", "ฝนตกหนัก", "หยุดงานเนื่องจากสภาพอากาศ"];
 
@@ -67,9 +82,157 @@ function sumRows(rows: Row[], key: string) {
   }, 0);
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function compressedPhotoName(fileName: string) {
+  const withoutExtension = fileName.replace(/\.[^.]+$/, "");
+  return `${withoutExtension || "photo"}.jpg`;
+}
+
+function loadImage(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Cannot read selected image"));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", quality);
+  });
+}
+
+async function compressPhoto(file: File, maxDimension: number, quality: number) {
+  if (!file.type.startsWith("image/")) return file;
+
+  const image = await loadImage(file);
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context) return file;
+
+  canvas.width = width;
+  canvas.height = height;
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+
+  const blob = await canvasToJpegBlob(canvas, quality);
+  if (!blob || blob.size >= file.size) return file;
+
+  return new File([blob], compressedPhotoName(file.name), {
+    type: "image/jpeg",
+    lastModified: file.lastModified,
+  });
+}
+
+async function preparePhotosForUpload(photoFiles: File[]) {
+  const originalBytes = photoFiles.reduce((sum, file) => sum + file.size, 0);
+  if (originalBytes <= MAX_PHOTO_UPLOAD_BYTES) {
+    return { files: photoFiles, totalBytes: originalBytes, compressed: false };
+  }
+
+  let bestFiles = photoFiles;
+  let bestBytes = originalBytes;
+
+  for (const attempt of PHOTO_COMPRESSION_ATTEMPTS) {
+    const compressedFiles = await Promise.all(
+      photoFiles.map((file) => compressPhoto(file, attempt.maxDimension, attempt.quality).catch(() => file))
+    );
+    const totalBytes = compressedFiles.reduce((sum, file) => sum + file.size, 0);
+
+    if (totalBytes < bestBytes) {
+      bestFiles = compressedFiles;
+      bestBytes = totalBytes;
+    }
+
+    if (totalBytes <= MAX_PHOTO_UPLOAD_BYTES) {
+      return { files: compressedFiles, totalBytes, compressed: true };
+    }
+  }
+
+  return { files: bestFiles, totalBytes: bestBytes, compressed: bestBytes < originalBytes };
+}
+
+async function createPhotoUploadSession({
+  projectId,
+  date,
+  file,
+}: {
+  projectId: string;
+  date: string;
+  file: File;
+}) {
+  const response = await fetch("/api/reports/photos/upload-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      date,
+      file_name: file.name,
+      mime_type: file.type || "application/octet-stream",
+      size: file.size,
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(typeof result?.error === "string" ? result.error : "สร้าง session อัปโหลดรูปไม่สำเร็จ");
+  }
+
+  const uploadUrl = String(result?.data?.upload_url || "");
+  if (!uploadUrl) throw new Error("ไม่พบ URL สำหรับอัปโหลดรูปไป Google Drive");
+  return uploadUrl;
+}
+
+async function uploadPhotoDirectToDrive(projectId: string, date: string, file: File) {
+  const uploadUrl = await createPhotoUploadSession({ projectId, date, file });
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+    },
+    body: file,
+  });
+  const responseText = await response.text();
+  const result = responseText ? JSON.parse(responseText) : {};
+
+  if (!response.ok) {
+    throw new Error(typeof result?.error?.message === "string" ? result.error.message : "อัปโหลดรูปไป Google Drive ไม่สำเร็จ");
+  }
+
+  return {
+    id: String(result.id || ""),
+    name: String(result.name || file.name),
+    mimeType: String(result.mimeType || file.type || "application/octet-stream"),
+    webViewLink: result.webViewLink,
+    webContentLink: result.webContentLink,
+  } satisfies DriveUploadedPhoto;
+}
+
+async function uploadPhotosDirectToDrive(projectId: string, date: string, photoFiles: File[]) {
+  const uploadedPhotos: DriveUploadedPhoto[] = [];
+
+  for (const file of photoFiles) {
+    const uploaded = await uploadPhotoDirectToDrive(projectId, date, file);
+    if (!uploaded.id) throw new Error("Google Drive ไม่ส่ง file id กลับมา");
+    uploadedPhotos.push(uploaded);
+  }
+
+  return uploadedPhotos;
 }
 
 function lineStatusText(status?: string | number) {
@@ -95,6 +258,7 @@ export function DailyReportsWorkspace({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lineWarning, setLineWarning] = useState("");
 
   const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}`;
   const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetcher);
@@ -107,7 +271,7 @@ export function DailyReportsWorkspace({
 
   const addFiles = (selectedFiles: FileList | null) => {
     if (!selectedFiles) return;
-    setFiles((current) => [...current, ...Array.from(selectedFiles)].slice(0, 10));
+    setFiles((current) => [...current, ...Array.from(selectedFiles)].slice(0, MAX_PHOTO_COUNT));
   };
 
   const removeFile = (index: number) => {
@@ -119,20 +283,20 @@ export function DailyReportsWorkspace({
     setLoading(true);
     setError("");
     setSuccess("");
-
-    const totalPhotoBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (totalPhotoBytes > MAX_PHOTO_UPLOAD_BYTES) {
-      setError(`รูปภาพรวมใหญ่เกินไป (${formatBytes(totalPhotoBytes)}) กรุณาลดจำนวนรูปหรือบีบอัดให้ไม่เกิน ${formatBytes(MAX_PHOTO_UPLOAD_BYTES)} ต่อการส่งหนึ่งครั้ง`);
-      setLoading(false);
-      return;
-    }
+    setLineWarning("");
 
     const formData = new FormData(event.currentTarget);
+    const reportDate = String(formData.get("date") || todayValue());
+    const preparedPhotos = await preparePhotosForUpload(files);
+    const uploadedPhotos = preparedPhotos.files.length > 0
+      ? await uploadPhotosDirectToDrive(project.project_id, reportDate, preparedPhotos.files)
+      : [];
+
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
     formData.set("materials_json", JSON.stringify(materials));
     formData.set("workers", String(sumRows(personnel, "qty") || formData.get("workers") || ""));
-    files.forEach((file) => formData.append("photos", file));
+    formData.set("uploaded_photos_json", JSON.stringify(uploadedPhotos));
 
     try {
       const response = await fetch("/api/reports", {
@@ -146,7 +310,20 @@ export function DailyReportsWorkspace({
         throw new Error(serverError || `บันทึกรายงานไม่สำเร็จ (${response.status} ${response.statusText})`);
       }
 
-      setSuccess(`บันทึกรายงาน ${result.data?.document_no || ""} สำเร็จ`);
+      const documentNo = String(result.data?.document_no || "");
+      const lineStatus = result.data?.line_status;
+      const lineError = typeof result.data?.line_error === "string" ? result.data.line_error : "";
+
+      if (lineStatus === "failed") {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว`);
+        setLineWarning(`แต่ส่ง LINE ไม่สำเร็จ: ${lineError || "กรุณาตรวจสอบการตั้งค่า LINE หรือส่งใหม่ภายหลัง"}`);
+      } else if (lineStatus === "sent") {
+        setSuccess(`บันทึกรายงาน ${documentNo} และส่ง LINE สำเร็จแล้ว`);
+      } else if (lineStatus === "disabled") {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว (ไม่ได้ส่ง LINE เพราะปิดการแจ้งเตือน)`);
+      } else {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว`);
+      }
       setFiles([]);
       setPersonnel([createEmptyRow(personnelColumns)]);
       setMachinery([createEmptyRow(machineryColumns)]);
@@ -184,6 +361,7 @@ export function DailyReportsWorkspace({
       </div>
 
       {success && <Alert tone="success">{success}</Alert>}
+      {lineWarning && <Alert tone="warning">{lineWarning}</Alert>}
       {(error || loadError) && <Alert tone="error">{error || loadError?.message || "โหลดข้อมูลรายงานไม่สำเร็จ"}</Alert>}
 
       {allowAdvancedReports && activeTab === "weekly" ? (
@@ -397,9 +575,15 @@ function Metric({ icon: Icon, label, value }: { icon: React.ElementType; label: 
   );
 }
 
-function Alert({ tone, children }: { tone: "success" | "error"; children: React.ReactNode }) {
+function Alert({ tone, children }: { tone: "success" | "warning" | "error"; children: React.ReactNode }) {
+  const toneClass = {
+    success: "border-green-100 bg-green-50 text-green-700",
+    warning: "border-amber-100 bg-amber-50 text-amber-800",
+    error: "border-red-100 bg-red-50 text-red-700",
+  }[tone];
+
   return (
-    <div className={`rounded-xl border p-4 text-sm font-medium ${tone === "success" ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
+    <div className={`rounded-xl border p-4 text-sm font-medium ${toneClass}`}>
       {children}
     </div>
   );

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPhoto, type DailyReportPayload } from "@/lib/dailyReports";
-import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { createPdfReportFile } from "@/lib/reportPdf";
@@ -16,6 +16,13 @@ type ProjectWithLine = MasterProject & {
   line_group_name?: string;
   line_notify_enabled?: string;
 };
+type UploadedReportPhoto = {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  webViewLink?: string;
+  webContentLink?: string;
+};
 
 const FALLBACK_LINE_GROUP_ID = process.env.LINE_GROUP_ID || "";
 
@@ -26,6 +33,21 @@ function getErrorMessage(error: unknown) {
 function getText(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
+}
+
+function getUploadedPhotos(formData: FormData) {
+  const value = formData.get("uploaded_photos_json");
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((photo): photo is UploadedReportPhoto => Boolean(photo && typeof photo === "object" && String((photo as UploadedReportPhoto).id || "").trim()))
+      .slice(0, 10);
+  } catch {
+    return [];
+  }
 }
 
 function getMonthKey(date: string) {
@@ -74,7 +96,21 @@ async function getProject(projectId: string) {
   }
 }
 
-async function readPhotos(formData: FormData): Promise<{ files: File[]; pdfPhotos: DailyReportPhoto[] }> {
+async function readPhotos(formData: FormData): Promise<{ files: File[]; uploadedPhotos: UploadedReportPhoto[]; pdfPhotos: DailyReportPhoto[] }> {
+  const uploadedPhotos = getUploadedPhotos(formData);
+  if (uploadedPhotos.length > 0) {
+    const pdfPhotos = await Promise.all(uploadedPhotos.map(async (photo) => {
+      const file = await downloadFile(String(photo.id));
+      return {
+        name: photo.name || file.name,
+        mimeType: photo.mimeType || file.mimeType,
+        dataUrl: `data:${photo.mimeType || file.mimeType};base64,${file.buffer.toString("base64")}`,
+      };
+    }));
+
+    return { files: [], uploadedPhotos, pdfPhotos };
+  }
+
   const files = formData
     .getAll("photos")
     .filter((item): item is File => item instanceof File && item.size > 0)
@@ -92,6 +128,7 @@ async function readPhotos(formData: FormData): Promise<{ files: File[]; pdfPhoto
 
   return {
     files,
+    uploadedPhotos: [],
     pdfPhotos: pdfPhotos.map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl })),
   };
 }
@@ -116,6 +153,12 @@ async function uploadPhotos(files: File[], photosFolderId: string, documentNo: s
   }
 
   return uploadedPhotoUrls.filter(Boolean);
+}
+
+function getUploadedPhotoUrls(photos: UploadedReportPhoto[]) {
+  return photos
+    .map((photo) => photo.webViewLink || photo.webContentLink || (photo.id ? `https://drive.google.com/file/d/${photo.id}/view` : ""))
+    .filter(Boolean);
 }
 
 async function createPdf({
@@ -188,7 +231,7 @@ export async function POST(req: Request) {
     const machinery = parseJsonRows(formData.get("machinery_json"));
     const materials = parseJsonRows(formData.get("materials_json"));
     const workers = getText(formData, "workers") || sumPersonnel(personnel);
-    const { files, pdfPhotos } = await readPhotos(formData);
+    const { files, uploadedPhotos, pdfPhotos } = await readPhotos(formData);
 
     step = "สร้าง/ค้นหาโฟลเดอร์ Daily Reports ใน Google Drive";
     const dailyReportsFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
@@ -204,7 +247,11 @@ export async function POST(req: Request) {
     if (!pdfFolder.id || !photosMonthFolder.id) throw new Error("Failed to create report subfolders");
 
     step = "อัปโหลดรูปภาพประกอบไป Google Drive";
-    const uploadedPhotoUrls = files.length > 0 ? await uploadPhotos(files, photosMonthFolder.id, document_no) : [];
+    const uploadedPhotoUrls = uploadedPhotos.length > 0
+      ? getUploadedPhotoUrls(uploadedPhotos)
+      : files.length > 0
+        ? await uploadPhotos(files, photosMonthFolder.id, document_no)
+        : [];
 
     const reportPayload: DailyReportPayload = {
       report_id,
@@ -281,7 +328,7 @@ export async function POST(req: Request) {
     if (lineEnabled) {
       try {
         if (!lineGroupId) throw new Error("LINE group ID is not configured");
-        const flexMessage = buildDailyReportLineFlex({ report: reportPayload, pdfUrl, photosFolderUrl, photoCount: files.length });
+        const flexMessage = buildDailyReportLineFlex({ report: reportPayload, pdfUrl, photosFolderUrl, photoCount: uploadedPhotoUrls.length });
         await sendLineMessages([flexMessage], lineGroupId);
         linePatch = {
           line_status: "sent",
