@@ -412,7 +412,7 @@ export default function EditProjectPage() {
             <input value={form.end_date} onChange={(event) => update("end_date", event.target.value)} type="date" className="form-input" />
           </Field>
           <Field label="มูลค่าสัญญา (บาท)">
-            <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" className="form-input" />
+            <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" min="0" step="any" inputMode="decimal" className="form-input" />
           </Field>
           <Field label="เลขที่สัญญา">
             <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" />

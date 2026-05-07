@@ -617,6 +617,11 @@ body {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.2);
 }
 
+.pmc-google-button.is-hidden,
+.pmc-auth-divider.is-hidden {
+  display: none;
+}
+
 .pmc-google-button:hover {
   transform: translateY(-1px);
   border-color: rgba(240, 68, 28, 0.48);
@@ -1608,12 +1613,24 @@ body {
 
 .form-input {
   width: 100%;
+  min-height: 44px;
   border-radius: 12px;
   border: 1px solid #e5e7eb;
   padding: 12px 16px;
+  background: #ffffff;
   color: #111827;
+  font-size: 0.95rem;
+  line-height: 1.45;
   outline: none;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.form-input::placeholder {
+  color: #94a3b8;
+}
+
+textarea.form-input {
+  min-height: auto;
 }
 
 .form-input:focus {

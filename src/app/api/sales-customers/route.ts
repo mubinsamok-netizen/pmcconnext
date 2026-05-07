@@ -95,6 +95,7 @@ export async function POST(req: Request) {
       status: body.status || "new",
       contact_logs_json: JSON.stringify([]),
       last_contacted_at: "",
+      next_follow_up_date: body.next_follow_up_date || new Date().toISOString().slice(0, 10),
       project_id: "",
       notes: body.notes || "",
       freebies: body.freebies || "",
@@ -153,6 +154,7 @@ export async function PUT(req: Request) {
       patch = {
         contact_logs_json: JSON.stringify(logs),
         last_contacted_at: date,
+        next_follow_up_date: body.next_follow_up_date || "",
         status: body.status || current.status || "waiting",
       };
     } else if (action === "mark_deposited") {
@@ -175,6 +177,7 @@ export async function PUT(req: Request) {
         "interest_level",
         "status",
         "last_contacted_at",
+        "next_follow_up_date",
         "project_id",
         "notes",
         "freebies",

@@ -17,7 +17,13 @@ type ProjectHealth = {
   overdue_tasks: string;
   delay_days: string;
   progress_source: string;
+  daily_reports_count: string;
+  last_daily_report_date: string;
+  daily_report_missing_days: string;
+  daily_report_alert: string;
 };
+
+const DAILY_REPORT_STALE_DAYS = 7;
 
 function getErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal server error";
@@ -121,6 +127,19 @@ function parseDate(date?: string) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function isReportingRequired(project: SheetRecord) {
+  const status = String(project.status || "").toLowerCase();
+  return !["completed", "cancelled"].includes(status);
+}
+
+function daysSince(date: Date) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(date);
+  target.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.floor((today.getTime() - target.getTime()) / 86400000));
+}
+
 function isDoneTask(task: SheetRecord) {
   const status = String(task.status || "").toLowerCase();
   return status === "done" || status === "completed" || clampPercent(task.percent_done) >= 100;
@@ -148,6 +167,10 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
       overdue_tasks: "0",
       delay_days: "0",
       progress_source: "manual",
+      daily_reports_count: "0",
+      last_daily_report_date: "",
+      daily_report_missing_days: "0",
+      daily_report_alert: "FALSE",
     };
   }
 
@@ -175,6 +198,34 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
     overdue_tasks: String(overdueTasks.length),
     delay_days: String(delayDays),
     progress_source: "tasks",
+    daily_reports_count: "0",
+    last_daily_report_date: "",
+    daily_report_missing_days: "0",
+    daily_report_alert: "FALSE",
+  };
+}
+
+function calculateDailyReportHealth(project: SheetRecord, reports: SheetRecord[]) {
+  const projectReports = reports
+    .filter((report) => report.project_id === project.project_id)
+    .map((report) => ({
+      report,
+      date: parseDate(String(report.date || "")),
+    }))
+    .filter((item): item is { report: SheetRecord; date: Date } => Boolean(item.date))
+    .sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  const latestReport = projectReports[0];
+  const startDate = parseDate(String(project.start_date || ""));
+  const baselineDate = latestReport?.date || startDate;
+  const missingDays = baselineDate ? daysSince(baselineDate) : 0;
+  const shouldAlert = isReportingRequired(project) && Boolean(baselineDate) && missingDays > DAILY_REPORT_STALE_DAYS;
+
+  return {
+    daily_reports_count: String(projectReports.length),
+    last_daily_report_date: latestReport ? String(latestReport.report.date || "") : "",
+    daily_report_missing_days: String(missingDays),
+    daily_report_alert: shouldAlert ? "TRUE" : "FALSE",
   };
 }
 
@@ -185,9 +236,16 @@ async function enrichProjectWithHealth(project: SheetRecord) {
   }
 
   try {
-    const tasks = await findAll("Tasks", siteSheetId) as SheetRecord[];
+    const [tasks, dailyReports] = await Promise.all([
+      findAll("Tasks", siteSheetId) as Promise<SheetRecord[]>,
+      findAll("Daily_Reports", siteSheetId) as Promise<SheetRecord[]>,
+    ]);
     const projectTasks = tasks.filter((task) => task.project_id === project.project_id);
-    return { ...project, ...calculateProjectHealth(project, projectTasks) };
+    return {
+      ...project,
+      ...calculateProjectHealth(project, projectTasks),
+      ...calculateDailyReportHealth(project, dailyReports),
+    };
   } catch (error: unknown) {
     console.warn(`Failed to calculate progress for ${project.project_id}:`, error);
     return { ...project, ...calculateProjectHealth(project, []) };

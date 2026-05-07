@@ -108,6 +108,7 @@ export const MASTER_SCHEMA = {
     "active",
     "created_at",
     "updated_at",
+    "next_follow_up_date",
   ],
 };
 

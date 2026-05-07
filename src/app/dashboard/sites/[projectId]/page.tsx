@@ -203,6 +203,8 @@ const emptyData: DashboardData = {
   error: "",
 };
 
+const DAILY_REPORT_STALE_DAYS = 7;
+
 function stringValue(value?: SiteValue) {
   return String(value ?? "").trim();
 }
@@ -269,6 +271,29 @@ function daysUntil(value?: SiteValue) {
   today.setHours(0, 0, 0, 0);
   date.setHours(0, 0, 0, 0);
   return Math.ceil((date.getTime() - today.getTime()) / 86_400_000);
+}
+
+function daysSince(value?: SiteValue) {
+  const date = parseDate(value);
+  if (!date) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.floor((today.getTime() - date.getTime()) / 86_400_000));
+}
+
+function getDailyReportWarning(project: MasterProject, reports: ReportsSummary) {
+  if (isClosedStatus(project.status)) return "";
+
+  const latestDate = reports.latestDailyDate;
+  const missingDays = daysSince(latestDate || project.start_date);
+  if (missingDays === null || missingDays <= DAILY_REPORT_STALE_DAYS) return "";
+
+  if (latestDate) {
+    return `ไม่ได้รายงานประจำวันมา ${missingDays} วัน (ล่าสุด ${formatDate(latestDate)})`;
+  }
+
+  return `ยังไม่มีรายงานประจำวันมา ${missingDays} วัน`;
 }
 
 function statusLabel(value?: SiteValue) {
@@ -687,6 +712,7 @@ export default async function SiteDashboardPage({
     : 0;
   const visibleActions = isForeman ? dashboard.actions.filter((action) => isForemanVisibleHref(action.href)) : dashboard.actions;
   const visibleRecent = isForeman ? dashboard.recent.filter((item) => isForemanVisibleHref(item.href)) : dashboard.recent;
+  const dailyReportWarning = getDailyReportWarning(project, dashboard.reports);
   const actionItems =
     visibleActions.length > 0
       ? visibleActions
@@ -748,6 +774,16 @@ export default async function SiteDashboardPage({
         <p className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
           {dashboard.error}
         </p>
+      )}
+
+      {dailyReportWarning && (
+        <Link
+          href={`/dashboard/sites/${project.project_id}/reports`}
+          className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 transition hover:border-amber-300 hover:bg-amber-100"
+        >
+          <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+          <span>{dailyReportWarning}</span>
+        </Link>
       )}
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">

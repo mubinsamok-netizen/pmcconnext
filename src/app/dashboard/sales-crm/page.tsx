@@ -51,6 +51,7 @@ type Customer = {
   contact_logs_json?: string;
   contact_logs?: ContactLog[];
   last_contacted_at?: string;
+  next_follow_up_date?: string;
   project_id?: string;
   notes?: string;
   freebies?: string;
@@ -109,6 +110,7 @@ const emptyLead = {
   status: "new" as LeadStatus,
   notes: "",
   freebies: "",
+  next_follow_up_date: getTodayInputValue(),
 };
 
 const projectStatusPlan = [
@@ -143,6 +145,82 @@ function getTodayInputValue() {
   return today.toISOString().slice(0, 10);
 }
 
+function addDaysInputValue(value: string, days: number) {
+  const date = value ? new Date(`${value}T00:00:00`) : new Date();
+  if (Number.isNaN(date.getTime())) return getTodayInputValue();
+  date.setDate(date.getDate() + days);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
+
+function getDateDistance(targetDate: string) {
+  const today = new Date(`${getTodayInputValue()}T00:00:00`);
+  const target = new Date(`${targetDate}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.floor((target.getTime() - today.getTime()) / 86_400_000);
+}
+
+function formatInputDate(value?: string) {
+  if (!value) return "-";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function getFollowUpInfo(customer: Customer) {
+  const status = getStatus(customer.status);
+  if (status === "deposited" || status === "not_interested") return null;
+
+  const logs = customer.contact_logs || [];
+  const dueDate = customer.next_follow_up_date || (logs.length === 0 ? getTodayInputValue() : "");
+  if (!dueDate) return null;
+
+  const distance = getDateDistance(dueDate);
+  if (distance === null) return null;
+
+  if (distance < 0) {
+    return {
+      dueDate,
+      distance,
+      label: `เลยกำหนด ${Math.abs(distance)} วัน`,
+      tone: "red" as const,
+      actionable: true,
+    };
+  }
+
+  if (distance === 0) {
+    return {
+      dueDate,
+      distance,
+      label: "ต้องโทรวันนี้",
+      tone: "orange" as const,
+      actionable: true,
+    };
+  }
+
+  if (distance <= 7) {
+    return {
+      dueDate,
+      distance,
+      label: `ต้องติดตามใน ${distance} วัน`,
+      tone: "amber" as const,
+      actionable: true,
+    };
+  }
+
+  return {
+    dueDate,
+    distance,
+    label: `นัดติดตาม ${formatInputDate(dueDate)}`,
+    tone: "slate" as const,
+    actionable: false,
+  };
+}
+
 export default function SalesCrmPage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -150,12 +228,12 @@ export default function SalesCrmPage() {
   const [leadForm, setLeadForm] = useState(emptyLead);
   const [editForm, setEditForm] = useState(emptyLead);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [activeTab, setActiveTab] = useState<"form" | "table">("form");
+  const [activeTab, setActiveTab] = useState<"form" | "table">("table");
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all");
   const [contactDialogCustomer, setContactDialogCustomer] = useState<Customer | null>(null);
-  const [contactForm, setContactForm] = useState({ date: getTodayInputValue(), note: "" });
+  const [contactForm, setContactForm] = useState({ date: getTodayInputValue(), note: "", nextFollowUpDate: addDaysInputValue(getTodayInputValue(), 7) });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pendingCloseLead, setPendingCloseLead] = useState<Customer | null>(null);
@@ -186,6 +264,16 @@ export default function SalesCrmPage() {
     [customers]
   );
 
+  const followUpItems = useMemo(() => {
+    return customers
+      .map((customer) => ({ customer, followUp: getFollowUpInfo(customer) }))
+      .filter((item): item is { customer: Customer; followUp: NonNullable<ReturnType<typeof getFollowUpInfo>> } => Boolean(item.followUp?.actionable))
+      .sort((a, b) => a.followUp.distance - b.followUp.distance);
+  }, [customers]);
+
+  const overdueFollowUpCount = followUpItems.filter((item) => item.followUp.distance < 0).length;
+  const todayFollowUpCount = followUpItems.filter((item) => item.followUp.distance === 0).length;
+
   const filteredCustomers = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     return customers.filter((customer) => {
@@ -202,6 +290,7 @@ export default function SalesCrmPage() {
           customer.requirements,
           customer.notes,
           customer.freebies,
+          customer.next_follow_up_date,
         ]
           .join(" ")
           .toLowerCase()
@@ -256,12 +345,14 @@ export default function SalesCrmPage() {
       status: getStatus(customer.status),
       notes: customer.notes || "",
       freebies: customer.freebies || "",
+      next_follow_up_date: customer.next_follow_up_date || "",
     });
   };
 
   const openContactDialog = (customer: Customer) => {
+    const contactDate = getTodayInputValue();
     setContactDialogCustomer(customer);
-    setContactForm({ date: getTodayInputValue(), note: "" });
+    setContactForm({ date: contactDate, note: "", nextFollowUpDate: addDaysInputValue(contactDate, 7) });
   };
 
   const saveEditLead = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -324,6 +415,7 @@ export default function SalesCrmPage() {
           action: "add_contact_log",
           note,
           date: contactForm.date || getTodayInputValue(),
+          next_follow_up_date: contactForm.nextFollowUpDate,
           status: "waiting",
         }),
       });
@@ -334,7 +426,7 @@ export default function SalesCrmPage() {
       }
 
       setContactDialogCustomer(null);
-      setContactForm({ date: getTodayInputValue(), note: "" });
+      setContactForm({ date: getTodayInputValue(), note: "", nextFollowUpDate: addDaysInputValue(getTodayInputValue(), 7) });
       setMessage("บันทึกการติดต่อแล้ว");
       await mutate();
     } catch (err: unknown) {
@@ -398,6 +490,63 @@ export default function SalesCrmPage() {
         <SummaryCard label="วางมัดจำแล้ว" value={summary.deposited} />
         <SummaryCard label="ไม่สนใจ" value={summary.not_interested} />
       </div>
+
+      <section className="rounded-2xl border border-orange-100 bg-orange-50/60 p-4 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white text-orange-600 shadow-sm">
+              <PhoneCall size={21} />
+            </span>
+            <div>
+              <h3 className="font-extrabold text-gray-950">ต้องโทรติดตาม</h3>
+              <p className="mt-1 text-sm font-medium text-gray-600">
+                วันนี้ {todayFollowUpCount} รายการ · เลยกำหนด {overdueFollowUpCount} รายการ · รวมสัปดาห์นี้ {followUpItems.length} รายการ
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab("table")}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gray-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-gray-800"
+          >
+            <ListChecks size={16} />
+            เปิดตาราง Follow-up
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+          {followUpItems.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-orange-200 bg-white/80 px-4 py-5 text-sm font-semibold text-gray-500 lg:col-span-3">
+              ยังไม่มีลูกค้าที่ต้องโทรติดตามในสัปดาห์นี้
+            </div>
+          ) : (
+            followUpItems.slice(0, 6).map(({ customer, followUp }) => (
+              <div key={`follow-up-${customer.id}`} className="rounded-xl border border-orange-100 bg-white p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-extrabold text-gray-950">{customer.full_name}</div>
+                    <div className="mt-1 flex items-center gap-1 text-sm font-semibold text-gray-500">
+                      <PhoneCall size={14} />
+                      {customer.phone}
+                    </div>
+                  </div>
+                  <FollowUpBadge followUp={followUp} />
+                </div>
+                <div className="mt-2 line-clamp-2 text-sm text-gray-600">{customer.requirements || customer.notes || "ไม่มีรายละเอียดเพิ่มเติม"}</div>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => openContactDialog(customer)}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-600 px-3 py-2 text-sm font-bold text-white transition hover:bg-orange-700 disabled:opacity-70"
+                >
+                  <PhoneCall size={15} />
+                  บันทึกการโทร
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
 
       <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
         <div className="grid grid-cols-2 gap-2 rounded-lg bg-gray-100 p-1">
@@ -466,6 +615,9 @@ export default function SalesCrmPage() {
           </Field>
           <Field label="ของแถม">
             <input value={leadForm.freebies} onChange={(event) => updateLead("freebies", event.target.value)} className="form-input" />
+          </Field>
+          <Field label="ติดตามครั้งแรก">
+            <input type="date" value={leadForm.next_follow_up_date} onChange={(event) => updateLead("next_follow_up_date", event.target.value)} className="form-input" />
           </Field>
         </div>
 
@@ -567,6 +719,7 @@ export default function SalesCrmPage() {
                   const visibleLogs = logs.slice(-4).reverse();
                   const hiddenLogCount = Math.max(0, logs.length - visibleLogs.length);
                   const canCreateProject = status === "deposited";
+                  const followUp = getFollowUpInfo(customer);
 
                   return (
                     <tr key={customer.id} className="border-b border-gray-100 align-top hover:bg-orange-50/20">
@@ -577,6 +730,11 @@ export default function SalesCrmPage() {
                           <PhoneCall size={14} />
                           {customer.phone}
                         </div>
+                        {followUp && (
+                          <div className="mt-2">
+                            <FollowUpBadge followUp={followUp} />
+                          </div>
+                        )}
                         {customer.nickname && <div className="mt-1 text-xs text-gray-400">ชื่อเล่น: {customer.nickname}</div>}
                       </td>
                       <td className="px-4 py-4">
@@ -815,7 +973,19 @@ export default function SalesCrmPage() {
                 <input
                   type="date"
                   value={contactForm.date}
-                  onChange={(event) => setContactForm((current) => ({ ...current, date: event.target.value }))}
+                  onChange={(event) => {
+                    const nextDate = event.target.value;
+                    setContactForm((current) => ({ ...current, date: nextDate, nextFollowUpDate: addDaysInputValue(nextDate, 7) }));
+                  }}
+                  className="form-input"
+                />
+              </Field>
+
+              <Field label="ติดตามครั้งถัดไป">
+                <input
+                  type="date"
+                  value={contactForm.nextFollowUpDate}
+                  onChange={(event) => setContactForm((current) => ({ ...current, nextFollowUpDate: event.target.value }))}
                   className="form-input"
                 />
               </Field>
@@ -934,6 +1104,14 @@ export default function SalesCrmPage() {
                     className="form-input"
                   />
                 </Field>
+                <Field label="ติดตามครั้งถัดไป">
+                  <input
+                    type="date"
+                    value={editForm.next_follow_up_date}
+                    onChange={(event) => updateEditLead("next_follow_up_date", event.target.value)}
+                    className="form-input"
+                  />
+                </Field>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -996,6 +1174,22 @@ function SummaryCard({ label, value }: { label: string; value: number }) {
       <div className="text-2xl font-bold text-gray-900">{value}</div>
       <div className="text-xs text-gray-500">{label}</div>
     </div>
+  );
+}
+
+function FollowUpBadge({ followUp }: { followUp: NonNullable<ReturnType<typeof getFollowUpInfo>> }) {
+  const toneClass = {
+    red: "border-red-100 bg-red-50 text-red-700",
+    orange: "border-orange-100 bg-orange-50 text-orange-700",
+    amber: "border-amber-100 bg-amber-50 text-amber-700",
+    slate: "border-slate-100 bg-slate-50 text-slate-600",
+  }[followUp.tone];
+
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-extrabold ${toneClass}`}>
+      <Bell size={13} />
+      {followUp.label}
+    </span>
   );
 }
 

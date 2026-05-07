@@ -102,13 +102,13 @@ export default function LoginPage() {
                 setGoogleLoading(true);
                 signIn("google", { callbackUrl: "/dashboard" });
               }}
-              className="pmc-google-button"
+              className="pmc-google-button is-hidden"
             >
               <span className="pmc-google-mark">G</span>
               <span>{googleLoading ? "กำลังเปิด Google..." : "เข้าสู่ระบบด้วย Google"}</span>
             </button>
 
-            <div className="pmc-auth-divider">
+            <div className="pmc-auth-divider is-hidden">
               <span />
               <p>Email / PIN</p>
               <span />

@@ -21,6 +21,7 @@ export default async function SiteReportsPage({ params }: { params: Promise<{ pr
       title="รายงานประจำวัน"
       description="Dashboard และแบบฟอร์มรายงานประจำวัน พร้อม PDF, รูปภาพ และ LINE อัตโนมัติ"
       icon={FileText}
+      wide
     >
       <DailyReportsWorkspace project={project} allowAdvancedReports={allowAdvancedReports} />
     </SiteShell>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Building2, Calendar, Filter, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Building2, Calendar, Filter, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
 import { useSession } from "next-auth/react";
@@ -31,6 +31,10 @@ type Project = {
   overdue_tasks?: string;
   delay_days?: string;
   progress_source?: string;
+  daily_reports_count?: string;
+  last_daily_report_date?: string;
+  daily_report_missing_days?: string;
+  daily_report_alert?: string;
 };
 
 type ProjectsResponse = {
@@ -160,6 +164,18 @@ function getCount(value?: string) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.floor(numeric));
+}
+
+function getDailyReportWarning(project: Project) {
+  if (project.daily_report_alert !== "TRUE") return "";
+
+  const missingDays = getCount(project.daily_report_missing_days);
+  const latestDate = toIsoDate(project.last_daily_report_date);
+  if (latestDate) {
+    return `ไม่ได้รายงานประจำวันมา ${missingDays} วัน (ล่าสุด ${latestDate})`;
+  }
+
+  return `ยังไม่มีรายงานประจำวันมา ${missingDays} วัน`;
 }
 
 function normalizeEngineerName(value?: string) {
@@ -423,6 +439,7 @@ export default function ProjectsPage() {
           const completedTasks = getCount(project.completed_tasks);
           const overdueTasks = getCount(project.overdue_tasks);
           const delayDays = getCount(project.delay_days);
+          const dailyReportWarning = getDailyReportWarning(project);
 
           return (
             <div
@@ -460,6 +477,13 @@ export default function ProjectsPage() {
                   <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[15px] font-medium text-slate-600">
                     <span>Site Engineer: {project.se_name || "-"}</span>
                   </div>
+
+                  {dailyReportWarning && (
+                    <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm font-bold text-amber-800">
+                      <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                      <span className="leading-6">{dailyReportWarning}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex min-w-0 flex-col justify-between gap-4 border-t border-slate-100 bg-slate-50/60 p-5 xl:border-l xl:border-t-0 xl:p-6">

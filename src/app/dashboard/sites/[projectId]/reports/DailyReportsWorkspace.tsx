@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, Users } from "lucide-react";
+import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
@@ -11,6 +11,27 @@ import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
 type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
+type NarrativeField = "work_done" | "issues" | "solutions";
+type AiMode = "formal" | "concise" | "detailed" | "spelling";
+type AiReview = {
+  field: NarrativeField;
+  original: string;
+  suggestion: string;
+  mode: AiMode;
+};
+
+const narrativeLabels: Record<NarrativeField, string> = {
+  work_done: "รายการงานที่ปฏิบัติ",
+  issues: "ปัญหา/อุปสรรค",
+  solutions: "แนวทางการแก้ไข",
+};
+
+const aiModeOptions: Array<{ value: AiMode; label: string }> = [
+  { value: "formal", label: "ปรับให้เป็นทางการ" },
+  { value: "concise", label: "สรุปให้กระชับ" },
+  { value: "detailed", label: "ขยายให้ละเอียดขึ้น" },
+  { value: "spelling", label: "แก้คำผิด" },
+];
 
 const weatherOptions = ["แจ่มใส", "มีเมฆบางส่วน", "มีเมฆมาก", "ฝนตกปรอย ๆ", "ฝนตกหนัก", "หยุดงานเนื่องจากสภาพอากาศ"];
 
@@ -65,6 +86,18 @@ function sumRows(rows: Row[], key: string) {
   }, 0);
 }
 
+function formatNumberInputValue(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+}
+
+function getColumnWidthClass(column: RowConfig) {
+  if (column.type === "number") return "w-32";
+  if (column.key === "unit") return "w-32";
+  if (column.key === "note") return "w-[28%]";
+  return "w-[40%]";
+}
+
 function lineStatusText(status?: string | number) {
   if (status === "sent") return "ส่ง LINE แล้ว";
   if (status === "failed") return "ส่ง LINE ไม่สำเร็จ";
@@ -94,6 +127,10 @@ export function DailyReportsWorkspace({
   const [machinery, setMachinery] = useState<Row[]>([createEmptyRow(machineryColumns)]);
   const [materials, setMaterials] = useState<Row[]>([createEmptyRow(materialColumns)]);
   const [reportDate, setReportDate] = useState(todayValue());
+  const [aiMode, setAiMode] = useState<AiMode>("formal");
+  const [aiLoadingField, setAiLoadingField] = useState<NarrativeField | null>(null);
+  const [aiError, setAiError] = useState("");
+  const [aiReview, setAiReview] = useState<AiReview | null>(null);
   const [loading, setLoading] = useState(false);
   const [driveLoading, setDriveLoading] = useState(false);
   const [error, setError] = useState("");
@@ -109,6 +146,48 @@ export function DailyReportsWorkspace({
   const photoCount = reports.filter((report) => report.photos_month_folder_id || report.photos_folder_id).length;
   const totalWorkers = latestReport?.workers || sumRows(personnel, "qty");
   const latestPhotosUrl = reportPhotosUrl(latestReport);
+
+  const startAiRewrite = async (field: NarrativeField) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>(`textarea[name="${field}"]`);
+    const text = textarea?.value.trim() || "";
+    setAiError("");
+    if (!text) {
+      setAiError(`กรุณากรอก${narrativeLabels[field]}ก่อนใช้ AI`);
+      return;
+    }
+
+    setAiLoadingField(field);
+    try {
+      const response = await fetch("/api/ai/rewrite-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, mode: aiMode, text }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result?.error === "string" ? result.error : "AI ปรับข้อความไม่สำเร็จ");
+      }
+
+      const suggestion = String(result?.data?.suggestion || "").trim();
+      if (!suggestion) throw new Error("AI ไม่ได้ส่งข้อความกลับมา");
+      setAiReview({ field, original: text, suggestion, mode: aiMode });
+    } catch (rewriteError) {
+      setAiError(rewriteError instanceof Error ? rewriteError.message : "AI ปรับข้อความไม่สำเร็จ");
+    } finally {
+      setAiLoadingField(null);
+    }
+  };
+
+  const applyAiSuggestion = () => {
+    if (!aiReview) return;
+    const textarea = document.querySelector<HTMLTextAreaElement>(`textarea[name="${aiReview.field}"]`);
+    if (textarea) {
+      textarea.value = aiReview.suggestion;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    setAiReview(null);
+    setAiError("");
+  };
 
   const openPhotoDriveFolder = async () => {
     setDriveLoading(true);
@@ -344,7 +423,7 @@ export function DailyReportsWorkspace({
           </div>
         </div>
       ) : (
-        <form onSubmit={submitReport} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <form onSubmit={submitReport} className="space-y-5">
           <input type="hidden" name="project_id" value={project.project_id} />
           <input type="hidden" name="project_drive_folder_id" value={project.drive_folder_id || ""} />
           <input type="hidden" name="project_name" value={project.name || project.project_id} />
@@ -364,7 +443,7 @@ export function DailyReportsWorkspace({
                 </select>
               </Field>
               <Field label="จำนวนคนงานรวม">
-                <input name="workers" type="number" min="0" value={sumRows(personnel, "qty") || ""} readOnly className="form-input bg-gray-50 text-gray-500" />
+                <input name="workers" type="number" min="0" step="any" inputMode="decimal" value={formatNumberInputValue(sumRows(personnel, "qty"))} readOnly className="form-input bg-gray-50 text-gray-500" />
               </Field>
             </div>
             <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
@@ -405,7 +484,44 @@ export function DailyReportsWorkspace({
             </div>
           </FormSection>
 
-          <div className="flex flex-wrap justify-end gap-3 border-t border-gray-100 pt-6">
+          <div className="rounded-2xl border border-orange-100 bg-orange-50/70 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="flex items-center gap-2 font-extrabold text-orange-900">
+                  <Sparkles size={18} />
+                  AI ช่วยปรับปรุงการเขียน
+                </div>
+                <p className="mt-1 text-sm font-medium text-orange-800/80">ปรับภาษาเฉพาะจากข้อความที่กรอกไว้ และต้องกดยืนยันก่อนแทนที่ข้อความเดิม</p>
+              </div>
+              <select
+                value={aiMode}
+                onChange={(event) => setAiMode(event.target.value as AiMode)}
+                className="h-10 rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold text-gray-800 outline-none focus:border-orange-400 focus:ring-4 focus:ring-orange-100"
+              >
+                {aiModeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            {aiError && (
+              <div className="mt-3 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+                {aiError}
+              </div>
+            )}
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {(["work_done", "issues", "solutions"] as NarrativeField[]).map((field) => (
+                <AiRewriteButton
+                  key={field}
+                  label={narrativeLabels[field]}
+                  loading={aiLoadingField === field}
+                  disabled={Boolean(aiLoadingField)}
+                  onClick={() => startAiRewrite(field)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <button type="button" onClick={() => setActiveTab("dashboard")} className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-semibold text-gray-700 hover:bg-gray-50">
               ยกเลิก
             </button>
@@ -415,6 +531,10 @@ export function DailyReportsWorkspace({
             </button>
           </div>
         </form>
+      )}
+
+      {aiReview && (
+        <AiReviewDialog review={aiReview} onApply={applyAiSuggestion} onClose={() => setAiReview(null)} />
       )}
     </div>
   );
@@ -455,6 +575,85 @@ function Alert({ tone, children }: { tone: "success" | "warning" | "error"; chil
   );
 }
 
+function AiRewriteButton({
+  label,
+  loading,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  loading: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex items-center justify-center gap-2 rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm font-extrabold text-orange-700 transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+      AI ปรับ {label}
+    </button>
+  );
+}
+
+function AiReviewDialog({
+  review,
+  onApply,
+  onClose,
+}: {
+  review: AiReview;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  const modeLabel = aiModeOptions.find((option) => option.value === review.mode)?.label || "AI";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-gray-100 p-5">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">
+              <Sparkles size={14} />
+              {modeLabel}
+            </div>
+            <h3 className="mt-3 text-xl font-extrabold text-gray-950">ตรวจข้อความที่ AI แนะนำ</h3>
+            <p className="mt-1 text-sm font-medium text-gray-500">ช่อง: {narrativeLabels[review.field]} กรุณาตรวจสอบความถูกต้องก่อนใช้ข้อความนี้</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-900" aria-label="ปิด">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-2">
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-gray-700">ข้อความเดิม</div>
+            <div className="min-h-48 whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-7 text-gray-700">
+              {review.original}
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-orange-700">ข้อความที่ AI แนะนำ</div>
+            <div className="min-h-48 whitespace-pre-wrap rounded-xl border border-orange-200 bg-orange-50/50 p-4 text-sm leading-7 text-gray-900">
+              {review.suggestion}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-3 border-t border-gray-100 p-5">
+          <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-bold text-gray-700 transition hover:bg-gray-50">
+            ยกเลิก
+          </button>
+          <button type="button" onClick={onApply} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2 font-extrabold text-white transition hover:bg-orange-700">
+            <CheckCircle2 size={18} />
+            ใช้ข้อความนี้
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Info({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
@@ -466,8 +665,8 @@ function Info({ label, value }: { label: string; value: string }) {
 
 function FormSection({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-gray-200 p-5">
-      <div className="mb-5 flex items-center gap-2 font-bold text-gray-900">
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-base font-extrabold text-gray-950">
         <Icon size={20} className="text-orange-600" />
         {title}
       </div>
@@ -479,7 +678,7 @@ function FormSection({ title, icon: Icon, children }: { title: string; icon: Rea
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block space-y-2">
-      <span className="text-sm font-semibold text-gray-700">{label}</span>
+      <span className="text-sm font-bold text-gray-800">{label}</span>
       {children}
     </label>
   );
@@ -503,27 +702,29 @@ function EditableTable({
   return (
     <FormSection title={title} icon={Users}>
       <div className="overflow-x-auto rounded-xl border border-gray-200">
-        <table className="w-full min-w-[680px] text-left text-sm">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <thead className="bg-gray-50 text-xs font-bold uppercase text-gray-500">
             <tr>
               <th className="w-14 px-3 py-3">ลำดับ</th>
-              {columns.map((column) => <th key={column.key} className="px-3 py-3">{column.label}</th>)}
+              {columns.map((column) => <th key={column.key} className={`px-4 py-3 ${getColumnWidthClass(column)}`}>{column.label}</th>)}
               <th className="w-12 px-3 py-3"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rows.map((row, index) => (
-              <tr key={index}>
-                <td className="px-3 py-3 text-gray-500">{index + 1}</td>
+              <tr key={index} className="bg-white align-middle">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-500">{index + 1}</td>
                 {columns.map((column) => (
-                  <td key={column.key} className="px-3 py-3">
+                  <td key={column.key} className={`px-4 py-3 ${getColumnWidthClass(column)}`}>
                     <input
                       value={row[column.key] || ""}
                       onChange={(event) => updateRow(index, column.key, event.target.value)}
                       type={column.type || "text"}
                       min={column.type === "number" ? "0" : undefined}
-                      placeholder={column.placeholder}
-                      className="form-input min-w-0 bg-white py-2"
+                      step={column.type === "number" ? "any" : undefined}
+                      inputMode={column.type === "number" ? "decimal" : undefined}
+                      placeholder={column.placeholder || (column.type === "number" ? "0.00" : undefined)}
+                      className={`form-input min-w-0 bg-white px-3 py-2.5 text-sm ${column.type === "number" ? "text-right tabular-nums" : ""}`}
                     />
                   </td>
                 ))}
@@ -537,7 +738,7 @@ function EditableTable({
           </tbody>
         </table>
       </div>
-      <button type="button" onClick={() => setRows((current) => [...current, createEmptyRow(columns)])} className="mt-4 inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+      <button type="button" onClick={() => setRows((current) => [...current, createEmptyRow(columns)])} className="mt-4 inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50">
         <Plus size={16} />
         เพิ่มแถว
       </button>
