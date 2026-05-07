@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, CalendarDays, CheckCircle2, CloudSun, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, Users } from "lucide-react";
+import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, Users } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
@@ -93,7 +93,9 @@ export function DailyReportsWorkspace({
   const [personnel, setPersonnel] = useState<Row[]>([createEmptyRow(personnelColumns)]);
   const [machinery, setMachinery] = useState<Row[]>([createEmptyRow(machineryColumns)]);
   const [materials, setMaterials] = useState<Row[]>([createEmptyRow(materialColumns)]);
+  const [reportDate, setReportDate] = useState(todayValue());
   const [loading, setLoading] = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [lineWarning, setLineWarning] = useState("");
@@ -107,6 +109,42 @@ export function DailyReportsWorkspace({
   const photoCount = reports.filter((report) => report.photos_month_folder_id || report.photos_folder_id).length;
   const totalWorkers = latestReport?.workers || sumRows(personnel, "qty");
   const latestPhotosUrl = reportPhotosUrl(latestReport);
+
+  const openPhotoDriveFolder = async () => {
+    setDriveLoading(true);
+    setError("");
+    const driveWindow = window.open("about:blank", "_blank");
+
+    try {
+      const response = await fetch("/api/reports/photos/folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: project.project_id,
+          date: reportDate,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result?.error === "string" ? result.error : "เปิดโฟลเดอร์รูปภาพไม่สำเร็จ");
+      }
+
+      const folderUrl = String(result?.data?.folder_url || "");
+      if (!folderUrl) throw new Error("ไม่พบลิงก์ Google Drive สำหรับรูปภาพ");
+
+      if (driveWindow) {
+        driveWindow.opener = null;
+        driveWindow.location.href = folderUrl;
+      } else {
+        window.location.href = folderUrl;
+      }
+    } catch (openError) {
+      driveWindow?.close();
+      setError(openError instanceof Error ? openError.message : "เปิดโฟลเดอร์รูปภาพไม่สำเร็จ");
+    } finally {
+      setDriveLoading(false);
+    }
+  };
 
   const submitReport = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -152,6 +190,7 @@ export function DailyReportsWorkspace({
       setPersonnel([createEmptyRow(personnelColumns)]);
       setMachinery([createEmptyRow(machineryColumns)]);
       setMaterials([createEmptyRow(materialColumns)]);
+      setReportDate(todayValue());
       event.currentTarget.reset();
       await mutate();
       setActiveTab("dashboard");
@@ -317,7 +356,7 @@ export function DailyReportsWorkspace({
           <FormSection title="ข้อมูลรายงาน" icon={CalendarDays}>
             <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
               <Field label="วันที่รายงาน">
-                <input name="date" type="date" required defaultValue={todayValue()} className="form-input" />
+                <input name="date" type="date" required value={reportDate} onChange={(event) => setReportDate(event.target.value)} className="form-input" />
               </Field>
               <Field label="สภาพอากาศ">
                 <select name="weather" className="form-input bg-white" defaultValue={weatherOptions[0]}>
@@ -355,8 +394,14 @@ export function DailyReportsWorkspace({
           </FormSection>
 
           <FormSection title="รูปภาพประกอบรายงาน" icon={ImageIcon}>
-            <div className="rounded-xl border border-dashed border-orange-200 bg-orange-50/50 p-4 text-sm text-gray-700">
-              บันทึกรายงานก่อน แล้วอัปโหลดรูปภาพโดยตรงใน Google Drive จากปุ่ม “ดูรูปภาพประกอบ” ใน LINE หรือปุ่มโฟลเดอร์รูปภาพบน Dashboard
+            <div className="flex flex-col gap-3 rounded-xl border border-dashed border-orange-200 bg-orange-50/50 p-4 text-sm text-gray-700 md:flex-row md:items-center md:justify-between">
+              <div>
+                บันทึกรายงานก่อน แล้วอัปโหลดรูปภาพโดยตรงใน Google Drive จากปุ่ม “ดูรูปภาพประกอบ” ใน LINE หรือปุ่มนี้
+              </div>
+              <button type="button" onClick={openPhotoDriveFolder} disabled={driveLoading} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 font-semibold text-gray-800 ring-1 ring-orange-200 transition hover:bg-orange-50 disabled:cursor-wait disabled:opacity-70">
+                {driveLoading ? <Loader2 size={16} className="animate-spin" /> : <ExternalLink size={16} />}
+                เปิด Google Drive
+              </button>
             </div>
           </FormSection>
 
