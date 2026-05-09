@@ -182,16 +182,41 @@ export function buildMemoPdfHtml({
   memo,
   project,
   logoUrl,
+  evidence = [],
 }: {
   memo: MemoRecord;
   project: Record<string, string | number | undefined>;
   logoUrl: string;
+  evidence?: MemoEvidenceRecord[];
 }) {
   const extensionDays = Math.max(0, Math.round(numberValue(memo.extension_days)));
   const hasTimeImpact = isTrueText(memo.has_time_impact);
   const requiresAck = isTrueText(memo.requires_customer_ack);
   const location = [project.address, project.district, project.province].filter(Boolean).join(" ");
   const attachments = parseMemoAttachments(memo.attachments_json);
+  const memoEvidence = evidence.filter((item) => String(item.memo_id || "") === String(memo.memo_id || ""));
+  const acknowledgementBy = memo.acknowledged_by || memoEvidence[0]?.acknowledged_by || memo.customer_name || project.client || "-";
+  const acknowledgementDate = memo.acknowledged_date || memoEvidence[0]?.acknowledged_date || "";
+  const acknowledgementChannel = memo.acknowledged_channel || memoEvidence[0]?.channel || "";
+  const acknowledgementNote = memo.acknowledgement_note || memoEvidence[0]?.notes || "";
+  const attachmentImages = attachments.filter((item) => String(item.mime_type || "").startsWith("image/") && item.file_url);
+  const evidenceImages = memoEvidence.filter((item) => String(item.mime_type || "").startsWith("image/") && item.file_url);
+  const supportingFiles = [
+    ...attachments.map((item) => ({
+      title: item.file_name || item.file_url || "-",
+      meta: item.mime_type || "Attachment",
+    })),
+    ...memoEvidence.map((item) => ({
+      title: item.file_name || item.file_url || "-",
+      meta: [item.channel, item.acknowledged_by, formatThaiDate(item.acknowledged_date)].filter(Boolean).join(" / ") || "Acknowledgement evidence",
+    })),
+  ];
+  const renderEvidenceImage = (item: MemoAttachment | MemoEvidenceRecord, caption: string) => `
+    <figure class="photo-card">
+      <div class="photo-frame"><img src="${escapeHtml(item.file_url || "")}" alt="${escapeHtml(caption)}" /></div>
+      <figcaption>${escapeHtml(caption)}</figcaption>
+    </figure>
+  `;
 
   return `<!doctype html>
 <html lang="th">
@@ -201,44 +226,63 @@ export function buildMemoPdfHtml({
   <style>
     @page { size: A4; margin: 14mm; }
     * { box-sizing: border-box; }
-    body { margin: 0; color: #111827; font-size: 13px; line-height: 1.65; }
-    .page { min-height: 267mm; border: 1px solid #e5e7eb; padding: 22px 26px; }
-    .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 3px solid #f97316; padding-bottom: 16px; }
+    body { margin: 0; color: #111827; font-size: 12px; line-height: 1.48; font-family: Arial, "Tahoma", sans-serif; }
+    .page { min-height: 267mm; border: 1px solid #d1d5db; padding: 18px 22px; background: #ffffff; }
+    .memo-page { height: 267mm; display: flex; flex-direction: column; }
+    .evidence-page { page-break-before: always; }
+    .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 2px solid #f97316; padding-bottom: 12px; }
     .brand { display: flex; align-items: center; gap: 14px; }
-    .brand img { width: 138px; height: auto; object-fit: contain; }
-    .brand-title { font-size: 18px; font-weight: 800; color: #0f172a; }
-    .brand-subtitle { margin-top: 2px; color: #64748b; font-size: 12px; }
-    .doc-box { min-width: 170px; border: 1px solid #fed7aa; background: #fff7ed; border-radius: 10px; padding: 10px 12px; text-align: right; }
-    .doc-label { color: #ea580c; font-size: 11px; font-weight: 800; text-transform: uppercase; }
-    .doc-no { margin-top: 3px; font-size: 16px; font-weight: 900; color: #0f172a; }
-    h1 { margin: 20px 0 6px; text-align: center; font-size: 24px; line-height: 1.2; color: #0f172a; }
-    .subject { text-align: center; font-size: 16px; font-weight: 800; color: #334155; }
-    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 14px; margin-top: 22px; }
-    .field { border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 11px; min-height: 54px; }
-    .label { color: #64748b; font-size: 11px; font-weight: 800; }
-    .value { margin-top: 2px; font-weight: 700; color: #111827; }
-    .section { margin-top: 16px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 13px 15px; }
-    .section h2 { margin: 0 0 8px; font-size: 15px; color: #0f172a; }
+    .brand img { width: 132px; height: auto; object-fit: contain; }
+    .brand-title { font-size: 16px; font-weight: 900; color: #0f172a; letter-spacing: 0; }
+    .brand-subtitle { margin-top: 1px; color: #64748b; font-size: 11px; }
+    .company-address { margin-top: 4px; color: #475569; font-size: 10px; line-height: 1.35; }
+    .doc-box { min-width: 160px; border: 1px solid #cbd5e1; padding: 9px 11px; text-align: right; }
+    .doc-label { color: #475569; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .doc-no { margin-top: 3px; font-size: 15px; font-weight: 900; color: #0f172a; }
+    h1 { margin: 14px 0 10px; text-align: center; font-size: 22px; line-height: 1.2; color: #0f172a; }
+    h2 { margin: 0 0 8px; font-size: 15px; color: #0f172a; }
+    .memo-lines { border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; margin-top: 8px; }
+    .memo-line { display: grid; grid-template-columns: 92px 1fr 84px 1fr; border-bottom: 1px solid #e5e7eb; min-height: 30px; }
+    .memo-line:last-child { border-bottom: 0; }
+    .memo-label { padding: 7px 8px; font-weight: 900; color: #0f172a; background: #f8fafc; }
+    .memo-value { padding: 7px 10px; font-weight: 700; color: #111827; }
+    .memo-value.full { grid-column: span 3; }
+    .body-section { margin-top: 14px; }
+    .body-section p { margin: 0 0 8px; text-align: justify; }
     .detail { white-space: pre-wrap; }
-    .impact { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
-    .impact-card { border-radius: 12px; padding: 13px 15px; border: 1px solid #fed7aa; background: #fff7ed; }
-    .impact-card.green { border-color: #bbf7d0; background: #f0fdf4; }
-    .impact-value { font-size: 22px; font-weight: 900; color: #ea580c; }
-    .green .impact-value { color: #047857; }
-    .attachments { margin: 8px 0 0; padding-left: 18px; color: #475569; }
-    .signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 36px; }
-    .signature { border-top: 1px solid #94a3b8; padding-top: 8px; text-align: center; min-height: 78px; }
-    .footer { margin-top: 26px; border-top: 1px solid #e5e7eb; padding-top: 10px; color: #64748b; font-size: 11px; display: flex; justify-content: space-between; gap: 12px; }
+    .impact-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .impact-table th, .impact-table td { border: 1px solid #cbd5e1; padding: 7px 8px; vertical-align: top; }
+    .impact-table th { width: 170px; text-align: left; background: #f8fafc; color: #0f172a; }
+    .closing { margin-top: 12px; text-indent: 42px; }
+    .signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: auto; padding-top: 20px; }
+    .signature { text-align: center; min-height: 74px; }
+    .signature-line { border-top: 1px solid #64748b; margin: 34px 18px 7px; }
+    .footer { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 8px; color: #64748b; font-size: 10px; display: flex; justify-content: space-between; gap: 12px; }
+    .page-title { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; border-bottom: 2px solid #f97316; padding-bottom: 10px; }
+    .page-title h1 { margin: 0; text-align: left; font-size: 20px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; margin-top: 14px; }
+    .summary-item { border: 1px solid #e5e7eb; padding: 8px 10px; min-height: 44px; }
+    .label { color: #64748b; font-size: 10px; font-weight: 900; }
+    .value { margin-top: 2px; font-weight: 800; color: #111827; }
+    .file-list { margin: 8px 0 0; padding-left: 18px; color: #475569; }
+    .evidence-section { margin-top: 14px; }
+    .photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 10px; }
+    .photo-card { margin: 0; border: 1px solid #d1d5db; padding: 8px; min-height: 84mm; page-break-inside: avoid; }
+    .photo-frame { height: 70mm; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #f8fafc; }
+    .photo-frame img { width: 100%; height: 100%; object-fit: contain; }
+    .photo-card figcaption { margin-top: 6px; color: #334155; font-size: 10px; font-weight: 700; }
+    .empty-box { border: 1px dashed #cbd5e1; color: #64748b; padding: 18px; text-align: center; margin-top: 10px; }
   </style>
 </head>
 <body>
-  <main class="page">
+  <main class="page memo-page">
     <header class="header">
       <div class="brand">
         ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="PMC CONNEXT" />` : ""}
         <div>
           <div class="brand-title">PICHAYAMONGKOL CONSTRUCTION CO., LTD.</div>
           <div class="brand-subtitle">Project Memo / บันทึกข้อความโครงการ</div>
+          <div class="company-address">276/1 ซอยพุทธบูชา 36 แขวงบางมด เขตทุ่งครุ กรุงเทพมหานคร 10140</div>
         </div>
       </div>
       <div class="doc-box">
@@ -248,58 +292,70 @@ export function buildMemoPdfHtml({
     </header>
 
     <h1>บันทึกข้อความ</h1>
-    <div class="subject">${escapeHtml(memo.title || "-")}</div>
 
-    <section class="grid">
-      <div class="field"><div class="label">โครงการ</div><div class="value">${escapeHtml(project.name || project.project_id || "-")}</div></div>
-      <div class="field"><div class="label">ลูกค้า / ผู้รับทราบ</div><div class="value">${escapeHtml(memo.customer_name || project.client || "-")}</div></div>
-      <div class="field"><div class="label">ประเภท Memo</div><div class="value">${escapeHtml(MEMO_TYPE_LABELS[String(memo.memo_type || "")] || memo.memo_type || "-")}</div></div>
-      <div class="field"><div class="label">เกี่ยวข้องกับ</div><div class="value">${escapeHtml(MEMO_RELATED_LABELS[String(memo.related_module || "")] || memo.related_module || "-")}${memo.related_ref ? ` / ${escapeHtml(memo.related_ref)}` : ""}</div></div>
-      <div class="field"><div class="label">วันที่เกิดเหตุ</div><div class="value">${escapeHtml(formatThaiDate(memo.event_date))}</div></div>
-      <div class="field"><div class="label">วันที่ออกเอกสาร</div><div class="value">${escapeHtml(formatThaiDate(memo.issue_date))}</div></div>
-      <div class="field"><div class="label">ผู้จัดทำ</div><div class="value">${escapeHtml(memo.prepared_by_name || "-")}</div></div>
-      <div class="field"><div class="label">สถานที่</div><div class="value">${escapeHtml(location || "-")}</div></div>
+    <section class="memo-lines">
+      <div class="memo-line">
+        <div class="memo-label">ที่</div>
+        <div class="memo-value">${escapeHtml(memo.document_no || "-")}</div>
+        <div class="memo-label">วันที่</div>
+        <div class="memo-value">${escapeHtml(formatThaiDate(memo.issue_date))}</div>
+      </div>
+      <div class="memo-line">
+        <div class="memo-label">เรื่อง</div>
+        <div class="memo-value full">${escapeHtml(memo.title || "-")}</div>
+      </div>
+      <div class="memo-line">
+        <div class="memo-label">เรียน</div>
+        <div class="memo-value full">${escapeHtml(memo.customer_name || project.client || "-")}</div>
+      </div>
+      <div class="memo-line">
+        <div class="memo-label">โครงการ</div>
+        <div class="memo-value">${escapeHtml(project.name || project.project_id || "-")}</div>
+        <div class="memo-label">อ้างอิง</div>
+        <div class="memo-value">${escapeHtml(MEMO_RELATED_LABELS[String(memo.related_module || "")] || memo.related_module || "-")}${memo.related_ref ? ` / ${escapeHtml(memo.related_ref)}` : ""}</div>
+      </div>
+      <div class="memo-line">
+        <div class="memo-label">สถานที่</div>
+        <div class="memo-value">${escapeHtml(location || "-")}</div>
+        <div class="memo-label">เกิดเหตุวันที่</div>
+        <div class="memo-value">${escapeHtml(formatThaiDate(memo.event_date))}</div>
+      </div>
     </section>
 
-    <section class="section">
-      <h2>รายละเอียดเหตุการณ์ / ข้อความแจ้ง</h2>
+    <section class="body-section">
+      <p>บริษัท พิชยมงคล คอนสตรัคชั่น จำกัด ขอเรียนแจ้งข้อมูลการดำเนินงานของโครงการตามรายละเอียดดังต่อไปนี้ เพื่อใช้เป็นบันทึกข้อความและหลักฐานประกอบการรับทราบร่วมกันระหว่างโครงการและผู้เกี่ยวข้อง</p>
       <div class="detail">${escapeHtml(memo.detail || "-")}</div>
-    </section>
-
-    <section class="impact">
-      <div class="impact-card green">
-        <div class="label">ต้องให้ลูกค้ารับทราบ</div>
-        <div class="impact-value">${requiresAck ? "ใช่" : "ไม่ใช่"}</div>
-      </div>
-      <div class="impact-card">
-        <div class="label">จำนวนวันที่ขอเพิ่ม</div>
-        <div class="impact-value">${hasTimeImpact ? `${extensionDays} วัน` : "ไม่มี"}</div>
-      </div>
-    </section>
-
-    ${hasTimeImpact ? `
-      <section class="section">
-        <h2>เหตุผลการขอเพิ่มเวลา</h2>
-        <div class="detail">${escapeHtml(memo.extension_reason || "-")}</div>
-      </section>
-    ` : ""}
-
-    <section class="section">
-      <h2>เอกสาร / หลักฐานประกอบ</h2>
-      ${attachments.length > 0 ? `
-        <ul class="attachments">
-          ${attachments.map((item) => `<li>${escapeHtml(item.file_name || item.file_url || "-")}</li>`).join("")}
-        </ul>
-      ` : `<div class="detail">-</div>`}
+      ${hasTimeImpact ? `<p class="detail"><strong>เหตุผลการขอเพิ่มเวลา:</strong> ${escapeHtml(memo.extension_reason || "-")}</p>` : ""}
+      <table class="impact-table">
+        <tr>
+          <th>ประเภทบันทึกข้อความ</th>
+          <td>${escapeHtml(MEMO_TYPE_LABELS[String(memo.memo_type || "")] || memo.memo_type || "-")}</td>
+        </tr>
+        <tr>
+          <th>ต้องให้ลูกค้ารับทราบ</th>
+          <td>${requiresAck ? "ใช่" : "ไม่ใช่"}</td>
+        </tr>
+        <tr>
+          <th>ผลกระทบต่อระยะเวลา</th>
+          <td>${hasTimeImpact ? `มีผลกระทบ ขอเพิ่มเวลา ${extensionDays} วัน` : "ไม่มีการขอเพิ่มเวลา"}</td>
+        </tr>
+        <tr>
+          <th>เอกสารแนบ</th>
+          <td>แสดงรายละเอียดภาพประกอบและหลักฐานการรับทราบในหน้า 2</td>
+        </tr>
+      </table>
+      <p class="closing">จึงเรียนมาเพื่อโปรดทราบ และใช้เป็นหลักฐานประกอบการดำเนินงานของโครงการต่อไป</p>
     </section>
 
     <section class="signatures">
       <div class="signature">
+        <div class="signature-line"></div>
         <strong>ผู้จัดทำ</strong><br />
         ${escapeHtml(memo.prepared_by_name || "")}<br />
         วันที่ ........../........../..........
       </div>
       <div class="signature">
+        <div class="signature-line"></div>
         <strong>ลูกค้า / ผู้รับทราบ</strong><br />
         ${escapeHtml(memo.customer_name || project.client || "")}<br />
         วันที่ ........../........../..........
@@ -308,7 +364,90 @@ export function buildMemoPdfHtml({
 
     <footer class="footer">
       <span>Generated by PCM CONNEXT</span>
-      <span>${escapeHtml(new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }))}</span>
+      <span>Page 1 / 2</span>
+    </footer>
+  </main>
+
+  <main class="page evidence-page">
+    <section class="page-title">
+      <div>
+        <h1>ภาพประกอบ / หลักฐานประกอบและการรับทราบ</h1>
+        <div class="brand-subtitle">${escapeHtml(project.name || project.project_id || "-")} | ${escapeHtml(memo.document_no || "-")}</div>
+      </div>
+      <div class="doc-box">
+        <div class="doc-label">Document No.</div>
+        <div class="doc-no">${escapeHtml(memo.document_no || "-")}</div>
+      </div>
+    </section>
+
+    <section class="summary-grid">
+      <div class="summary-item">
+        <div class="label">ผู้รับทราบ</div>
+        <div class="value">${escapeHtml(acknowledgementBy)}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">วันที่รับทราบ</div>
+        <div class="value">${escapeHtml(formatThaiDate(acknowledgementDate))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">ช่องทางรับทราบ</div>
+        <div class="value">${escapeHtml(acknowledgementChannel || "-")}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">หมายเหตุรับทราบ</div>
+        <div class="value">${escapeHtml(acknowledgementNote || "-")}</div>
+      </div>
+    </section>
+
+    <section class="evidence-section">
+      <h2>รายการไฟล์ประกอบ</h2>
+      ${supportingFiles.length > 0 ? `
+        <ul class="file-list">
+          ${supportingFiles.map((item) => `<li>${escapeHtml(item.title)}${item.meta ? ` <span>(${escapeHtml(item.meta)})</span>` : ""}</li>`).join("")}
+        </ul>
+      ` : `<div class="empty-box">ยังไม่มีไฟล์แนบหรือหลักฐานรับทราบ</div>`}
+    </section>
+
+    <section class="evidence-section">
+      <h2>ภาพประกอบหน้างาน</h2>
+      ${attachmentImages.length > 0 ? `
+        <div class="photo-grid">
+          ${attachmentImages.slice(0, 4).map((item) => renderEvidenceImage(item, item.file_name || "ภาพประกอบ")).join("")}
+        </div>
+      ` : `<div class="empty-box">ไม่มีภาพประกอบหน้างานในเอกสารนี้</div>`}
+    </section>
+
+    <section class="evidence-section">
+      <h2>หลักฐานการรับทราบจากลูกค้า</h2>
+      ${evidenceImages.length > 0 ? `
+        <div class="photo-grid">
+          ${evidenceImages.slice(0, 4).map((item) => renderEvidenceImage(item, `${item.file_name || "หลักฐานรับทราบ"}${item.acknowledged_by ? ` - ${item.acknowledged_by}` : ""}`)).join("")}
+        </div>
+      ` : memoEvidence.length > 0 ? `
+        <ul class="file-list">
+          ${memoEvidence.map((item) => `<li>${escapeHtml(item.file_name || "-")} / ${escapeHtml(item.channel || "-")} / ${escapeHtml(item.acknowledged_by || "-")} / ${escapeHtml(formatThaiDate(item.acknowledged_date))}</li>`).join("")}
+        </ul>
+      ` : `<div class="empty-box">ยังไม่มีหลักฐานการรับทราบจากลูกค้า</div>`}
+    </section>
+
+    <section class="signatures">
+      <div class="signature">
+        <div class="signature-line"></div>
+        <strong>ผู้จัดทำ</strong><br />
+        ${escapeHtml(memo.prepared_by_name || "")}<br />
+        วันที่ ........../........../..........
+      </div>
+      <div class="signature">
+        <div class="signature-line"></div>
+        <strong>ลูกค้า / ผู้รับทราบ</strong><br />
+        ${escapeHtml(memo.customer_name || project.client || "")}<br />
+        วันที่ ........../........../..........
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>Generated by PCM CONNEXT</span>
+      <span>Page 2 / 2 | ${escapeHtml(new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }))}</span>
     </footer>
   </main>
 </body>

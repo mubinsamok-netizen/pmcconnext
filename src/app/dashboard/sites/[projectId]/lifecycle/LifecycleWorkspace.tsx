@@ -3,10 +3,11 @@
 import { useMemo, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import Link from "next/link";
-import { ArrowRight, Bell, CheckCircle2, Database, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
+import { ArrowRight, Bell, CheckCircle2, Database, ExternalLink, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
+import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -360,21 +361,44 @@ export default function LifecycleWorkspace({
     }
   };
 
+  const openSelectedDocumentFolder = async () => {
+    if (!projectMeta.driveFolderId) return;
+    setLoading("document_folder");
+    setMessage(null);
+    try {
+      const res = await fetch(documentsKey, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "open_category_folder",
+          category: documentForm.category,
+        }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || result.error) throw new Error(result.error || "เปิดโฟลเดอร์เอกสารไม่สำเร็จ");
+      const folderUrl = String(result.data?.folder_url || "");
+      if (!folderUrl) throw new Error("ไม่พบลิงก์โฟลเดอร์เอกสาร");
+      window.location.href = folderUrl;
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "เปิดโฟลเดอร์เอกสารไม่สำเร็จ");
+    } finally {
+      setLoading("");
+    }
+  };
+
   const uploadDocument = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isAdmin || !file) return;
     setLoading("document");
-    setMessage(null);
+    setMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
     try {
-      const formData = new FormData();
-      formData.append("category", documentForm.category);
-      formData.append("title", documentForm.title || file.name);
-      formData.append("notes", documentForm.notes);
-      formData.append("file", file);
-      const res = await fetch(documentsKey, { method: "POST", body: formData });
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(result.error || "อัปโหลดไฟล์ไม่สำเร็จ");
-      const uploadedDocument = result.data as DocumentRecord | undefined;
+      const uploadedDocument = await uploadProjectDocumentDirectly({
+        endpoint: documentsKey,
+        category: documentForm.category,
+        title: documentForm.title || file.name,
+        notes: documentForm.notes,
+        file,
+      }) as DocumentRecord | undefined;
       setDocumentForm({ category: "contract", title: "", notes: "" });
       setFile(null);
       if (uploadedDocument) {
@@ -386,7 +410,7 @@ export default function LifecycleWorkspace({
       void mutateDocuments().catch((error: unknown) => {
         console.warn("Document list refresh failed after upload:", error);
       });
-      setMessage("อัปโหลดเอกสารและบันทึก version แล้ว");
+      setMessage("อัปโหลดเข้า Drive และบันทึก version history แล้ว");
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
     } finally {
@@ -583,11 +607,11 @@ export default function LifecycleWorkspace({
                 {file && (
                   <div className="rounded-lg border border-orange-100 bg-white px-3 py-2">
                     <p className="truncate text-sm font-extrabold text-gray-800">{file.name}</p>
-                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อบันทึกเข้า Drive และ Version History</p>
+                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อส่งตรงเข้า Drive และบันทึก Version History</p>
                   </div>
                 )}
                 {!file && (
-                  <p className="text-xs font-semibold text-gray-500">การเลือกไฟล์ยังไม่ใช่การบันทึก ระบบจะบันทึกเมื่อกด “อัปโหลด PDF”</p>
+                  <p className="text-xs font-semibold text-gray-500">การเลือกไฟล์ยังไม่ใช่การบันทึก ระบบจะส่งไฟล์ตรงไป Google Drive เมื่อกด “อัปโหลด PDF”</p>
                 )}
               </div>
             </Field>
@@ -601,8 +625,19 @@ export default function LifecycleWorkspace({
             </Field>
             <button disabled={!isAdmin || !file || loading === "document" || !projectMeta.driveFolderId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
               {loading === "document" ? <Loader2 size={17} className="animate-spin" /> : <FileUp size={17} />}
-              {projectMeta.driveFolderId ? "อัปโหลดและบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
+              {projectMeta.driveFolderId ? "อัปโหลดตรงไป Drive และบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
             </button>
+            {projectMeta.driveFolderId ? (
+              <button
+                type="button"
+                onClick={openSelectedDocumentFolder}
+                disabled={loading === "document_folder"}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-wait disabled:opacity-70"
+              >
+                {loading === "document_folder" ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />}
+                เปิดโฟลเดอร์หมวดนี้ใน Drive <ExternalLink size={16} />
+              </button>
+            ) : null}
           </div>
         </form>
 

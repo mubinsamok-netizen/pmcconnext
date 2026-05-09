@@ -54,6 +54,9 @@ type UploadPayload = {
   dataUrl: string;
 };
 
+const MEMO_IMAGE_MAX_EDGE = 1600;
+const MEMO_IMAGE_QUALITY = 0.72;
+
 type TabKey = "create" | "acknowledge" | "details";
 
 const tabs: Array<{ key: TabKey; label: string; icon: ComponentType<{ size?: number; className?: string }> }> = [
@@ -101,12 +104,83 @@ function formatDate(value?: string | number) {
   }).format(date);
 }
 
-function fileToUploadPayload(file: File) {
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isCompressibleImage(file: File) {
+  return file.type.startsWith("image/") && !["image/gif", "image/svg+xml"].includes(file.type);
+}
+
+function loadImageFromFile(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("อ่านรูปภาพไม่สำเร็จ"));
+    };
+    image.src = url;
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("บีบอัดรูปภาพไม่สำเร็จ"));
+    }, "image/jpeg", MEMO_IMAGE_QUALITY);
+  });
+}
+
+async function compressImageFile(file: File) {
+  if (!isCompressibleImage(file)) return file;
+
+  const image = await loadImageFromFile(file);
+  const scale = Math.min(1, MEMO_IMAGE_MAX_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) return file;
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  const blob = await canvasToBlob(canvas);
+  if (blob.size >= file.size) return file;
+
+  const baseName = file.name.replace(/\.[^.]+$/, "") || "memo-image";
+  return new File([blob], `${baseName}.jpg`, {
+    type: "image/jpeg",
+    lastModified: Date.now(),
+  });
+}
+
+async function prepareUploadFile(file: File) {
+  try {
+    return await compressImageFile(file);
+  } catch {
+    return file;
+  }
+}
+
+async function fileToUploadPayload(file: File) {
+  const preparedFile = await prepareUploadFile(file);
   return new Promise<UploadPayload>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
+    reader.onload = () => resolve({ name: preparedFile.name, type: preparedFile.type || "application/octet-stream", dataUrl: String(reader.result || "") });
     reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(preparedFile);
   });
 }
 
@@ -146,7 +220,12 @@ function FileList({ files, onRemove }: { files: File[]; onRemove: (index: number
     <div className="space-y-2">
       {files.map((file, index) => (
         <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
-          <span className="min-w-0 truncate">{file.name}</span>
+          <span className="min-w-0">
+            <span className="block truncate">{file.name}</span>
+            <span className="mt-0.5 block text-[11px] text-gray-400">
+              {formatBytes(file.size)}{isCompressibleImage(file) ? " · จะย่อรูปก่อนอัปโหลด" : ""}
+            </span>
+          </span>
           <button type="button" onClick={() => onRemove(index)} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-gray-400 hover:bg-white hover:text-red-600">
             <X size={14} />
           </button>
@@ -240,21 +319,25 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
 
   const createMemo = (issuePdf: boolean) => {
     startTransition(async () => {
-      const attachmentUploads = await Promise.all(attachmentFiles.map(fileToUploadPayload));
-      const created = await postAction("create_memo", {
-        ...memoForm,
-        attachment_uploads: attachmentUploads,
-      });
-      const memoId = String(created?.data?.memo_id || "");
-      if (!memoId) return;
-      setSelectedMemoId(memoId);
-      if (issuePdf) {
-        await postAction("issue_pdf", { memo_id: memoId });
+      try {
+        const attachmentUploads = await Promise.all(attachmentFiles.map(fileToUploadPayload));
+        const created = await postAction("create_memo", {
+          ...memoForm,
+          attachment_uploads: attachmentUploads,
+        });
+        const memoId = String(created?.data?.memo_id || "");
+        if (!memoId) return;
+        setSelectedMemoId(memoId);
+        if (issuePdf) {
+          await postAction("issue_pdf", { memo_id: memoId });
+        }
+        setMemoForm({ ...emptyMemoForm, customer_name: project.client || "" });
+        setAttachmentFiles([]);
+        setMessage(issuePdf ? "สร้าง Memo และออก PDF เรียบร้อยแล้ว" : "บันทึกร่าง Memo เรียบร้อยแล้ว");
+        setActiveTab(issuePdf ? "acknowledge" : "details");
+      } catch (uploadError) {
+        setActionError(uploadError instanceof Error ? uploadError.message : "เตรียมไฟล์แนบไม่สำเร็จ");
       }
-      setMemoForm({ ...emptyMemoForm, customer_name: project.client || "" });
-      setAttachmentFiles([]);
-      setMessage(issuePdf ? "สร้าง Memo และออก PDF เรียบร้อยแล้ว" : "บันทึกร่าง Memo เรียบร้อยแล้ว");
-      setActiveTab(issuePdf ? "acknowledge" : "details");
     });
   };
 
@@ -268,17 +351,21 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const acknowledgeMemo = () => {
     if (!selectedMemo?.memo_id) return;
     startTransition(async () => {
-      const evidenceUploads = await Promise.all(evidenceFiles.map(fileToUploadPayload));
-      const result = await postAction("acknowledge", {
-        memo_id: selectedMemo.memo_id,
-        ...ackForm,
-        evidence_uploads: evidenceUploads,
-      });
-      if (result?.success) {
-        setEvidenceFiles([]);
-        setAckForm({ ...emptyAckForm, acknowledged_by: project.client || "" });
-        setMessage("บันทึกหลักฐานลูกค้ารับทราบเรียบร้อยแล้ว");
-        setActiveTab("details");
+      try {
+        const evidenceUploads = await Promise.all(evidenceFiles.map(fileToUploadPayload));
+        const result = await postAction("acknowledge", {
+          memo_id: selectedMemo.memo_id,
+          ...ackForm,
+          evidence_uploads: evidenceUploads,
+        });
+        if (result?.success) {
+          setEvidenceFiles([]);
+          setAckForm({ ...emptyAckForm, acknowledged_by: project.client || "" });
+          setMessage("บันทึกหลักฐานลูกค้ารับทราบเรียบร้อยแล้ว");
+          setActiveTab("details");
+        }
+      } catch (uploadError) {
+        setActionError(uploadError instanceof Error ? uploadError.message : "เตรียมไฟล์หลักฐานไม่สำเร็จ");
       }
     });
   };
@@ -418,7 +505,8 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                 <Paperclip className="text-gray-500" size={18} />
                 <h3 className="font-extrabold text-gray-900">ไฟล์ประกอบ</h3>
               </div>
-              <input type="file" multiple onChange={(event) => addAttachmentFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <input type="file" multiple accept="image/*,application/pdf,.pdf" onChange={(event) => addAttachmentFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <p className="mt-2 text-xs font-semibold text-gray-500">รูปภาพจะถูกย่ออัตโนมัติก่อนอัปโหลด เพื่อให้แนบหลักฐานและออก PDF ได้ง่ายขึ้น</p>
               <div className="mt-3">
                 <FileList files={attachmentFiles} onRemove={(index) => setAttachmentFiles(attachmentFiles.filter((_file, fileIndex) => fileIndex !== index))} />
               </div>
@@ -470,7 +558,8 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                 <input type="checkbox" checked={ackForm.extension_approved} onChange={(event) => setAckForm({ ...ackForm, extension_approved: event.target.checked })} />
                 อนุมัติจำนวนวันที่ขอเพิ่มแล้ว
               </label>
-              <input type="file" multiple onChange={(event) => addEvidenceFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <input type="file" multiple accept="image/*,application/pdf,.pdf" onChange={(event) => addEvidenceFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <p className="text-xs font-semibold text-gray-500">หลักฐานรูปภาพจะถูกย่อก่อนบันทึก เหมาะกับแคปหน้าจอ LINE และภาพหน้างาน</p>
               <FileList files={evidenceFiles} onRemove={(index) => setEvidenceFiles(evidenceFiles.filter((_file, fileIndex) => fileIndex !== index))} />
               <button type="button" disabled={busy || !canAcknowledge || !selectedMemo?.pdf_url} onClick={acknowledgeMemo} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-slate-800 disabled:opacity-60">
                 {loadingAction === "acknowledge" ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
@@ -488,7 +577,14 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                     {MEMO_STATUS_LABELS[String(selectedMemo.status || "")] || selectedMemo.status || "-"}
                   </span>
                   <span className="text-sm font-bold text-gray-900">{selectedMemo.document_no || selectedMemo.memo_id}</span>
-                  {selectedMemo.pdf_url ? <a href={String(selectedMemo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-bold text-orange-600">เปิด PDF <ExternalLink size={14} /></a> : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selectedMemo.pdf_url ? <a href={String(selectedMemo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-bold text-orange-600">เปิด PDF <ExternalLink size={14} /></a> : null}
+                    {selectedMemo.pdf_url ? (
+                      <button type="button" disabled={busy || !canIssue} onClick={() => issueMemoPdf(selectedMemo.memo_id)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                        <Printer size={13} /> ออก PDF ใหม่
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div>
                   <h4 className="text-lg font-extrabold text-gray-950">{selectedMemo.title}</h4>
@@ -580,9 +676,14 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                       <td className="px-4 py-4">
                         <div className="flex flex-wrap justify-end gap-2">
                           {memo.pdf_url ? (
-                            <a href={String(memo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white hover:bg-slate-800">
-                              PDF <ExternalLink size={13} />
-                            </a>
+                            <>
+                              <a href={String(memo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white hover:bg-slate-800">
+                                PDF <ExternalLink size={13} />
+                              </a>
+                              <button type="button" disabled={busy || !canIssue} onClick={() => issueMemoPdf(memo.memo_id)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-xs font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                                <Printer size={13} /> ออกใหม่
+                              </button>
+                            </>
                           ) : (
                             <button type="button" disabled={busy || !canIssue} onClick={() => issueMemoPdf(memo.memo_id)} className="inline-flex items-center gap-1 rounded-lg bg-orange-600 px-3 py-2 text-xs font-extrabold text-white hover:bg-orange-700 disabled:opacity-60">
                               <Printer size={13} /> ออก PDF

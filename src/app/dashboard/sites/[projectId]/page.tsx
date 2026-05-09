@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
+  ExternalLink,
   FileSignature,
   FileText,
   Flag,
@@ -240,6 +241,13 @@ function formatMoney(value: number) {
   return new Intl.NumberFormat("th-TH", {
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function buildDriveFolderUrl(folderId?: SiteValue) {
+  const value = stringValue(folderId);
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(value)}`;
 }
 
 function isHighPriority(value?: SiteValue) {
@@ -713,6 +721,7 @@ export default async function SiteDashboardPage({
   const visibleActions = isForeman ? dashboard.actions.filter((action) => isForemanVisibleHref(action.href)) : dashboard.actions;
   const visibleRecent = isForeman ? dashboard.recent.filter((item) => isForemanVisibleHref(item.href)) : dashboard.recent;
   const dailyReportWarning = getDailyReportWarning(project, dashboard.reports);
+  const driveFolderUrl = buildDriveFolderUrl(project.drive_folder_id);
   const actionItems =
     visibleActions.length > 0
       ? visibleActions
@@ -908,11 +917,18 @@ export default async function SiteDashboardPage({
             <QuickLink href={`/dashboard/sites/${project.project_id}/files`} label="ไฟล์" icon={FolderOpen} />
             <QuickLink href={`/dashboard/sites/${project.project_id}/notes`} label="บันทึก" icon={NotebookTabs} />
             <QuickLink href={`/dashboard/sites/${project.project_id}/memos`} label="Memo" icon={FileSignature} />
+            {driveFolderUrl ? <ExternalQuickLink href={driveFolderUrl} label="อัปโหลดไฟล์ใหญ่ใน Drive" icon={FolderOpen} /> : null}
           </div>
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <ResourceRow icon={Sheet} label="Site Google Sheet" value={project.site_sheet_id || "ยังไม่ได้กำหนด"} />
-          <ResourceRow icon={FolderOpen} label="Site Drive Folder" value={project.drive_folder_id || "ยังไม่ได้กำหนด"} />
+          <ResourceRow
+            icon={FolderOpen}
+            label="Site Drive Folder"
+            value={project.drive_folder_id || "ยังไม่ได้กำหนด"}
+            actionHref={driveFolderUrl}
+            actionLabel="เปิดโฟลเดอร์เพื่ออัปโหลด"
+          />
         </div>
       </section>
     </div>
@@ -1104,21 +1120,41 @@ function QuickLink({ href, label, icon: Icon }: { href: string; label: string; i
   );
 }
 
+function ExternalQuickLink({ href, label, icon: Icon }: { href: string; label: string; icon: IconType }) {
+  return (
+    <a href={href} className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800">
+      <Icon size={16} />
+      {label}
+      <ExternalLink size={14} />
+    </a>
+  );
+}
+
 function ResourceRow({
   icon: Icon,
   label,
   value,
+  actionHref,
+  actionLabel,
 }: {
   icon: IconType;
   label: string;
   value: string;
+  actionHref?: string;
+  actionLabel?: string;
 }) {
   return (
     <div className="flex items-start gap-3 rounded-2xl bg-gray-50 p-3">
       <Icon size={18} className="mt-0.5 shrink-0 text-orange-600" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="font-extrabold text-gray-900">{label}</p>
         <p className="truncate text-sm font-semibold text-gray-500">{value}</p>
+        {actionHref ? (
+          <a href={actionHref} className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+            {actionLabel || "เปิดลิงก์"}
+            <ExternalLink size={13} />
+          </a>
+        ) : null}
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import { useMemo, useRef, useState, useTransition, type ComponentType } from "re
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
+import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
 
 type ProjectDocument = Record<string, string | number | undefined> & {
   document_id: string;
@@ -149,7 +150,10 @@ function safeText(value?: string | number) {
 }
 
 function buildDriveFolderUrl(folderId?: string) {
-  return folderId ? `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}` : "";
+  const value = String(folderId || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(value)}`;
 }
 
 function fileMatchesTab(file: FileItem, tab: TabKey) {
@@ -343,20 +347,34 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
 
   const uploadPdf = (formData: FormData) => {
     setUploadError("");
-    setUploadMessage("");
+    setUploadMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
     startTransition(async () => {
-      const response = await fetch(`/api/sites/${projectId}/documents`, {
-        method: "POST",
-        body: formData,
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload.error) {
-        setUploadError(String(payload.error || "อัปโหลดไฟล์ไม่สำเร็จ"));
-        return;
+      try {
+        const file = formData.get("file");
+        if (!(file instanceof File)) {
+          setUploadError("กรุณาเลือกไฟล์ PDF");
+          setUploadMessage("");
+          return;
+        }
+
+        const uploadedDocument = await uploadProjectDocumentDirectly({
+          endpoint: `/api/sites/${projectId}/documents`,
+          category: String(formData.get("category") || "other"),
+          title: String(formData.get("title") || file.name),
+          notes: String(formData.get("notes") || ""),
+          file,
+        });
+
+        setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
+        formRef.current?.reset();
+        await documents.mutate((current) => ({
+          success: true,
+          data: [uploadedDocument, ...(current?.data || [])],
+        }), { revalidate: true });
+      } catch (error: unknown) {
+        setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
+        setUploadMessage("");
       }
-      setUploadMessage("อัปโหลดเอกสารเรียบร้อยแล้ว");
-      formRef.current?.reset();
-      await documents.mutate();
     });
   };
 
@@ -399,10 +417,11 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
               <textarea name="notes" className="min-h-20 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="หมายเหตุ" />
               {uploadError ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{uploadError}</p> : null}
               {uploadMessage ? <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">{uploadMessage}</p> : null}
-              <button disabled={isPending} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+              <button disabled={isPending || !driveUrl} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
                 {isPending ? <RefreshCw className="animate-spin" size={16} /> : <Upload size={16} />}
-                บันทึกไฟล์
+                {driveUrl ? "อัปโหลดตรงไป Drive" : "ต้องตั้งค่า Drive Folder ก่อน"}
               </button>
+              <p className="text-xs font-semibold text-gray-500">ไฟล์จะถูกส่งตรงไป Google Drive แล้วระบบบันทึก file id และ version history ให้อัตโนมัติ</p>
             </div>
           </form>
 
@@ -415,8 +434,6 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             {driveUrl ? (
               <a
                 href={driveUrl}
-                target="_blank"
-                rel="noreferrer"
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
               >
                 เปิด Google Drive <ExternalLink size={16} />
