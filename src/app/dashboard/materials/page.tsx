@@ -24,7 +24,7 @@ export default function MaterialsPage() {
   const [selectedProject, setSelectedProject] = useState(searchParams.get("project_id") || "");
   const materialKey = selectedProject ? `/api/materials?project_id=${selectedProject}` : "/api/materials";
   const { data: materialsData, error, isLoading } = useSWR(materialKey, fetcher);
-  const { data: projectsData } = useSWR("/api/projects", fetcher);
+  const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   
   const materials = materialsData?.data || [];
   const projects = projectsData?.data || [];

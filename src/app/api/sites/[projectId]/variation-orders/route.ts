@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { createNotification } from "@/lib/notifications";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
 import { toAppRole } from "@/lib/roles";
@@ -177,15 +177,22 @@ async function uploadSupportingDocumentFiles(context: RouteContext, voId: string
 }
 
 async function getVoData(context: RouteContext) {
-  const [vos, items, documents, payments, taskLinks, tasks, ledger] = await Promise.all([
-    findAll("Variation_Orders", context.siteSheetId) as unknown as Promise<VoRecord[]>,
-    findAll("VO_Items", context.siteSheetId) as unknown as Promise<VoItemRecord[]>,
-    findAll("VO_Documents", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Payments", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Task_Links", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("Tasks", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Finance_Ledger", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-  ]);
+  const rows = await findAllBatch([
+    "Variation_Orders",
+    "VO_Items",
+    "VO_Documents",
+    "VO_Payments",
+    "VO_Task_Links",
+    "Tasks",
+    "VO_Finance_Ledger",
+  ], context.siteSheetId) as unknown as Record<string, SheetRecord[]>;
+  const vos = parseRows<VoRecord>(rows.Variation_Orders);
+  const items = parseRows<VoItemRecord>(rows.VO_Items);
+  const documents = rows.VO_Documents || [];
+  const payments = rows.VO_Payments || [];
+  const taskLinks = rows.VO_Task_Links || [];
+  const tasks = rows.Tasks || [];
+  const ledger = rows.VO_Finance_Ledger || [];
 
   const projectId = context.project.project_id;
   return {

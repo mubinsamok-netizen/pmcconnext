@@ -12,7 +12,7 @@ import {
 } from "@/lib/defects";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -84,12 +84,13 @@ function calculateRoundCounts(items: DefectItemRecord[]) {
 }
 
 async function getDefectData(context: RouteContext) {
-  const [roundRows, itemRows, evidenceRows, auditLogs] = await Promise.all([
-    findAll("Defect_Rounds", context.siteSheetId) as unknown as Promise<DefectRoundRecord[]>,
-    findAll("Defect_Items", context.siteSheetId) as unknown as Promise<DefectItemRecord[]>,
-    findAll("Defect_Evidence", context.siteSheetId) as unknown as Promise<Record<string, string | number | undefined>[]>,
+  const [siteRows, auditLogs] = await Promise.all([
+    findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, Record<string, string | number | undefined>[]>>,
     findAllMaster("AuditLogs") as Promise<Record<string, string | number | undefined>[]>,
   ]);
+  const roundRows = (siteRows.Defect_Rounds || []) as DefectRoundRecord[];
+  const itemRows = (siteRows.Defect_Items || []) as DefectItemRecord[];
+  const evidenceRows = siteRows.Defect_Evidence || [];
   const projectId = context.project.project_id;
   const rounds = roundRows.filter((row) => row.project_id === projectId);
   const items = itemRows.filter((row) => row.project_id === projectId);

@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/authOptions";
 import { findOrCreateFolder } from "@/lib/drive";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { createPdfReportFile } from "@/lib/reportPdf";
-import { findAll, insert } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, insert } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
 import { buildWeeklyReportHtml, stringifyWeeklyRows, type WeeklyReportPayload, type WeeklyReportTableRow } from "@/lib/weeklyReports";
@@ -181,11 +181,9 @@ function buildInstructionsFromExistingData({
 
 function buildApprovalsFromExistingData({
   variationOrders,
-  paymentClaims,
   documents,
 }: {
   variationOrders: SheetRecord[];
-  paymentClaims: SheetRecord[];
   documents: SheetRecord[];
 }) {
   const voRows = variationOrders.map((vo) => ({
@@ -198,16 +196,6 @@ function buildApprovalsFromExistingData({
     note: [moneyText(vo.grand_total), vo.extension_days ? `extension ${vo.extension_days} days` : ""].filter(Boolean).join(" / "),
   }));
 
-  const paymentRows = paymentClaims.map((claim) => ({
-    document_no: firstText(claim, ["doc_no", "claim_id"]),
-    type: `Payment ${String(claim.type || "")}`.trim(),
-    subject: firstText(claim, ["description", "payee_name"]),
-    submitted_date: dateText(claim, ["created_date", "created_at", "due_date"]),
-    status: String(claim.status || "-"),
-    owner: firstText(claim, ["prepared_by", "created_by_name", "created_by_email"]),
-    note: [moneyText(claim.net_payable), claim.due_date ? `due ${claim.due_date}` : ""].filter(Boolean).join(" / "),
-  }));
-
   const documentRows = documents.map((document) => ({
     document_no: firstText(document, ["document_id", "version_number"]),
     type: firstText(document, ["category", "mime_type"]) || "Document",
@@ -218,7 +206,7 @@ function buildApprovalsFromExistingData({
     note: firstText(document, ["notes", "drive_url"]),
   }));
 
-  return [...voRows, ...paymentRows, ...documentRows];
+  return [...voRows, ...documentRows];
 }
 
 async function buildWeeklyPayload({
@@ -240,30 +228,26 @@ async function buildWeeklyPayload({
   documentNo?: string;
   reportId?: string;
 }): Promise<WeeklyReportPayload> {
-  const [
-    allDaily,
-    allTasks,
-    allDefectItems,
-    allVariationOrders,
-    allPaymentClaims,
-    allMemos,
-    allDocuments,
-  ] = await Promise.all([
-    findAll("Daily_Reports", sheetId) as Promise<SheetRecord[]>,
-    findAll("Tasks", sheetId) as Promise<SheetRecord[]>,
-    findAll("Defect_Items", sheetId) as Promise<SheetRecord[]>,
-    findAll("Variation_Orders", sheetId) as Promise<SheetRecord[]>,
-    findAll("Payment_Claims", sheetId) as Promise<SheetRecord[]>,
-    findAll("Site_Memos", sheetId) as Promise<SheetRecord[]>,
-    findAll("Project_Documents", sheetId) as Promise<SheetRecord[]>,
-  ]);
+  const rows = await findAllBatch([
+    "Daily_Reports",
+    "Tasks",
+    "Defect_Items",
+    "Variation_Orders",
+    "Site_Memos",
+    "Project_Documents",
+  ], sheetId) as Record<string, SheetRecord[]>;
+  const allDaily = rows.Daily_Reports || [];
+  const allTasks = rows.Tasks || [];
+  const allDefectItems = rows.Defect_Items || [];
+  const allVariationOrders = rows.Variation_Orders || [];
+  const allMemos = rows.Site_Memos || [];
+  const allDocuments = rows.Project_Documents || [];
   const dailyReports = allDaily
     .filter((report) => report.project_id === projectId && isWithinRange(String(report.date || ""), weekStart, weekEnd))
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
   const weeklyTasks = allTasks.filter((task) => task.project_id === projectId && taskDateInRange(task, weekStart, weekEnd));
   const weeklyDefectItems = allDefectItems.filter((item) => item.project_id === projectId && rowDateInRange(item, weekStart, weekEnd, ["reported_date", "due_date", "created_at", "updated_at"]));
   const weeklyVariationOrders = allVariationOrders.filter((vo) => vo.project_id === projectId && rowDateInRange(vo, weekStart, weekEnd, ["created_at", "updated_at", "approval_deadline", "due_date"]));
-  const weeklyPaymentClaims = allPaymentClaims.filter((claim) => claim.project_id === projectId && rowDateInRange(claim, weekStart, weekEnd, ["created_date", "due_date", "transfer_date", "created_at", "updated_at"]));
   const weeklyMemos = allMemos.filter((memo) => memo.project_id === projectId && rowDateInRange(memo, weekStart, weekEnd, ["event_date", "issue_date", "created_at", "updated_at"]));
   const weeklyDocuments = allDocuments.filter((document) => document.project_id === projectId && rowDateInRange(document, weekStart, weekEnd, ["created_at", "updated_at"]));
 
@@ -295,7 +279,6 @@ async function buildWeeklyPayload({
     }),
     approvals: buildApprovalsFromExistingData({
       variationOrders: weeklyVariationOrders,
-      paymentClaims: weeklyPaymentClaims,
       documents: weeklyDocuments,
     }),
     daily_summaries: dailyReports.map((report) => ({

@@ -20,7 +20,15 @@ type SheetRow = { _rowIndex: number } & Record<string, string>;
 
 const MASTER_READ_CACHE_TTL_MS = 5 * 60 * 1000;
 const MASTER_READ_STALE_TTL_MS = 30 * 60 * 1000;
+const SITE_READ_CACHE_TTL_MS = 2 * 60 * 1000;
+const SITE_READ_STALE_TTL_MS = 30 * 60 * 1000;
 const masterReadCache = new Map<string, {
+  expiresAt: number;
+  staleUntil: number;
+  rows?: SheetRow[];
+  promise?: Promise<SheetRow[]>;
+}>();
+const siteReadCache = new Map<string, {
   expiresAt: number;
   staleUntil: number;
   rows?: SheetRow[];
@@ -40,6 +48,35 @@ function clearMasterReadCache(tableName?: MasterTable) {
   masterReadCache.delete(`${MASTER_SHEET_ID}:${String(tableName)}`);
 }
 
+function getReadCacheKey(spreadsheetId: string, tableName: string) {
+  return `${spreadsheetId}:${tableName}`;
+}
+
+function clearSiteReadCache(spreadsheetId: string, tableName?: string) {
+  if (!tableName) {
+    Array.from(siteReadCache.keys())
+      .filter((key) => key.startsWith(`${spreadsheetId}:`))
+      .forEach((key) => siteReadCache.delete(key));
+    return;
+  }
+  siteReadCache.delete(getReadCacheKey(spreadsheetId, tableName));
+}
+
+function rowsToRecords(rows: unknown[][]) {
+  if (rows.length === 0) return [] as SheetRow[];
+
+  const headers = rows[0].map((header) => String(header || ""));
+  const dataRows = rows.slice(1);
+
+  return dataRows.map((row, rowIndex) => {
+    const obj = { _rowIndex: rowIndex + 2 } as SheetRow;
+    headers.forEach((header, colIndex) => {
+      obj[header] = String(row[colIndex] || "");
+    });
+    return obj;
+  });
+}
+
 async function findAllFromSheet(spreadsheetId: string, tableName: string) {
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -47,19 +84,7 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string) {
       range: `${tableName}`,
     });
 
-    const rows = res.data.values || [];
-    if (rows.length === 0) return [];
-
-    const headers = rows[0];
-    const dataRows = rows.slice(1);
-
-    return dataRows.map((row, rowIndex) => {
-      const obj = { _rowIndex: rowIndex + 2 } as { _rowIndex: number } & Record<string, string>; // 1-based index + 1 for header
-      headers.forEach((header, colIndex) => {
-        obj[header] = row[colIndex] || "";
-      });
-      return obj;
-    }) as SheetRow[];
+    return rowsToRecords(res.data.values || []);
   } catch (error) {
     if (isQuotaExceeded(error)) {
       console.warn(`Read quota exceeded in findAll(${tableName}).`);
@@ -72,6 +97,52 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string) {
 
 export async function findAllRaw(tableName: string, spreadsheetId: string = SHEET_ID) {
   return findAllFromSheet(spreadsheetId, tableName);
+}
+
+async function findAllFromSiteCache(spreadsheetId: string, tableName: string) {
+  const cacheKey = getReadCacheKey(spreadsheetId, tableName);
+  const cached = siteReadCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached?.rows && cached.expiresAt > now) {
+    return cached.rows;
+  }
+
+  if (cached?.promise) {
+    return cached.promise;
+  }
+
+  const promise = findAllFromSheet(spreadsheetId, tableName)
+    .then((rows) => {
+      siteReadCache.set(cacheKey, {
+        expiresAt: Date.now() + SITE_READ_CACHE_TTL_MS,
+        staleUntil: Date.now() + SITE_READ_STALE_TTL_MS,
+        rows,
+      });
+      return rows;
+    })
+    .catch((error) => {
+      if (isQuotaExceeded(error) && cached?.rows && cached.staleUntil > Date.now()) {
+        console.warn(`Using stale site ${tableName} rows because Google Sheets read quota is temporarily exceeded.`);
+        siteReadCache.set(cacheKey, {
+          expiresAt: Date.now() + 30 * 1000,
+          staleUntil: cached.staleUntil,
+          rows: cached.rows,
+        });
+        return cached.rows;
+      }
+      siteReadCache.delete(cacheKey);
+      throw error;
+    });
+
+  siteReadCache.set(cacheKey, {
+    expiresAt: cached?.expiresAt || 0,
+    staleUntil: cached?.staleUntil || 0,
+    rows: cached?.rows,
+    promise,
+  });
+
+  return promise;
 }
 
 async function insertToSheet(
@@ -190,7 +261,90 @@ async function deleteRowFromSheet(spreadsheetId: string, tableName: string, rowI
 }
 
 export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID) {
-  return findAllFromSheet(spreadsheetId, String(tableName));
+  return findAllFromSiteCache(spreadsheetId, String(tableName));
+}
+
+export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: string = SHEET_ID) {
+  const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
+  const result = {} as Record<SiteTable, SheetRow[]>;
+  const pendingTables: string[] = [];
+  const pendingPromises: Promise<void>[] = [];
+  const now = Date.now();
+
+  uniqueTableNames.forEach((tableName) => {
+    const cacheKey = getReadCacheKey(spreadsheetId, tableName);
+    const cached = siteReadCache.get(cacheKey);
+
+    if (cached?.rows && cached.expiresAt > now) {
+      result[tableName as SiteTable] = cached.rows;
+      return;
+    }
+
+    if (cached?.promise) {
+      pendingPromises.push(cached.promise.then((rows) => {
+        result[tableName as SiteTable] = rows;
+      }));
+      return;
+    }
+
+    pendingTables.push(tableName);
+  });
+
+  if (pendingTables.length > 0) {
+    const batchPromise = sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
+      ranges: pendingTables,
+    })
+      .then((response) => {
+        pendingTables.forEach((tableName, index) => {
+          const rows = rowsToRecords(response.data.valueRanges?.[index]?.values || []);
+          siteReadCache.set(getReadCacheKey(spreadsheetId, tableName), {
+            expiresAt: Date.now() + SITE_READ_CACHE_TTL_MS,
+            staleUntil: Date.now() + SITE_READ_STALE_TTL_MS,
+            rows,
+          });
+          result[tableName as SiteTable] = rows;
+        });
+      })
+      .catch((error) => {
+        if (isQuotaExceeded(error)) {
+          const recoverableTables = pendingTables.filter((tableName) => {
+            const cached = siteReadCache.get(getReadCacheKey(spreadsheetId, tableName));
+            return Boolean(cached?.rows && cached.staleUntil > Date.now());
+          });
+
+          if (recoverableTables.length === pendingTables.length) {
+            pendingTables.forEach((tableName) => {
+              const cached = siteReadCache.get(getReadCacheKey(spreadsheetId, tableName));
+              const rows = cached?.rows || [];
+              console.warn(`Using stale site ${tableName} rows because Google Sheets read quota is temporarily exceeded.`);
+              siteReadCache.set(getReadCacheKey(spreadsheetId, tableName), {
+                expiresAt: Date.now() + 30 * 1000,
+                staleUntil: cached?.staleUntil || 0,
+                rows,
+              });
+              result[tableName as SiteTable] = rows;
+            });
+            return;
+          }
+        }
+
+        pendingTables.forEach((tableName) => siteReadCache.delete(getReadCacheKey(spreadsheetId, tableName)));
+        throw error;
+      });
+
+    pendingTables.forEach((tableName) => {
+      siteReadCache.set(getReadCacheKey(spreadsheetId, tableName), {
+        expiresAt: 0,
+        staleUntil: 0,
+        promise: batchPromise.then(() => result[tableName as SiteTable] || []),
+      });
+    });
+    pendingPromises.push(batchPromise);
+  }
+
+  await Promise.all(pendingPromises);
+  return result;
 }
 
 export async function findAllMaster(tableName: MasterTable) {
@@ -240,7 +394,9 @@ export async function findAllMaster(tableName: MasterTable) {
 }
 
 export async function insert(tableName: SiteTable, data: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
-  return insertToSheet(spreadsheetId, SITE_SCHEMA, String(tableName), data);
+  const result = await insertToSheet(spreadsheetId, SITE_SCHEMA, String(tableName), data);
+  clearSiteReadCache(spreadsheetId, String(tableName));
+  return result;
 }
 
 export async function insertMaster(tableName: MasterTable, data: Record<string, SheetValue>) {
@@ -250,7 +406,9 @@ export async function insertMaster(tableName: MasterTable, data: Record<string, 
 }
 
 export async function update(tableName: SiteTable, rowIndex: number, patch: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
-  return updateInSheet(spreadsheetId, SITE_SCHEMA, String(tableName), rowIndex, patch);
+  const result = await updateInSheet(spreadsheetId, SITE_SCHEMA, String(tableName), rowIndex, patch);
+  clearSiteReadCache(spreadsheetId, String(tableName));
+  return result;
 }
 
 export async function updateMaster(tableName: MasterTable, rowIndex: number, patch: Record<string, SheetValue>) {
@@ -260,7 +418,9 @@ export async function updateMaster(tableName: MasterTable, rowIndex: number, pat
 }
 
 export async function deleteRow(tableName: SiteTable, rowIndex: number, spreadsheetId: string = SHEET_ID) {
-  return deleteRowFromSheet(spreadsheetId, String(tableName), rowIndex);
+  const result = await deleteRowFromSheet(spreadsheetId, String(tableName), rowIndex);
+  clearSiteReadCache(spreadsheetId, String(tableName));
+  return result;
 }
 
 export async function deleteRowMaster(tableName: MasterTable, rowIndex: number) {

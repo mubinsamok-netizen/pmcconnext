@@ -29,7 +29,7 @@ The current direction is one web application with a central Master Sheet and sep
 
 4. **Navigation Model**
    - Workspace/Master sidebar: Dashboard, Sites, Sales CRM, Team.
-   - Site sidebar: Project Overview, Project Details, Daily Reports, Schedule, Payment Requests, RFA, RFI, Defect, Files.
+   - Site sidebar: Project Overview, Project Details, Daily Reports, Schedule, RFA, RFI, Defect, Files.
 
 5. **Superseded Direction**
    - The earlier "1 Site = 1 Web App / Deployment" idea is no longer the primary implementation path.
@@ -77,7 +77,6 @@ The current direction is one web application with a central Master Sheet and sep
 - [ ] **Phase 2 RFA/RFI/Issue Linking**: Link RFA/RFI/Issues/Defects to `task_id` or WBS category so the project dashboard can show schedule-impacting blockers.
 - [ ] **Phase 2 Baseline Reporting**: Reintroduce planned vs actual variance only after the planning workflow is consistently used in the field.
 - [ ] **Sales CRM Reminder/Owner Upgrade**: Lead owner assignment, next follow-up due date reminders, duplicate phone detection, and export support.
-- [ ] **Payment Requests**: Professional payment request workflow with export/email support.
 - [ ] **RFA**: Approval workflow for material/shop drawing/submittal requests.
 - [ ] **RFI**: Question/answer workflow with status tracking and attachments.
 - [ ] **Defect Management**: Floor-plan based defect tagging with client approval workflow.

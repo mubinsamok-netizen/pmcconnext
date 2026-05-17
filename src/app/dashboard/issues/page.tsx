@@ -24,7 +24,7 @@ export default function IssuesPage() {
   const [selectedProject, setSelectedProject] = useState(searchParams.get("project_id") || "");
   const issueKey = selectedProject ? `/api/issues?project_id=${selectedProject}` : "/api/issues";
   const { data: issuesData, error, isLoading, mutate } = useSWR(issueKey, fetcher);
-  const { data: projectsData } = useSWR("/api/projects", fetcher);
+  const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   
   const issues = issuesData?.data || [];
   const projects = projectsData?.data || [];

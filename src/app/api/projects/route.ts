@@ -5,7 +5,7 @@ import { filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
-import { findAll, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -236,10 +236,9 @@ async function enrichProjectWithHealth(project: SheetRecord) {
   }
 
   try {
-    const [tasks, dailyReports] = await Promise.all([
-      findAll("Tasks", siteSheetId) as Promise<SheetRecord[]>,
-      findAll("Daily_Reports", siteSheetId) as Promise<SheetRecord[]>,
-    ]);
+    const rows = await findAllBatch(["Tasks", "Daily_Reports"], siteSheetId) as Record<string, SheetRecord[]>;
+    const tasks = rows.Tasks || [];
+    const dailyReports = rows.Daily_Reports || [];
     const projectTasks = tasks.filter((task) => task.project_id === project.project_id);
     return {
       ...project,
@@ -252,8 +251,10 @@ async function enrichProjectWithHealth(project: SheetRecord) {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const { searchParams } = new URL(req.url);
+    const mode = searchParams.get("mode");
     await ensureMasterSchema();
 
     const session = await getServerSession(authOptions);
@@ -264,6 +265,10 @@ export async function GET() {
     const projects = await findAllMaster("Projects");
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
+    if (mode === "basic") {
+      return NextResponse.json({ success: true, data: accessibleProjects });
+    }
+
     const projectsWithHealth = await Promise.all(accessibleProjects.map(enrichProjectWithHealth));
     return NextResponse.json({ success: true, data: projectsWithHealth });
   } catch (error: unknown) {

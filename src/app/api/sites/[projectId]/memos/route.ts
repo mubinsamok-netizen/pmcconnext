@@ -3,7 +3,7 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
   buildMemoPdfHtml,
@@ -104,11 +104,12 @@ async function prepareMemoPdfAssets(memo: MemoRecord, evidence: MemoEvidenceReco
 }
 
 async function getMemoData(context: RouteContext) {
-  const [memoRows, evidenceRows, auditLogs] = await Promise.all([
-    findAll("Site_Memos", context.siteSheetId) as unknown as Promise<MemoRecord[]>,
-    findAll("Site_Memo_Evidence", context.siteSheetId) as unknown as Promise<MemoEvidenceRecord[]>,
+  const [siteRows, auditLogs] = await Promise.all([
+    findAllBatch(["Site_Memos", "Site_Memo_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, SheetRecord[]>>,
     findAllMaster("AuditLogs") as Promise<SheetRecord[]>,
   ]);
+  const memoRows = (siteRows.Site_Memos || []) as MemoRecord[];
+  const evidenceRows = (siteRows.Site_Memo_Evidence || []) as MemoEvidenceRecord[];
   const projectId = context.project.project_id;
 
   return {

@@ -169,7 +169,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   "งานทั่วไป": "#607d8b",
 };
 
-const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "เบิกเงิน", "อื่น ๆ"];
+const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "อื่น ๆ"];
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
 const COLLAPSED_STORAGE_KEY = "pcm.schedule.collapsedHeadings.v1";
 

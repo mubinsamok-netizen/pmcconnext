@@ -5,7 +5,7 @@ import { filterProjectsForUser } from "@/lib/authz";
 import { canUserSeeNotification, isUnread, type NotificationRecord } from "@/lib/notifications";
 import { getAlertState, getLifecycleReminderTargets, getWarrantyReminderTargets, type ReminderTarget } from "@/lib/projectLifecycle";
 import { dispatchReminderIntegrations } from "@/lib/reminderIntegrations";
-import { findAll, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -156,10 +156,9 @@ async function getGeneratedProjectDateAlerts(projects: SheetRecord[], existingNo
     if (!projectId || !siteSheetId) return;
 
     try {
-      const [lifecycles, warranties] = await Promise.all([
-        findAll("Project_Lifecycle", siteSheetId) as Promise<SheetRecord[]>,
-        findAll("Project_Warranty", siteSheetId) as Promise<SheetRecord[]>,
-      ]);
+      const rows = await findAllBatch(["Project_Lifecycle", "Project_Warranty"], siteSheetId) as Record<string, SheetRecord[]>;
+      const lifecycles = rows.Project_Lifecycle || [];
+      const warranties = rows.Project_Warranty || [];
       const lifecycle = lifecycles.find((row) => row.project_id === projectId);
       const warranty = warranties.find((row) => row.project_id === projectId);
       const targets = [

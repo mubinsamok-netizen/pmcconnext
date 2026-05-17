@@ -30,7 +30,7 @@ type ApiResponse<T> = {
 export default function TeamPage() {
   const [roleFilter, setRoleFilter] = useState("all");
   const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
-  const { data: projectsData } = useSWR<ApiResponse<Project>>("/api/projects", fetcher);
+  const { data: projectsData } = useSWR<ApiResponse<Project>>("/api/projects?mode=basic", fetcher);
   const team = useMemo(() => data?.data || [], [data?.data]);
   const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);

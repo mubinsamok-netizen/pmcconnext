@@ -1,6 +1,20 @@
 import { auth, drive, DRIVE_ROOT_FOLDER_ID } from "./google";
 import { Readable } from "stream";
 
+const FOLDER_LOOKUP_CACHE_TTL_MS = 60 * 60 * 1000;
+const folderLookupCache = new Map<string, {
+  expiresAt: number;
+  folder: {
+    id?: string | null;
+    name?: string | null;
+    webViewLink?: string | null;
+  };
+}>();
+
+function getFolderCacheKey(folderName: string, parentId: string) {
+  return `${parentId}:${folderName}`;
+}
+
 export async function createFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
   try {
     const fileMetadata = {
@@ -24,6 +38,12 @@ export async function createFolder(folderName: string, parentId: string = DRIVE_
 
 export async function findOrCreateFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
   try {
+    const cacheKey = getFolderCacheKey(folderName, parentId);
+    const cached = folderLookupCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.folder;
+    }
+
     const query = `name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     
     const response = await drive.files.list({
@@ -34,11 +54,14 @@ export async function findOrCreateFolder(folderName: string, parentId: string = 
       spaces: "drive",
     });
 
-    if (response.data.files && response.data.files.length > 0) {
-      return response.data.files[0];
-    } else {
-      return await createFolder(folderName, parentId);
-    }
+    const folder = response.data.files && response.data.files.length > 0
+      ? response.data.files[0]
+      : await createFolder(folderName, parentId);
+    folderLookupCache.set(cacheKey, {
+      expiresAt: Date.now() + FOLDER_LOOKUP_CACHE_TTL_MS,
+      folder,
+    });
+    return folder;
   } catch (error) {
     console.error(`Error finding/creating folder ${folderName}:`, error);
     throw error;

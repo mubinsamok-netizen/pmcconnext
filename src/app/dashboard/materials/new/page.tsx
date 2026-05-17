@@ -12,7 +12,7 @@ export default function NewMaterialPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: projectsData } = useSWR("/api/projects", fetcher);
+  const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   const projects = projectsData?.data || [];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {

@@ -40,7 +40,7 @@ export default function EditTeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState("");
   const { data: teamData, isLoading: teamLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
-  const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>("/api/projects", fetcher);
+  const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>("/api/projects?mode=basic", fetcher);
   const projects = projectsData?.data || [];
 
   const member = useMemo(() => {

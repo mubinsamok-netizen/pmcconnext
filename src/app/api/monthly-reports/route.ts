@@ -5,7 +5,7 @@ import { findOrCreateFolder } from "@/lib/drive";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { buildMonthlyReportHtml, stringifyMonthlyRows, type MonthlyReportPayload, type MonthlyReportTableRow } from "@/lib/monthlyReports";
 import { createPdfReportFile } from "@/lib/reportPdf";
-import { findAll, insert } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, insert } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
 
@@ -258,11 +258,9 @@ function buildMonthlyIssuesFromExistingData({
 
 function buildMonthlyApprovalsFromExistingData({
   variationOrders,
-  paymentClaims,
   documents,
 }: {
   variationOrders: SheetRecord[];
-  paymentClaims: SheetRecord[];
   documents: SheetRecord[];
 }) {
   const voRows = variationOrders.map((vo) => ({
@@ -272,13 +270,6 @@ function buildMonthlyApprovalsFromExistingData({
     status: String(vo.status || "-"),
     note: [moneyText(vo.grand_total), vo.extension_days ? `extension ${vo.extension_days} days` : "", dateText(vo, ["created_at", "approval_deadline"])].filter(Boolean).join(" / "),
   }));
-  const paymentRows = paymentClaims.map((claim) => ({
-    document_no: firstText(claim, ["doc_no", "claim_id"]),
-    type: `Payment ${String(claim.type || "")}`.trim(),
-    subject: firstText(claim, ["description", "payee_name"]),
-    status: String(claim.status || "-"),
-    note: [moneyText(claim.net_payable), claim.due_date ? `due ${claim.due_date}` : ""].filter(Boolean).join(" / "),
-  }));
   const documentRows = documents.map((document) => ({
     document_no: firstText(document, ["document_id", "version_number"]),
     type: firstText(document, ["category", "mime_type"]) || "Document",
@@ -287,7 +278,7 @@ function buildMonthlyApprovalsFromExistingData({
     note: [dateText(document, ["created_at", "updated_at"]), firstText(document, ["notes", "drive_url"])].filter(Boolean).join(" / "),
   }));
 
-  return [...voRows, ...paymentRows, ...documentRows];
+  return [...voRows, ...documentRows];
 }
 
 function buildMonthlyInspectionsFromExistingData({
@@ -356,27 +347,24 @@ async function buildMonthlyPayload({
 }): Promise<MonthlyReportPayload> {
   const { month: normalizedMonth, start, end } = getMonthRange(month);
   const nextMonthRange = getMonthRange(addMonths(normalizedMonth, 1));
-  const [
-    allDaily,
-    allWeekly,
-    allTasks,
-    allDefectRounds,
-    allDefectItems,
-    allVariationOrders,
-    allPaymentClaims,
-    allMemos,
-    allDocuments,
-  ] = await Promise.all([
-    findAll("Daily_Reports", sheetId) as Promise<SheetRecord[]>,
-    findAll("Weekly_Reports", sheetId) as Promise<SheetRecord[]>,
-    findAll("Tasks", sheetId) as Promise<SheetRecord[]>,
-    findAll("Defect_Rounds", sheetId) as Promise<SheetRecord[]>,
-    findAll("Defect_Items", sheetId) as Promise<SheetRecord[]>,
-    findAll("Variation_Orders", sheetId) as Promise<SheetRecord[]>,
-    findAll("Payment_Claims", sheetId) as Promise<SheetRecord[]>,
-    findAll("Site_Memos", sheetId) as Promise<SheetRecord[]>,
-    findAll("Project_Documents", sheetId) as Promise<SheetRecord[]>,
-  ]);
+  const rows = await findAllBatch([
+    "Daily_Reports",
+    "Weekly_Reports",
+    "Tasks",
+    "Defect_Rounds",
+    "Defect_Items",
+    "Variation_Orders",
+    "Site_Memos",
+    "Project_Documents",
+  ], sheetId) as Record<string, SheetRecord[]>;
+  const allDaily = rows.Daily_Reports || [];
+  const allWeekly = rows.Weekly_Reports || [];
+  const allTasks = rows.Tasks || [];
+  const allDefectRounds = rows.Defect_Rounds || [];
+  const allDefectItems = rows.Defect_Items || [];
+  const allVariationOrders = rows.Variation_Orders || [];
+  const allMemos = rows.Site_Memos || [];
+  const allDocuments = rows.Project_Documents || [];
 
   const dailyReports = allDaily
     .filter((report) => report.project_id === projectId && isWithinRange(String(report.date || ""), start, end))
@@ -389,7 +377,6 @@ async function buildMonthlyPayload({
   const monthlyDefectRounds = allDefectRounds.filter((round) => round.project_id === projectId && rowDateInRange(round, start, end, ["inspection_date", "issued_at", "created_at", "updated_at"]));
   const monthlyDefectItems = allDefectItems.filter((item) => item.project_id === projectId && rowDateInRange(item, start, end, ["reported_date", "due_date", "created_at", "updated_at"]));
   const monthlyVariationOrders = allVariationOrders.filter((vo) => vo.project_id === projectId && rowDateInRange(vo, start, end, ["created_at", "updated_at", "approval_deadline", "due_date"]));
-  const monthlyPaymentClaims = allPaymentClaims.filter((claim) => claim.project_id === projectId && rowDateInRange(claim, start, end, ["created_date", "due_date", "transfer_date", "created_at", "updated_at"]));
   const monthlyMemos = allMemos.filter((memo) => memo.project_id === projectId && rowDateInRange(memo, start, end, ["event_date", "issue_date", "created_at", "updated_at"]));
   const monthlyDocuments = allDocuments.filter((document) => document.project_id === projectId && rowDateInRange(document, start, end, ["created_at", "updated_at"]));
   const dailyMaterials = dailyReports.flatMap((report) => safeJsonRows(report.materials_json));
@@ -442,7 +429,6 @@ async function buildMonthlyPayload({
       ...weeklyReports.flatMap((report) => safeJsonRows(report.approvals_json)),
       ...buildMonthlyApprovalsFromExistingData({
         variationOrders: monthlyVariationOrders,
-        paymentClaims: monthlyPaymentClaims,
         documents: monthlyDocuments,
       }),
     ],

@@ -27,7 +27,7 @@ export default function CreateTeamPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState("Engineer");
-  const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
   const projects = projectsData?.data || [];
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {

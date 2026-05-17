@@ -189,7 +189,7 @@ export default function EditProjectPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const { data: session } = useSession();
-  const { data, isLoading } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const { data, isLoading } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
   const [form, setForm] = useState<ProjectForm>(emptyForm);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState("");

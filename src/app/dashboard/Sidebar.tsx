@@ -5,7 +5,6 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Banknote,
   Bug,
   Building2,
   CalendarClock,
@@ -50,7 +49,6 @@ const siteNavItems = [
   { name: "บันทึกข้อความ / Memo", segment: "memos", icon: FileSignature },
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
-  { name: "ระบบเบิกเงิน", segment: "payments", icon: Banknote },
   { name: "Defect", segment: "defects", icon: Bug },
   { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },
 ];

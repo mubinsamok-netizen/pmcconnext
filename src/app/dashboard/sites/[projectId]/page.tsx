@@ -3,7 +3,6 @@ import { getServerSession } from "next-auth";
 import type { ComponentType, ReactNode } from "react";
 import {
   AlertTriangle,
-  Banknote,
   BarChart3,
   Bug,
   CalendarDays,
@@ -24,13 +23,12 @@ import {
   Sparkles,
   StickyNote,
   TrendingUp,
-  WalletCards,
 } from "lucide-react";
 import SiteWeatherCard from "@/components/SiteWeatherCard";
 import { authOptions } from "@/lib/authOptions";
 import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
-import { findAll } from "@/lib/sheetsCrud";
+import { findAllBatch } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
@@ -61,9 +59,6 @@ type CommercialSummary = {
   voCount: number;
   openVoCount: number;
   voAmount: number;
-  pendingPaymentCount: number;
-  draftPaymentCount: number;
-  paymentAmount: number;
 };
 
 type DefectSummary = {
@@ -158,9 +153,6 @@ const emptyData: DashboardData = {
     voCount: 0,
     openVoCount: 0,
     voAmount: 0,
-    pendingPaymentCount: 0,
-    draftPaymentCount: 0,
-    paymentAmount: 0,
   },
   defects: {
     roundCount: 0,
@@ -314,7 +306,7 @@ function itemTitle(row: SiteRecord, fallback: string) {
 }
 
 function isForemanVisibleHref(href: string) {
-  return !["/defects", "/variation-orders", "/payments", "/rfa", "/rfi", "/lifecycle"].some((segment) => href.includes(segment));
+  return !["/defects", "/variation-orders", "/rfa", "/rfi", "/lifecycle"].some((segment) => href.includes(segment));
 }
 
 async function getDashboardData(project: MasterProject): Promise<DashboardData> {
@@ -322,35 +314,33 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const { sheetId } = await getProjectContext(project.project_id);
     await ensureSchema(sheetId);
 
-    const [
-      tasks,
-      milestones,
-      issues,
-      dailyReports,
-      weeklyReports,
-      monthlyReports,
-      defectRounds,
-      defectItems,
-      documents,
-      variationOrders,
-      paymentClaims,
-      siteNotes,
-      siteMemos,
-    ] = await Promise.all([
-      findAll("Tasks", sheetId) as Promise<SiteRecord[]>,
-      findAll("Milestones", sheetId) as Promise<SiteRecord[]>,
-      findAll("Issues", sheetId) as Promise<SiteRecord[]>,
-      findAll("Daily_Reports", sheetId) as Promise<SiteRecord[]>,
-      findAll("Weekly_Reports", sheetId) as Promise<SiteRecord[]>,
-      findAll("Monthly_Reports", sheetId) as Promise<SiteRecord[]>,
-      findAll("Defect_Rounds", sheetId) as Promise<SiteRecord[]>,
-      findAll("Defect_Items", sheetId) as Promise<SiteRecord[]>,
-      findAll("Project_Documents", sheetId) as Promise<SiteRecord[]>,
-      findAll("Variation_Orders", sheetId) as Promise<SiteRecord[]>,
-      findAll("Payment_Claims", sheetId) as Promise<SiteRecord[]>,
-      findAll("Site_Notes", sheetId) as Promise<SiteRecord[]>,
-      findAll("Site_Memos", sheetId) as Promise<SiteRecord[]>,
-    ]);
+    const rows = await findAllBatch([
+      "Tasks",
+      "Milestones",
+      "Issues",
+      "Daily_Reports",
+      "Weekly_Reports",
+      "Monthly_Reports",
+      "Defect_Rounds",
+      "Defect_Items",
+      "Project_Documents",
+      "Variation_Orders",
+      "Site_Notes",
+      "Site_Memos",
+    ], sheetId) as Record<string, SiteRecord[]>;
+
+    const tasks = rows.Tasks || [];
+    const milestones = rows.Milestones || [];
+    const issues = rows.Issues || [];
+    const dailyReports = rows.Daily_Reports || [];
+    const weeklyReports = rows.Weekly_Reports || [];
+    const monthlyReports = rows.Monthly_Reports || [];
+    const defectRounds = rows.Defect_Rounds || [];
+    const defectItems = rows.Defect_Items || [];
+    const documents = rows.Project_Documents || [];
+    const variationOrders = rows.Variation_Orders || [];
+    const siteNotes = rows.Site_Notes || [];
+    const siteMemos = rows.Site_Memos || [];
 
     const belongsToProject = isProjectRow(project.project_id);
     const projectTasks = tasks.filter((task) => belongsToProject(task) && stringValue(task.task_type) !== "heading");
@@ -363,7 +353,6 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const projectDefectItems = defectItems.filter(belongsToProject);
     const projectDocuments = documents.filter(belongsToProject);
     const projectVariationOrders = variationOrders.filter(belongsToProject);
-    const projectPaymentClaims = paymentClaims.filter(belongsToProject);
     const projectNotes = siteNotes.filter((note) => belongsToProject(note) && !isTruthyText(note.archived));
     const projectMemos = siteMemos.filter(belongsToProject);
 
@@ -398,9 +387,6 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
 
     const activeVos = projectVariationOrders.filter((vo) => !isClosedStatus(vo.status) || stringValue(vo.status).toLowerCase() === "approved");
     const openVos = projectVariationOrders.filter((vo) => !isClosedStatus(vo.status));
-    const activeClaims = projectPaymentClaims.filter((claim) => !["cancelled", "rejected", "ยกเลิก"].includes(stringValue(claim.status).toLowerCase()));
-    const pendingPaymentClaims = activeClaims.filter((claim) => !isClosedStatus(claim.status));
-    const draftPaymentClaims = activeClaims.filter((claim) => ["draft", "ฉบับร่าง"].includes(stringValue(claim.status).toLowerCase()));
 
     const openDefectItems = projectDefectItems.filter((item) => !isClosedStatus(item.status) && !["fixed", "repaired", "แก้แล้ว"].includes(stringValue(item.status).toLowerCase()));
     const fixedDefectItems = projectDefectItems.filter((item) => ["fixed", "repaired", "แก้แล้ว", "รอตรวจ"].includes(stringValue(item.status).toLowerCase()));
@@ -450,9 +436,6 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       voCount: projectVariationOrders.length,
       openVoCount: openVos.length,
       voAmount: activeVos.reduce((sum, vo) => sum + numberValue(vo.grand_total || vo.net_payable || vo.amount_due || vo.subtotal), 0),
-      pendingPaymentCount: pendingPaymentClaims.length,
-      draftPaymentCount: draftPaymentClaims.length,
-      paymentAmount: pendingPaymentClaims.reduce((sum, claim) => sum + numberValue(claim.net_payable || claim.gross_amount), 0),
     };
 
     const defects: DefectSummary = {
@@ -512,7 +495,6 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       latestDailyReport,
       latestRound,
       latestVo: [...projectVariationOrders].sort((a, b) => dateKey(b.updated_at || b.created_at) - dateKey(a.updated_at || a.created_at))[0],
-      latestClaim: [...projectPaymentClaims].sort((a, b) => dateKey(b.updated_at || b.created_at) - dateKey(a.updated_at || a.created_at))[0],
     });
 
     return {
@@ -601,16 +583,6 @@ function buildActions(
     });
   }
 
-  if (summaries.commercial.draftPaymentCount > 0 || summaries.commercial.pendingPaymentCount > 0) {
-    actions.push({
-      title: `ใบเบิกเงินรอดำเนินการ ${summaries.commercial.pendingPaymentCount} ใบ`,
-      detail: `ยอดรอตรวจ ${formatMoney(summaries.commercial.paymentAmount)} บาท`,
-      href: `/dashboard/sites/${projectId}/payments`,
-      icon: WalletCards,
-      tone: "blue",
-    });
-  }
-
   if (!summaries.reports.latestDailyDate) {
     actions.push({
       title: "ยังไม่มีรายงานประจำวัน",
@@ -643,7 +615,6 @@ function buildRecent(
     latestDailyReport?: SiteRecord;
     latestRound?: SiteRecord;
     latestVo?: SiteRecord;
-    latestClaim?: SiteRecord;
   },
 ) {
   const items: RecentItem[] = [
@@ -688,13 +659,6 @@ function buildRecent(
       date: stringValue(rows.latestVo.updated_at || rows.latestVo.created_at),
       href: `/dashboard/sites/${projectId}/variation-orders`,
       icon: ReceiptText,
-    },
-    rows.latestClaim && {
-      title: itemTitle(rows.latestClaim, "ใบเบิกเงิน"),
-      detail: `Payment ${statusLabel(rows.latestClaim.status)}`,
-      date: stringValue(rows.latestClaim.updated_at || rows.latestClaim.created_at || rows.latestClaim.created_date),
-      href: `/dashboard/sites/${projectId}/payments`,
-      icon: Banknote,
     },
   ].filter(Boolean) as RecentItem[];
 
@@ -858,14 +822,12 @@ export default async function SiteDashboardPage({
         )}
 
         {!isForeman && (
-          <Panel title="การเงินและเอกสารอนุมัติ" icon={WalletCards} href={`/dashboard/sites/${project.project_id}/variation-orders`} actionLabel="VO / เบิกเงิน">
+          <Panel title="การเงินและเอกสารอนุมัติ" icon={ReceiptText} href={`/dashboard/sites/${project.project_id}/variation-orders`} actionLabel="VO">
             <div className="grid grid-cols-2 gap-3">
               <SmallMetric label="VO ทั้งหมด" value={String(dashboard.commercial.voCount)} />
               <SmallMetric label="VO เปิดอยู่" value={String(dashboard.commercial.openVoCount)} tone={dashboard.commercial.openVoCount ? "orange" : "green"} />
               <SmallMetric label="มูลค่า VO" value={formatMoney(dashboard.commercial.voAmount)} suffix="บาท" />
-              <SmallMetric label="ใบเบิกรอปิด" value={String(dashboard.commercial.pendingPaymentCount)} tone={dashboard.commercial.pendingPaymentCount ? "orange" : "green"} />
             </div>
-            <InfoStrip icon={Banknote} label="ยอดใบเบิกที่ยังรอดำเนินการ" value={`${formatMoney(dashboard.commercial.paymentAmount)} บาท`} />
           </Panel>
         )}
       </div>

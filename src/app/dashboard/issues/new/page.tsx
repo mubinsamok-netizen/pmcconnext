@@ -12,7 +12,7 @@ export default function NewIssuePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: projectsData } = useSWR("/api/projects", fetcher);
+  const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   const { data: teamData } = useSWR("/api/team", fetcher);
   
   const projects = projectsData?.data || [];
