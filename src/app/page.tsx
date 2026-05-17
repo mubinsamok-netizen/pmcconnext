@@ -2,7 +2,6 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   BriefcaseBusiness,
@@ -17,7 +16,6 @@ import {
 import { signIn } from "next-auth/react";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -34,13 +32,14 @@ export default function LoginPage() {
       email,
       password,
       redirect: false,
+      callbackUrl: "/dashboard",
     });
 
     if (result?.error) {
       setError(result.error);
       setLoading(false);
     } else {
-      router.push("/dashboard");
+      window.location.assign(result?.url?.includes("/dashboard") ? result.url : "/dashboard");
     }
   };
 
