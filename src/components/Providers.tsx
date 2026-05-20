@@ -11,7 +11,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <SessionProvider refetchOnWindowFocus={false} refetchInterval={0}>
         <SWRConfig
           value={{
-            dedupingInterval: 30_000,
+            dedupingInterval: 120_000,
             focusThrottleInterval: 60_000,
             revalidateOnFocus: false,
             revalidateOnReconnect: false,

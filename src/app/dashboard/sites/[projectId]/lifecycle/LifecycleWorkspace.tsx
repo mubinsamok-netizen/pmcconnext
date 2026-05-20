@@ -315,7 +315,7 @@ export default function LifecycleWorkspace({
     error: warrantyError,
     isLoading: warrantyLoading,
     mutate: mutateWarranty,
-  } = useSWR<ApiResponse<Record<string, string> | null>>(warrantyKey, fetcher, {
+  } = useSWR<ApiResponse<Record<string, string> | null>>(activeTab === "warranty" ? warrantyKey : null, fetcher, {
     onSuccess(result) {
       if (result.data) setWarrantyForm(normalizeDateFields({ ...emptyWarranty, ...result.data }, warrantyDateFields));
     },
@@ -325,11 +325,11 @@ export default function LifecycleWorkspace({
     error: documentsError,
     isLoading: documentsLoading,
     mutate: mutateDocuments,
-  } = useSWR<ApiResponse<DocumentRecord[]>>(documentsKey, fetcher);
+  } = useSWR<ApiResponse<DocumentRecord[]>>(activeTab === "documents" ? documentsKey : null, fetcher);
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
-  const apiHasError = Boolean(lifecycleError || warrantyError || documentsError);
-  const apiIsLoading = lifecycleLoading || warrantyLoading || documentsLoading;
+  const apiHasError = Boolean(lifecycleError || (activeTab === "warranty" && warrantyError) || (activeTab === "documents" && documentsError));
+  const apiIsLoading = lifecycleLoading || (activeTab === "warranty" && warrantyLoading) || (activeTab === "documents" && documentsLoading);
   const filledLifecycleDates = lifecycleDateFields.filter((field) => Boolean(lifecycleForm[field])).length;
   const filledWarrantyDates = warrantyDateFields.filter((field) => Boolean(warrantyForm[field as keyof typeof emptyWarranty])).length;
   const tabs: { id: WorkspaceTab; label: string; description: string; meta: string }[] = [
