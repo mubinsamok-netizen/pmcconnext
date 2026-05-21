@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { findAllMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { ensureSchema } from "@/lib/sheetsSetup";
 
 export type SiteApiProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -12,8 +12,6 @@ export type SiteApiProject = Record<string, string | number | undefined> & {
 };
 
 export async function getSiteApiContext(projectId: string, requireAdmin = false) {
-  await ensureMasterSchema();
-
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return { error: "Unauthorized", status: 401 as const };

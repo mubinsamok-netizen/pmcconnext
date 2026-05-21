@@ -18,10 +18,10 @@ type MasterTable = keyof typeof MASTER_SCHEMA;
 type SheetSchema = Record<string, readonly string[]>;
 type SheetRow = { _rowIndex: number } & Record<string, string>;
 
-const MASTER_READ_CACHE_TTL_MS = 5 * 60 * 1000;
-const MASTER_READ_STALE_TTL_MS = 30 * 60 * 1000;
-const SITE_READ_CACHE_TTL_MS = 2 * 60 * 1000;
-const SITE_READ_STALE_TTL_MS = 30 * 60 * 1000;
+const MASTER_READ_CACHE_TTL_MS = 10 * 60 * 1000;
+const MASTER_READ_STALE_TTL_MS = 60 * 60 * 1000;
+const SITE_READ_CACHE_TTL_MS = 5 * 60 * 1000;
+const SITE_READ_STALE_TTL_MS = 60 * 60 * 1000;
 const masterReadCache = new Map<string, {
   expiresAt: number;
   staleUntil: number;
@@ -189,28 +189,24 @@ async function updateInSheet(
 ) {
   try {
     const headers = schema[tableName];
-    
-    // Get existing row first to merge updates
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${tableName}!A${rowIndex}:${colToLetter(headers.length - 1)}${rowIndex}`,
-    });
-    
-    const existingRow = res.data.values?.[0] || [];
     const now = new Date().toISOString();
-    
-    const mergedRow = headers.map((h, i) => {
-      if (h === "updated_at") return now;
-      if (patch[h] !== undefined) return patch[h];
-      return existingRow[i] || "";
+
+    const data = headers.flatMap((header, colIndex) => {
+      const shouldUpdate = header === "updated_at" || patch[header] !== undefined;
+      if (!shouldUpdate) return [];
+      return [{
+        range: `${tableName}!${colToLetter(colIndex)}${rowIndex}`,
+        values: [[header === "updated_at" ? now : patch[header] ?? ""]],
+      }];
     });
 
-    await sheets.spreadsheets.values.update({
+    if (data.length === 0) return { success: true };
+
+    await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
-      range: `${tableName}!A${rowIndex}`,
-      valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [mergedRow],
+        valueInputOption: "USER_ENTERED",
+        data,
       },
     });
 

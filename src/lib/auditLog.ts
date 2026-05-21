@@ -1,5 +1,4 @@
 import { insertMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
 type AuditActor = {
   email?: string | null;
@@ -29,8 +28,6 @@ function toJson(value: unknown) {
 }
 
 export async function writeAuditLog(input: AuditLogInput) {
-  await ensureMasterSchema();
-
   const timestamp = new Date().toISOString();
   await insertMaster("AuditLogs", {
     log_id: `LOG-${Date.now()}`,

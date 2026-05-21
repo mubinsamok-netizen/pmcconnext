@@ -39,6 +39,11 @@ export type MemoRecord = Record<string, string | number | undefined> & {
   pdf_file_id?: string;
   pdf_url?: string;
   issued_at?: string;
+  acknowledgement_token?: string;
+  acknowledgement_url?: string;
+  sent_to_customer_at?: string;
+  line_group_id?: string;
+  line_message?: string;
   acknowledged_by?: string;
   acknowledged_channel?: string;
   acknowledged_date?: string;
@@ -155,6 +160,228 @@ export function createMemoDocumentNo(projectId: string, memos: MemoRecord[]) {
     .filter(Number.isFinite)
     .reduce((max, value) => Math.max(max, value), 0) + 1;
   return `${prefix}${String(nextNo).padStart(3, "0")}`;
+}
+
+export function createMemoAcknowledgementToken() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid.replace(/-/g, "");
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+}
+
+export function buildMemoAcknowledgementLineMessage({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo: string;
+  title: string;
+}) {
+  return [
+    "แจ้ง Memo / หนังสือแจ้งให้ลูกค้ารับทราบ",
+    `โครงการ: ${projectName || projectId}`,
+    documentNo ? `เลขที่เอกสาร: ${documentNo}` : "",
+    `เรื่อง: ${title}`,
+    "กรุณาเปิดรายการและกดรับทราบในลิงก์ครับ",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildMemoAcknowledgementLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  memoType,
+  title,
+  issueDate,
+  detail,
+  pdfUrl,
+  acknowledgementUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo: string;
+  memoType: string;
+  title: string;
+  issueDate: string;
+  detail: string;
+  pdfUrl: string;
+  acknowledgementUrl: string;
+}) {
+  const preview = detail.length > 118 ? `${detail.slice(0, 115)}...` : detail;
+  const actions = [
+    {
+      type: "button",
+      style: "primary",
+      color: "#0f8a7a",
+      action: {
+        type: "uri",
+        label: "รับทราบ Memo",
+        uri: acknowledgementUrl,
+      },
+    },
+  ];
+  if (pdfUrl) {
+    actions.push({
+      type: "button",
+      style: "secondary",
+      color: "#111827",
+      action: {
+        type: "uri",
+        label: "เปิด PDF Memo",
+        uri: pdfUrl,
+      },
+    });
+  }
+
+  return {
+    type: "flex",
+    altText: `Memo: ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      styles: {
+        header: { backgroundColor: "#0f172a" },
+        footer: { backgroundColor: "#ffffff" },
+      },
+      header: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT MEMO", color: "#7dd3fc", size: "xs", weight: "bold" },
+          { type: "text", text: "หนังสือแจ้งให้รับทราบ", color: "#ffffff", size: "xl", weight: "bold", wrap: true, margin: "sm" },
+          { type: "text", text: documentNo || projectId, color: "#fef3c7", size: "sm", margin: "xs" },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: projectName || projectId, size: "lg", weight: "bold", color: "#111827", wrap: true },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "sm",
+            contents: [
+              lineFlexInfo("ประเภท", memoType || "-"),
+              lineFlexInfo("วันที่แจ้ง", issueDate || "-"),
+              lineFlexInfo("สถานะ", "รอลูกค้ารับทราบ"),
+            ],
+          },
+          { type: "separator", margin: "sm" },
+          { type: "text", text: "เรื่อง", size: "xs", color: "#64748b", weight: "bold" },
+          { type: "text", text: title || "-", size: "md", color: "#111827", weight: "bold", wrap: true },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#fff7ed",
+            cornerRadius: "8px",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "รายละเอียดโดยย่อ", size: "xs", color: "#ea580c", weight: "bold" },
+              { type: "text", text: preview || "-", size: "sm", color: "#7c2d12", wrap: true, margin: "xs" },
+            ],
+          },
+          { type: "text", text: "กรุณาเปิดรายการและกดรับทราบ เพื่อเก็บเป็นหลักฐานในระบบครับ", size: "xs", color: "#475569", wrap: true },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: actions,
+      },
+    },
+  };
+}
+
+export function buildMemoAcknowledgedLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  acknowledgedBy,
+  acknowledgedAt,
+  pdfUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo: string;
+  title: string;
+  acknowledgedBy: string;
+  acknowledgedAt: string;
+  pdfUrl: string;
+}) {
+  return {
+    type: "flex",
+    altText: `Memo acknowledged: ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      styles: { header: { backgroundColor: "#0f172a" } },
+      header: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT MEMO", color: "#7dd3fc", size: "xs", weight: "bold" },
+          { type: "text", text: "ลูกค้ารับทราบ Memo แล้ว", color: "#ffffff", size: "xl", weight: "bold", wrap: true, margin: "sm" },
+          { type: "text", text: documentNo || projectId, color: "#fef3c7", size: "sm", margin: "xs" },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: projectName || projectId, size: "lg", weight: "bold", color: "#111827", wrap: true },
+          lineFlexInfo("เรื่อง", title || "-"),
+          lineFlexInfo("ผู้รับทราบ", acknowledgedBy || "-"),
+          lineFlexInfo("เวลา", acknowledgedAt || "-"),
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#ecfdf5",
+            cornerRadius: "8px",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "สถานะ", size: "xs", color: "#047857", weight: "bold" },
+              { type: "text", text: "รับทราบแล้ว และบันทึกหลักฐานลง PDF เรียบร้อย", size: "sm", color: "#064e3b", weight: "bold", wrap: true, margin: "xs" },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "16px",
+        contents: pdfUrl ? [{
+          type: "button",
+          style: "secondary",
+          color: "#111827",
+          action: { type: "uri", label: "เปิด PDF Memo", uri: pdfUrl },
+        }] : [],
+      },
+    },
+  };
+}
+
+function lineFlexInfo(label: string, value: string) {
+  return {
+    type: "box",
+    layout: "baseline",
+    spacing: "sm",
+    contents: [
+      { type: "text", text: label, color: "#64748b", size: "xs", flex: 3 },
+      { type: "text", text: value || "-", color: "#111827", size: "sm", weight: "bold", wrap: true, flex: 6 },
+    ],
+  };
 }
 
 function escapeHtml(value: unknown) {
@@ -363,7 +590,7 @@ export function buildMemoPdfHtml({
     </section>
 
     <footer class="footer">
-      <span>Generated by PCM CONNEXT</span>
+      <span>Generated by PMC CONNEXT</span>
       <span>Page 1 / 2</span>
     </footer>
   </main>
@@ -446,7 +673,7 @@ export function buildMemoPdfHtml({
     </section>
 
     <footer class="footer">
-      <span>Generated by PCM CONNEXT</span>
+      <span>Generated by PMC CONNEXT</span>
       <span>Page 2 / 2 | ${escapeHtml(new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }))}</span>
     </footer>
   </main>

@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Presentation,
+  ShieldCheck,
   StickyNote,
   Users,
 } from "lucide-react";
@@ -48,6 +49,7 @@ const siteNavItems = [
   { name: "บันทึกหน้างาน", segment: "notes", icon: StickyNote },
   { name: "บันทึกข้อความ / Memo", segment: "memos", icon: FileSignature },
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
+  { name: "QC Checklist", segment: "qc-checklists", icon: ShieldCheck },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
   { name: "Defect", segment: "defects", icon: Bug },
   { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },

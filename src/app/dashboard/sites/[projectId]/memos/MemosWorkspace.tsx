@@ -45,6 +45,11 @@ type ApiResponse = {
   data?: MemoRecord[];
   evidence?: MemoEvidenceRecord[];
   audit_logs?: Array<Record<string, string | number | undefined>>;
+  line?: {
+    test_mode?: boolean;
+    target_group_id?: string;
+    target_group_name?: string;
+  };
   error?: string;
 };
 
@@ -348,6 +353,19 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     });
   };
 
+  const sendMemoAcknowledgement = (memoId: string) => {
+    startTransition(async () => {
+      const result = await postAction("send_acknowledgement", {
+        memo_id: memoId,
+        origin: window.location.origin,
+      });
+      if (result?.success) {
+        const target = result.data?.line_group_id ? ` ไปยังกลุ่ม ${result.data.line_group_id}` : "";
+        setMessage(`ส่ง LINE ให้ลูกค้ารับทราบ Memo แล้ว${target}`);
+      }
+    });
+  };
+
   const acknowledgeMemo = () => {
     if (!selectedMemo?.memo_id) return;
     startTransition(async () => {
@@ -584,6 +602,16 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                         <Printer size={13} /> ออก PDF ใหม่
                       </button>
                     ) : null}
+                    {!["acknowledged", "extension_approved", "closed", "rejected"].includes(String(selectedMemo.status || "")) ? (
+                      <button type="button" disabled={busy || !canIssue} onClick={() => sendMemoAcknowledgement(selectedMemo.memo_id)} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-extrabold text-white hover:bg-emerald-700 disabled:opacity-60">
+                        {loadingAction === "send_acknowledgement" ? <Loader2 className="animate-spin" size={13} /> : <Send size={13} />} ส่ง LINE รับทราบ
+                      </button>
+                    ) : null}
+                    {selectedMemo.acknowledgement_url ? (
+                      <a href={String(selectedMemo.acknowledgement_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+                        ลิงก์รับทราบ <ExternalLink size={13} />
+                      </a>
+                    ) : null}
                   </div>
                 </div>
                 <div>
@@ -689,10 +717,15 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                               <Printer size={13} /> ออก PDF
                             </button>
                           )}
-                          {memo.pdf_url && memo.status === "issued" ? (
-                            <button type="button" disabled={busy || !canAcknowledge} onClick={() => updateStatus(memo.memo_id, "sent")} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-xs font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
-                              <Send size={13} /> ส่งแล้ว
+                          {!["acknowledged", "extension_approved", "closed", "rejected"].includes(String(memo.status || "")) ? (
+                            <button type="button" disabled={busy || !canIssue} onClick={() => sendMemoAcknowledgement(memo.memo_id)} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white hover:bg-emerald-700 disabled:opacity-60">
+                              {loadingAction === "send_acknowledgement" ? <Loader2 className="animate-spin" size={13} /> : <Send size={13} />} LINE
                             </button>
+                          ) : null}
+                          {memo.acknowledgement_url ? (
+                            <a href={String(memo.acknowledgement_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+                              Link <ExternalLink size={13} />
+                            </a>
                           ) : null}
                           {["acknowledged", "extension_approved"].includes(String(memo.status || "")) ? (
                             <button type="button" disabled={busy || !canAcknowledge} onClick={() => updateStatus(memo.memo_id, "closed")} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-2 text-xs font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">

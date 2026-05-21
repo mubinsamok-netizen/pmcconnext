@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
   DEFAULT_CUSTOMER_DECISIONS,
   buildCustomerDecisionLineFlex,
   buildCustomerDecisionPdfHtml,
   buildCustomerDecisionLineMessage,
+  createCustomerDecisionApprovalToken,
   createCustomerDecisionDocumentNo,
   createCustomerDecisionId,
   parseDecisionEvidenceFiles,
@@ -37,6 +40,16 @@ type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
 };
 
 const TEST_LINE_GROUP_ID = process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
+const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
+
+function getLogoDataUrl() {
+  try {
+    const logo = fs.readFileSync(LOGO_PATH);
+    return `data:image/png;base64,${logo.toString("base64")}`;
+  } catch {
+    return "";
+  }
+}
 
 function text(value: unknown) {
   return String(value || "").trim();
@@ -183,6 +196,8 @@ async function seedDefaultRows(context: RouteContext) {
     issued_at: "",
     issued_by_name: "",
     issued_by_email: "",
+    approval_token: "",
+    approval_url: "",
     order_index: String(index + 1),
     active: "TRUE",
   }, context.siteSheetId)));
@@ -265,6 +280,8 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     issued_at: "",
     issued_by_name: "",
     issued_by_email: "",
+    approval_token: "",
+    approval_url: "",
     order_index: payload.order_index || String(nextRows.length + 1),
   };
   await insert("Customer_Decisions", created, context.siteSheetId);
@@ -302,33 +319,81 @@ async function handleDelete(body: Record<string, unknown>, context: RouteContext
   return NextResponse.json({ success: true });
 }
 
+async function issueDecisionPdfFor(req: Request, context: RouteContext, current: CustomerDecisionRecord, rows: CustomerDecisionRecord[]) {
+  const decisionFolderId = await getDecisionFolder(context, current.decision_id);
+  if (!decisionFolderId) throw new Error("Project Drive folder is not configured");
+
+  const documentNo = text(current.document_no) || createCustomerDecisionDocumentNo(context.project.project_id, rows);
+  const issuedAt = new Date().toISOString();
+  const decisionForPdf = await attachEvidenceDataUrls({
+    ...current,
+    document_no: documentNo,
+    issued_at: issuedAt,
+    issued_by_name: context.session.user.name || "",
+    issued_by_email: context.session.user.email || "",
+  });
+  const origin = req.headers.get("origin") || new URL(req.url).origin;
+  const html = buildCustomerDecisionPdfHtml({
+    decision: decisionForPdf,
+    project: context.project,
+    logoUrl: getLogoDataUrl() || `${origin}/logo.png`,
+  });
+
+  const pdfFolder = await findOrCreateFolder("PDF", decisionFolderId);
+  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
+  const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || decisionFolderId);
+  return {
+    document_no: documentNo,
+    pdf_file_id: uploaded.id || "",
+    pdf_url: uploaded.webViewLink || uploaded.webContentLink || "",
+    issued_at: issuedAt,
+    issued_by_name: context.session.user.name || "",
+    issued_by_email: context.session.user.email || "",
+  };
+}
+
 async function handleNotify(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const decisionId = text(body.decision_id);
   const rows = await getRows(context);
   const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแจ้งเตือน" }, { status: 404 });
 
+  let pdfPatch: Record<string, string> = {};
+  let nextRecord = current;
+  if (!text(current.pdf_url)) {
+    pdfPatch = await issueDecisionPdfFor(req, context, current, rows);
+    nextRecord = { ...current, ...pdfPatch };
+  }
+
+  const approvalToken = text(nextRecord.approval_token) || createCustomerDecisionApprovalToken();
+  const requestOrigin = text(body.origin);
+  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  const approvalOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const approvalUrl = `${approvalOrigin}/decision-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
+  nextRecord = { ...nextRecord, approval_token: approvalToken, approval_url: approvalUrl };
+
   const message = buildCustomerDecisionLineMessage({
     projectName: text(context.project.name),
     projectId: context.project.project_id,
-    phase: text(current.phase),
-    title: text(current.title),
-    decisionBefore: text(current.decision_before),
-    impactIfChanged: text(current.impact_if_changed),
+    phase: text(nextRecord.phase),
+    title: text(nextRecord.title),
+    decisionBefore: text(nextRecord.decision_before),
+    impactIfChanged: text(nextRecord.impact_if_changed),
   });
-  const evidenceFiles = parseDecisionEvidenceFiles(current.evidence_files_json);
+  const evidenceFiles = parseDecisionEvidenceFiles(nextRecord.evidence_files_json);
   const firstEvidenceUrl = text(evidenceFiles.find((file) => file.file_url)?.file_url);
   const flexMessage = buildCustomerDecisionLineFlex({
     projectName: text(context.project.name),
     projectId: context.project.project_id,
-    documentNo: text(current.document_no),
-    phase: text(current.phase),
-    status: text(current.decision_status),
-    title: text(current.title),
-    decisionBefore: text(current.decision_before),
-    impactIfChanged: text(current.impact_if_changed),
-    pdfUrl: text(current.pdf_url),
+    documentNo: text(nextRecord.document_no),
+    phase: text(nextRecord.phase),
+    status: text(nextRecord.decision_status),
+    title: text(nextRecord.title),
+    decisionBefore: text(nextRecord.decision_before),
+    impactIfChanged: text(nextRecord.impact_if_changed),
+    pdfUrl: text(nextRecord.pdf_url),
     evidenceUrl: firstEvidenceUrl,
+    approvalUrl,
     evidenceCount: evidenceFiles.length,
   });
   const targetLineGroupId = lineTargetFor(context);
@@ -336,12 +401,15 @@ async function handleNotify(req: Request, body: Record<string, unknown>, context
   await sendLineMessages([flexMessage], targetLineGroupId);
 
   const patch = {
-    decision_status: "ส่งแจ้งเตือนแล้ว",
+    ...pdfPatch,
+    decision_status: "รอลูกค้า",
     notified_at: new Date().toISOString(),
     notified_by_name: context.session.user.name || "",
     notified_by_email: context.session.user.email || "",
     line_group_id: targetLineGroupId,
     line_message: message,
+    approval_token: approvalToken,
+    approval_url: approvalUrl,
   };
 
   await update("Customer_Decisions", Number(current._rowIndex), patch, context.siteSheetId);
@@ -365,37 +433,7 @@ async function handleIssuePdf(req: Request, body: Record<string, unknown>, conte
   const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการออก PDF" }, { status: 404 });
 
-  const decisionFolderId = await getDecisionFolder(context, decisionId);
-  if (!decisionFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
-
-  const documentNo = text(current.document_no) || createCustomerDecisionDocumentNo(context.project.project_id, rows);
-  const issuedAt = new Date().toISOString();
-  const decisionForPdf = await attachEvidenceDataUrls({
-    ...current,
-    document_no: documentNo,
-    issued_at: issuedAt,
-    issued_by_name: context.session.user.name || "",
-    issued_by_email: context.session.user.email || "",
-  });
-  const origin = req.headers.get("origin") || new URL(req.url).origin;
-  const html = buildCustomerDecisionPdfHtml({
-    decision: decisionForPdf,
-    project: context.project,
-    logoUrl: `${origin}/logo.png`,
-  });
-
-  const pdfFolder = await findOrCreateFolder("PDF", decisionFolderId);
-  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
-  const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || decisionFolderId);
-  const pdfUrl = uploaded.webViewLink || uploaded.webContentLink || "";
-  const patch = {
-    document_no: documentNo,
-    pdf_file_id: uploaded.id || "",
-    pdf_url: pdfUrl,
-    issued_at: issuedAt,
-    issued_by_name: context.session.user.name || "",
-    issued_by_email: context.session.user.email || "",
-  };
+  const patch = await issueDecisionPdfFor(req, context, current, rows);
 
   await update("Customer_Decisions", Number(current._rowIndex), patch, context.siteSheetId);
   await writeAuditLog({
@@ -404,9 +442,9 @@ async function handleIssuePdf(req: Request, body: Record<string, unknown>, conte
     module: "customer_decisions",
     action: "pdf_issued",
     targetId: decisionId,
-    summary: `ออก PDF รายการต้องตัดสินใจ ${documentNo}`,
+    summary: `ออก PDF รายการต้องตัดสินใจ ${patch.document_no}`,
     before: current,
-    after: { ...patch, pdf_url: pdfUrl },
+    after: patch,
   });
 
   return NextResponse.json({ success: true, data: { ...current, ...patch } });

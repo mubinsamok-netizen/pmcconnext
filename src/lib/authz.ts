@@ -1,5 +1,4 @@
 import { findAllMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema } from "@/lib/sheetsSetup";
 import { getAppRole, roleMatches } from "@/lib/roles";
 
 type SessionUserLike = {
@@ -25,8 +24,6 @@ export { getAppRole, roleMatches };
 export async function getAccessibleProjectIds(user?: SessionUserLike | null) {
   if (!user?.email && !user?.googleSub) return new Set<string>();
   if (isAdminRole(user.role)) return null;
-
-  await ensureMasterSchema();
 
   const email = normalizeEmail(user.email);
   const googleSub = user.googleSub || "";

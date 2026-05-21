@@ -237,7 +237,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "อื่น ๆ"];
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
-const COLLAPSED_STORAGE_KEY = "pcm.schedule.collapsedHeadings.v1";
+const COLLAPSED_STORAGE_KEY = "pmc.schedule.collapsedHeadings.v1";
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -2137,14 +2137,14 @@ function DecisionTable({
   return (
     <div className="overflow-x-auto border-t border-gray-100">
       <table className="w-full min-w-[1080px] text-left text-sm">
-        <thead className="bg-gray-50 text-xs text-gray-500">
+        <thead className="border-b border-gray-200 bg-gray-100 text-sm text-gray-700">
           <tr>
-            <th className="px-5 py-3 font-extrabold">ช่วงงาน / สถานะงาน</th>
-            <th className="px-5 py-3 font-extrabold">รายการที่ต้องให้ลูกค้าตัดสินใจ</th>
-            <th className="px-5 py-3 font-extrabold">ต้องตัดสินใจก่อน</th>
-            <th className="px-5 py-3 font-extrabold">สถานะการตัดสินใจ</th>
-            <th className="px-5 py-3 font-extrabold">ผลถ้าเปลี่ยนหลังจากนี้</th>
-            <th className="px-5 py-3 text-center font-extrabold">จัดการ</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ช่วงงาน / สถานะงาน</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">รายการที่ต้องให้ลูกค้าตัดสินใจ</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ต้องตัดสินใจก่อน</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">สถานะการตัดสินใจ</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ผลถ้าเปลี่ยนหลังจากนี้</th>
+            <th className="px-5 py-4 text-center text-[15px] font-black leading-snug">จัดการ</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">

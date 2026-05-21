@@ -33,6 +33,10 @@ type DefectRound = Record<string, string | number | undefined> & {
   extension_days?: string | number;
   pdf_url?: string;
   locked_at?: string;
+  approval_url?: string;
+  sent_to_customer_at?: string;
+  line_group_id?: string;
+  line_message?: string;
 };
 
 type DefectItem = Record<string, string | number | undefined> & {
@@ -407,6 +411,7 @@ export function DefectsWorkspace({
   const roundEvidence = selectedRound ? evidence.filter((item) => item.round_id === selectedRound.round_id) : [];
   const locked = Boolean(selectedRound?.locked_at || selectedRound?.status === "acknowledged" || selectedRound?.status === "closed");
   const openItems = roundItems.filter((item) => !["passed", "closed"].includes(String(item.status || "")));
+  const readyForCustomerApproval = roundItems.length > 0 && roundItems.every((item) => ["fixed", "passed", "closed"].includes(String(item.status || "")));
 
   function postAction(body: Record<string, unknown>) {
     return fetch(apiPath, {
@@ -488,6 +493,21 @@ export function DefectsWorkspace({
     await mutate();
     setActiveTab("tracking");
     setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
+  }
+
+  async function sendCustomerApproval() {
+    if (!selectedRound) return;
+    setMessage("");
+    const payload = await postAction({
+      action: "send_customer_approval",
+      round_id: selectedRound.round_id,
+      origin: window.location.origin,
+    });
+    await mutate();
+    setActiveTab("tracking");
+    setMessage(payload.data?.test_mode
+      ? `ส่ง LINE ทดสอบให้ลูกค้ารับงานแก้ไขไปยังกลุ่ม ${payload.data.line_group_id} แล้ว`
+      : "ส่ง LINE ให้ลูกค้ารับงานแก้ไขแล้ว");
   }
 
   async function updateItem(formData: FormData) {
@@ -794,16 +814,33 @@ export function DefectsWorkspace({
                   <p className="mt-1 text-sm text-orange-700">
                     รายงานนี้รวมสถานะล่าสุด ผู้รับผิดชอบ บันทึกการแก้ไข และรูปก่อน/หลังแก้ของรอบตรวจนี้
                   </p>
+                  {selectedRound?.sent_to_customer_at ? (
+                    <p className="mt-2 text-xs font-bold text-emerald-700">
+                      ส่งให้ลูกค้ารับงานแก้ไขแล้ว: {new Date(String(selectedRound.sent_to_customer_at)).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
+                    </p>
+                  ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={printTrackingReport}
-                  disabled={!selectedRound || roundItems.length === 0}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Printer size={16} />
-                  Print แจ้งลูกค้า
-                </button>
+                <div className="flex flex-col gap-2 sm:flex-row md:flex-col lg:flex-row">
+                  <button
+                    type="button"
+                    onClick={printTrackingReport}
+                    disabled={!selectedRound || roundItems.length === 0}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Printer size={16} />
+                    Print แจ้งลูกค้า
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startTransition(() => { sendCustomerApproval().catch((err) => setMessage(err instanceof Error ? err.message : "ส่ง LINE ไม่สำเร็จ")); })}
+                    disabled={!selectedRound?.pdf_url || !readyForCustomerApproval || locked || isPending}
+                    title={!selectedRound?.pdf_url ? "ต้องออก PDF ก่อน" : !readyForCustomerApproval ? "ต้องอัปเดต defect เป็นแก้เสร็จ/ผ่านครบก่อน" : ""}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <MessageSquareText size={16} />
+                    ส่งให้ลูกค้ารับงาน
+                  </button>
+                </div>
               </div>
               <TrackingList items={roundItems} isLoading={isLoading} isPending={isPending} onSubmit={(formData) => run(updateItem, formData)} />
             </div>

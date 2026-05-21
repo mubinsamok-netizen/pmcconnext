@@ -76,7 +76,7 @@ export default function DashboardTopBar({
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-extrabold tracking-tight text-gray-950">{pageTitle}</h1>
-            <p className="hidden text-xs font-medium text-gray-400 sm:block">PCM CONNEXT construction workspace</p>
+            <p className="hidden text-xs font-medium text-gray-400 sm:block">PMC CONNEXT construction workspace</p>
           </div>
         </div>
 
@@ -133,7 +133,7 @@ export default function DashboardTopBar({
       <ConfirmDialog
         open={logoutDialogOpen}
         title="ออกจากระบบ?"
-        message="คุณต้องการออกจากระบบ PCM CONNEXT ใช่ไหม"
+        message="คุณต้องการออกจากระบบ PMC CONNEXT ใช่ไหม"
         confirmLabel="ออกจากระบบ"
         cancelLabel="ยกเลิก"
         onConfirm={() => {

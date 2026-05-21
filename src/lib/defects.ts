@@ -46,6 +46,11 @@ export type DefectRoundRecord = Record<string, string | number | undefined> & {
   acknowledged_date?: string;
   locked_at?: string;
   notes?: string;
+  approval_token?: string;
+  approval_url?: string;
+  sent_to_customer_at?: string;
+  line_group_id?: string;
+  line_message?: string;
 };
 
 export type DefectItemRecord = Record<string, string | number | DefectPhotoRef[] | undefined> & {
@@ -213,6 +218,172 @@ export function createDefectDocumentNo(projectId: string, inspectionDate: string
   const prefix = `DEF-${projectId}-${monthKey}-`;
   const count = existingRounds.filter((round) => String(round.document_no || "").startsWith(prefix)).length;
   return `${prefix}${String(count + 1).padStart(3, "0")}`;
+}
+
+export function createDefectApprovalToken() {
+  return `dfa_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function buildDefectApprovalLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  itemCount,
+  pdfUrl,
+  approvalUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo?: string;
+  title: string;
+  itemCount: number;
+  pdfUrl?: string;
+  approvalUrl: string;
+}) {
+  return {
+    type: "flex",
+    altText: `Defect close approval | ${projectName || projectId} | ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0f172a",
+        paddingAll: "18px",
+        paddingBottom: "16px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT DEFECT CLOSE", color: "#7dd3fc", weight: "bold", size: "xs" },
+          { type: "text", text: "ขอรับรองงานแก้ไข Defect", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#fef3c7", size: "sm", margin: "xs", wrap: true },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
+          defectLineRow("รายการ", title || "-"),
+          defectLineRow("จำนวน Defect", `${itemCount} รายการ`),
+          { type: "separator", margin: "md", color: "#e5e7eb" },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            margin: "md",
+            backgroundColor: "#f0fdf4",
+            cornerRadius: "8px",
+            paddingAll: "10px",
+            contents: [
+              { type: "text", text: "สถานะ", color: "#15803d", size: "xs", weight: "bold" },
+              { type: "text", text: "ทีมงานบันทึกงานแก้ไขเสร็จแล้ว กรุณาตรวจสอบและกดรับทราบ/ยอมรับการแก้ไข", color: "#166534", size: "sm", wrap: true },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "8px",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#0f766e",
+            action: { type: "uri", label: "ยอมรับการแก้ไข", uri: approvalUrl },
+          },
+          ...(pdfUrl ? [{
+            type: "button",
+            style: "primary",
+            color: "#111827",
+            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+          }] : []),
+        ],
+      },
+    },
+  };
+}
+
+export function buildDefectApprovedLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  acknowledgedBy,
+  acknowledgedAt,
+  pdfUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo?: string;
+  title: string;
+  acknowledgedBy: string;
+  acknowledgedAt: string;
+  pdfUrl?: string;
+}) {
+  const approvedDate = acknowledgedAt ? new Date(acknowledgedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "-";
+  return {
+    type: "flex",
+    altText: `ลูกค้ายอมรับงานแก้ไข Defect แล้ว | ${projectName || projectId} | ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#064e3b",
+        paddingAll: "18px",
+        paddingBottom: "16px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT DEFECT APPROVED", color: "#bbf7d0", weight: "bold", size: "xs" },
+          { type: "text", text: "ลูกค้ายอมรับงานแก้ไขแล้ว", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#dcfce7", size: "sm", margin: "xs", wrap: true },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
+          defectLineRow("รายการ", title || "-"),
+          defectLineRow("ผู้ยอมรับ", acknowledgedBy || "-"),
+          defectLineRow("เวลา", approvedDate),
+        ],
+      },
+      ...(pdfUrl ? {
+        footer: {
+          type: "box",
+          layout: "vertical",
+          spacing: "xs",
+          paddingAll: "8px",
+          contents: [{
+            type: "button",
+            style: "primary",
+            color: "#111827",
+            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+          }],
+        },
+      } : {}),
+    },
+  };
+}
+
+function defectLineRow(label: string, value: string) {
+  return {
+    type: "box",
+    layout: "horizontal",
+    margin: "sm",
+    contents: [
+      { type: "text", text: label, color: "#64748b", size: "xs", flex: 4 },
+      { type: "text", text: value, color: "#0f172a", size: "sm", flex: 8, wrap: true },
+    ],
+  };
 }
 
 function labelFor(map: Record<string, string>, value?: string | number) {

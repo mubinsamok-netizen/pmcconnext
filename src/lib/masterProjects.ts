@@ -4,7 +4,6 @@ import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { canAccessSiteSegment } from "@/lib/siteAccess";
 import { findAllMaster } from "./sheetsCrud";
-import { ensureMasterSchema } from "./sheetsSetup";
 
 export type MasterProject = {
   project_id: string;
@@ -58,7 +57,6 @@ export async function getMasterProjects() {
     return masterProjectsCache.promise;
   }
 
-  await ensureMasterSchema();
   const promise = findAllMaster("Projects") as unknown as Promise<MasterProject[]>;
   masterProjectsCache = {
     expiresAt: now + MASTER_PROJECTS_CACHE_TTL_MS,

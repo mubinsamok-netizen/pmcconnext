@@ -91,7 +91,7 @@ export async function createReminderCalendarEvent(input: ReminderDispatchInput, 
   const delegatedAuth = getDelegatedGoogleAuth(["https://www.googleapis.com/auth/calendar"]);
   const calendarClient = delegatedAuth ? google.calendar({ version: "v3", auth: delegatedAuth }) : calendar;
   const calendarId = process.env.GOOGLE_REMINDER_CALENDAR_ID || process.env.GOOGLE_CALENDAR_ID || "primary";
-  const eventKey = `${input.id}@pcm-connext`;
+  const eventKey = `${input.id}@pmc-connext`;
   const nextDate = new Date(`${input.dueDate}T00:00:00`);
   nextDate.setDate(nextDate.getDate() + 1);
 

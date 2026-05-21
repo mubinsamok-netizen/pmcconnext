@@ -65,6 +65,14 @@ export type VoRecord = Record<string, string | number | undefined> & {
   contract_before?: string | number;
   contract_after?: string | number;
   approval_deadline?: string;
+  approval_token?: string;
+  approval_url?: string;
+  customer_approved_at?: string | number;
+  customer_approved_by?: string;
+  customer_approval_note?: string;
+  sent_to_customer_at?: string | number;
+  line_group_id?: string;
+  line_message?: string;
   client_name?: string;
   task_plan_status?: string;
   evidence_json?: string;
@@ -306,4 +314,223 @@ export function validateRequired(fields: Record<string, unknown>, labels: Record
       return value === undefined || value === null || String(value).trim() === "";
     })
     .map(([, label]) => label);
+}
+
+export function createVoApprovalToken() {
+  const cryptoSource = globalThis.crypto;
+  if (cryptoSource?.randomUUID) return cryptoSource.randomUUID().replaceAll("-", "");
+  if (cryptoSource?.getRandomValues) {
+    const bytes = new Uint8Array(18);
+    cryptoSource.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function flexInfoRow(label: string, value: string) {
+  return {
+    type: "box",
+    layout: "baseline",
+    spacing: "sm",
+    contents: [
+      { type: "text", text: label, color: "#64748B", size: "xs", flex: 3, weight: "bold" },
+      { type: "text", text: value || "-", color: "#0F172A", size: "xs", flex: 5, weight: "bold", wrap: true },
+    ],
+  };
+}
+
+export function buildVoApprovalLineMessage({
+  projectName,
+  projectId,
+  voId,
+  title,
+  total,
+  extensionDays,
+}: {
+  projectName?: string;
+  projectId: string;
+  voId: string;
+  title?: string;
+  total?: string | number;
+  extensionDays?: string | number;
+}) {
+  return [
+    "ขออนุมัติงานเพิ่ม-ลด",
+    `โครงการ: ${projectName || projectId}`,
+    `เลขที่: ${voId}`,
+    `รายการ: ${title || "-"}`,
+    `มูลค่า: ${formatMoney(total)} บาท`,
+    `วันเพิ่ม: ${formatMoney(extensionDays)} วัน`,
+    "กรุณาตรวจเอกสารและกดอนุมัติในลิงก์นี้ เพื่อใช้เป็นหลักฐานตามสัญญาครับ",
+  ].join("\n");
+}
+
+export function buildVoApprovalLineFlex({
+  projectName,
+  projectId,
+  voId,
+  voType,
+  title,
+  total,
+  extensionDays,
+  deadline,
+  pdfUrl,
+  approvalUrl,
+}: {
+  projectName?: string;
+  projectId: string;
+  voId: string;
+  voType?: string;
+  title?: string;
+  total?: string | number;
+  extensionDays?: string | number;
+  deadline?: string | number;
+  pdfUrl?: string;
+  approvalUrl: string;
+}) {
+  const type = asVoType(voType);
+  return {
+    type: "flex",
+    altText: `VO approval | ${projectName || projectId} | ${voId}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0F172A",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT VO APPROVAL", color: "#67E8F9", size: "xs", weight: "bold" },
+          { type: "text", text: "อนุมัติงานเพิ่ม-ลด", color: "#FFFFFF", size: "xl", weight: "bold", margin: "sm", wrap: true },
+          { type: "text", text: voId, color: "#FEF3C7", size: "sm", weight: "bold", margin: "xs" },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "20px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#020617", size: "lg", weight: "bold", wrap: true },
+          flexInfoRow("ประเภท", VO_TYPE_LABELS[type]),
+          flexInfoRow("รายการ", title || "-"),
+          flexInfoRow("มูลค่า", `${formatMoney(total)} บาท`),
+          flexInfoRow("วันเพิ่ม", `${formatMoney(extensionDays)} วัน`),
+          flexInfoRow("กำหนดอนุมัติ", formatThaiDate(deadline)),
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#FFF7ED",
+            cornerRadius: "8px",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "หมายเหตุสำคัญ", color: "#C2410C", size: "xs", weight: "bold" },
+              { type: "text", text: "การอนุมัตินี้ใช้เป็นหลักฐานประกอบการวางบิลและปรับแผนงานตามสัญญา", color: "#7C2D12", size: "xs", wrap: true, margin: "xs" },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            height: "sm",
+            color: "#0F766E",
+            action: { type: "uri", label: "อนุมัติ VO", uri: approvalUrl },
+          },
+          ...(pdfUrl ? [{
+            type: "button",
+            style: "secondary",
+            height: "sm",
+            color: "#E2E8F0",
+            action: { type: "uri", label: "เปิด PDF VO", uri: pdfUrl },
+          }] : []),
+        ],
+      },
+    },
+  };
+}
+
+export function buildVoApprovedLineFlex({
+  projectName,
+  projectId,
+  voId,
+  title,
+  approvedBy,
+  approvedAt,
+  total,
+  pdfUrl,
+}: {
+  projectName?: string;
+  projectId: string;
+  voId: string;
+  title?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  total?: string | number;
+  pdfUrl?: string;
+}) {
+  return {
+    type: "flex",
+    altText: `VO approved | ${projectName || projectId} | ${voId}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0F172A",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT VO APPROVED", color: "#67E8F9", size: "xs", weight: "bold" },
+          { type: "text", text: "อนุมัติ VO แล้ว", color: "#FFFFFF", size: "xl", weight: "bold", margin: "sm" },
+          { type: "text", text: voId, color: "#BBF7D0", size: "sm", weight: "bold", margin: "xs" },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "20px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#020617", size: "lg", weight: "bold", wrap: true },
+          flexInfoRow("รายการ", title || "-"),
+          flexInfoRow("มูลค่า", `${formatMoney(total)} บาท`),
+          flexInfoRow("ผู้อนุมัติ", approvedBy || "-"),
+          flexInfoRow("เวลา", approvedAt ? new Date(approvedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "-"),
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#ECFDF5",
+            cornerRadius: "8px",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "สถานะเอกสาร", color: "#047857", size: "xs", weight: "bold" },
+              { type: "text", text: "สามารถใช้เป็นหลักฐานประกอบการวางบิลและดำเนินงานต่อได้", color: "#064E3B", size: "xs", wrap: true, margin: "xs" },
+            ],
+          },
+        ],
+      },
+      ...(pdfUrl ? {
+        footer: {
+          type: "box",
+          layout: "vertical",
+          paddingAll: "16px",
+          contents: [{
+            type: "button",
+            style: "primary",
+            height: "sm",
+            color: "#0F172A",
+            action: { type: "uri", label: "เปิด PDF หลักฐาน VO", uri: pdfUrl },
+          }],
+        },
+      } : {}),
+    },
+  };
 }

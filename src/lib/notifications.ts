@@ -3,7 +3,6 @@ import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { roleMatches, toAppRole } from "@/lib/roles";
 import { insertMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
 type SessionUserLike = {
   name?: string | null;
@@ -57,8 +56,6 @@ export function isUnread(notification: NotificationRecord) {
 }
 
 export async function createNotification(input: NotificationInput) {
-  await ensureMasterSchema();
-
   const now = new Date().toISOString();
   const id = `NTF-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 

@@ -81,7 +81,7 @@ const emptyCreateForm: CreateForm = {
   description: "",
   amount: "",
   extension_days: "0",
-  status: "approved",
+  status: "pending_approval",
   client_name: "",
   contract_before: "",
   source_type: "client_request",
@@ -284,6 +284,14 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     }
   };
 
+  const sendApproval = async () => {
+    if (!selectedVo?.vo_id) return;
+    await postAction("send_approval", {
+      vo_id: selectedVo.vo_id,
+      origin: window.location.origin,
+    });
+  };
+
   const printDocument = () => {
     if (!documentHtml) return;
     const win = window.open("", "_blank", "noopener,noreferrer,width=900,height=1200");
@@ -377,7 +385,13 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
         </main>
 
         <aside className="space-y-4">
-          <SelectedVoPanel vo={selectedVo} documents={selectedDocuments} />
+          <SelectedVoPanel
+            vo={selectedVo}
+            documents={selectedDocuments}
+            canSendApproval={permissions.submitToClient}
+            loading={loadingAction === "send_approval"}
+            onSendApproval={sendApproval}
+          />
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="text-sm font-extrabold text-gray-900">หลักการใช้งาน</div>
             <div className="mt-3 space-y-2 text-sm leading-6 text-gray-600">
@@ -1100,7 +1114,7 @@ function HistoryPrintSection({
         </head>
         <body>
           <h1>ทะเบียนงานเพิ่ม-ลด ประจำเดือน ${month}</h1>
-          <div class="muted">โครงการ ${monthlyVos[0]?.project_id || ""} / พิมพ์จากระบบ PCM CONNEXT</div>
+          <div class="muted">โครงการ ${monthlyVos[0]?.project_id || ""} / พิมพ์จากระบบ PMC CONNEXT</div>
           <div class="summary">
             <div class="card"><div class="label">งานเพิ่มรวม</div><div class="value">${formatMoney(monthlySummary.plus)} บาท</div></div>
             <div class="card"><div class="label">งานลดรวม</div><div class="value">${formatMoney(monthlySummary.minus)} บาท</div></div>
@@ -1190,7 +1204,19 @@ function Bar({ label, value, max, className }: { label: string; value: number; m
   );
 }
 
-function SelectedVoPanel({ vo, documents }: { vo?: VoRecord; documents: Array<Record<string, string | number | undefined>> }) {
+function SelectedVoPanel({
+  vo,
+  documents,
+  canSendApproval,
+  loading,
+  onSendApproval,
+}: {
+  vo?: VoRecord;
+  documents: Array<Record<string, string | number | undefined>>;
+  canSendApproval: boolean;
+  loading: boolean;
+  onSendApproval: () => void;
+}) {
   if (!vo) {
     return (
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -1215,7 +1241,25 @@ function SelectedVoPanel({ vo, documents }: { vo?: VoRecord; documents: Array<Re
         <InfoRow label="มูลค่า" value={`${formatMoney(vo.grand_total)} บาท`} />
         <InfoRow label="จำนวนวันเพิ่ม" value={`${formatMoney(vo.extension_days)} วัน`} />
         <InfoRow label="อ้างอิงเอกสาร" value={String(vo.source_ref_id || "-")} />
+        <InfoRow label="ส่งลูกค้า" value={vo.sent_to_customer_at ? formatThaiDate(String(vo.sent_to_customer_at).slice(0, 10)) : "-"} />
         <InfoRow label="แผนงาน" value={vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : "ยังไม่เพิ่มเข้าแผน"} />
+      </div>
+      <div className="mt-5 space-y-2 border-t border-gray-100 pt-4">
+        <button
+          type="button"
+          onClick={onSendApproval}
+          disabled={loading || !canSendApproval || !["draft", "pending_approval"].includes(String(vo.status || ""))}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+          ส่ง LINE ให้ลูกค้าอนุมัติ
+        </button>
+        {vo.approval_url ? (
+          <a href={String(vo.approval_url)} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-extrabold text-gray-700 hover:bg-gray-50">
+            <ExternalLink size={15} />
+            เปิดลิงก์อนุมัติ
+          </a>
+        ) : null}
       </div>
       <div className="mt-5 border-t border-gray-100 pt-4">
         <div className="text-sm font-extrabold text-gray-900">เอกสาร</div>

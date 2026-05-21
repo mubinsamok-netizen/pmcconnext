@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
+  buildDefectApprovalLineFlex,
   buildDefectReportHtml,
+  createDefectApprovalToken,
   createDefectDocumentNo,
   parsePhotoRefs,
   safeJsonStringify,
@@ -11,6 +13,7 @@ import {
   type DefectRoundRecord,
 } from "@/lib/defects";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
@@ -27,6 +30,8 @@ type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
   project: Record<string, string | number | undefined> & { project_id: string };
   siteSheetId: string;
 };
+
+const DEFECT_LINE_TEST_GROUP_ID = process.env.DEFECT_LINE_TEST_GROUP_ID || process.env.QC_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
 
 type UploadPayload = {
   name?: string;
@@ -54,6 +59,19 @@ function actor(context: RouteContext) {
     role: context.session.user.role || "",
     googleSub: context.session.user.googleSub || "",
   };
+}
+
+function isDefectLineTestMode() {
+  return process.env.DEFECT_LINE_TEST_MODE !== "false";
+}
+
+function lineTargetFor(context: RouteContext) {
+  if (isDefectLineTestMode()) return DEFECT_LINE_TEST_GROUP_ID;
+  return text(context.project.line_group_id) || DEFECT_LINE_TEST_GROUP_ID;
+}
+
+function defectRoundReadyForCustomer(items: DefectItemRecord[]) {
+  return items.length > 0 && items.every((item) => ["fixed", "passed", "closed"].includes(String(item.status || "")));
 }
 
 function decodeDataUrl(dataUrl?: string) {
@@ -200,6 +218,11 @@ async function handleCreateRound(body: Record<string, unknown>, context: RouteCo
     locked_at: "",
     snapshot_json: "",
     notes: text(body.notes),
+    approval_token: "",
+    approval_url: "",
+    sent_to_customer_at: "",
+    line_group_id: "",
+    line_message: "",
   };
 
   await insert("Defect_Rounds", payload, context.siteSheetId);
@@ -419,6 +442,65 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   return NextResponse.json({ success: true, data: { round_id: roundId, status: "acknowledged", evidence: evidenceUploads } });
 }
 
+async function handleSendCustomerApproval(req: Request, body: Record<string, unknown>, context: RouteContext, roundId: string) {
+  const data = await getDefectData(context);
+  const round = data.rounds.find((item) => item.round_id === roundId);
+  if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
+  if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้ล็อกหรือรับทราบแล้ว" }, { status: 400 });
+  if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนส่งให้ลูกค้ารับงานแก้ไข" }, { status: 400 });
+
+  const items = data.items.filter((item) => item.round_id === roundId);
+  if (!defectRoundReadyForCustomer(items)) {
+    return NextResponse.json({ error: "ต้องอัปเดตรายการ defect เป็นแก้เสร็จ/ผ่านครบก่อนส่งให้ลูกค้ารับงาน" }, { status: 400 });
+  }
+
+  const approvalToken = text(round.approval_token) || createDefectApprovalToken();
+  const requestOrigin = text(body.origin);
+  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  const approvalOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const approvalUrl = `${approvalOrigin}/defect-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
+  const targetLineGroupId = lineTargetFor(context);
+  const lineMessage = [
+    "ขอรับรองงานแก้ไข Defect",
+    `โครงการ: ${round.project_name || context.project.name || context.project.project_id}`,
+    `รายการ: ${round.title || round.document_no || roundId}`,
+    `จำนวน Defect: ${items.length} รายการ`,
+    `เปิดลิงก์เพื่อยอมรับการแก้ไข: ${approvalUrl}`,
+  ].join("\n");
+
+  await sendLineMessages([buildDefectApprovalLineFlex({
+    projectName: text(round.project_name || context.project.name),
+    projectId: context.project.project_id,
+    documentNo: text(round.document_no),
+    title: text(round.title || "Defect close"),
+    itemCount: items.length,
+    pdfUrl: text(round.pdf_url),
+    approvalUrl,
+  })], targetLineGroupId);
+
+  const patch = {
+    status: "ready_for_recheck",
+    approval_token: approvalToken,
+    approval_url: approvalUrl,
+    sent_to_customer_at: new Date().toISOString(),
+    line_group_id: targetLineGroupId,
+    line_message: lineMessage,
+  };
+  await update("Defect_Rounds", Number(round._rowIndex), patch, context.siteSheetId);
+  await writeAuditLog({
+    actor: actor(context),
+    projectId: context.project.project_id,
+    module: "defects",
+    action: "sent_customer_approval",
+    targetId: roundId,
+    summary: `ส่ง LINE ให้ลูกค้ารับงานแก้ไข Defect: ${round.document_no || roundId}`,
+    before: round,
+    after: { ...patch, test_mode: isDefectLineTestMode() },
+  });
+
+  return NextResponse.json({ success: true, data: { ...patch, test_mode: isDefectLineTestMode() } });
+}
+
 async function handleUpdateItemStatus(body: Record<string, unknown>, context: RouteContext) {
   const data = await getDefectData(context);
   const itemId = text(body.item_id);
@@ -469,6 +551,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       items: data.items.sort((a, b) => Number(a.item_no || 0) - Number(b.item_no || 0)),
       evidence: data.evidence,
       audit_logs: data.auditLogs,
+      line: {
+        test_mode: isDefectLineTestMode(),
+        target_group_id: lineTargetFor(routeContext),
+        target_group_name: isDefectLineTestMode() ? "Defect LINE Test Group" : text(routeContext.project.line_group_name),
+      },
     });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -489,6 +576,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     if (action === "add_item") return handleAddItem(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, roundId);
     if (action === "acknowledge") return handleAcknowledge(body, routeContext, roundId);
+    if (action === "send_customer_approval") return handleSendCustomerApproval(req, body, routeContext, roundId);
     if (action === "update_item_status") return handleUpdateItemStatus(body, routeContext);
 
     return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });

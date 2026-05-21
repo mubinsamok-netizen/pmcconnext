@@ -292,7 +292,7 @@ export default function CreateProjectPage() {
                     </select>
                   </Field>
                   <Field label="รหัสโครงการ *">
-                    <input value={form.project_id} onChange={(event) => update("project_id", event.target.value)} required className="form-input" placeholder="เช่น PCM-2026-001" />
+                    <input value={form.project_id} onChange={(event) => update("project_id", event.target.value)} required className="form-input" placeholder="เช่น PMC-2026-001" />
                   </Field>
                 </div>
 
@@ -329,7 +329,7 @@ export default function CreateProjectPage() {
                     <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" min="0" step="any" inputMode="decimal" className="form-input" placeholder="0.00" />
                   </Field>
                   <Field label="เลขที่สัญญา">
-                    <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" placeholder="เช่น PCM-HW-2026" />
+                    <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" placeholder="เช่น PMC-HW-2026" />
                   </Field>
                 </div>
               </div>

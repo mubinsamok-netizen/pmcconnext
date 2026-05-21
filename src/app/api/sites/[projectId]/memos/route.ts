@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { sendLineMessages } from "@/lib/line";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
+  MEMO_TYPE_LABELS,
+  buildMemoAcknowledgementLineFlex,
+  buildMemoAcknowledgementLineMessage,
   buildMemoPdfHtml,
   boolText,
+  createMemoAcknowledgementToken,
   createMemoDocumentNo,
   numberValue,
   parseMemoAttachments,
@@ -29,14 +34,25 @@ type RouteContext = {
       googleSub?: string | null;
     };
   };
-  project: Record<string, string | number | undefined> & { project_id: string };
+  project: Record<string, string | number | undefined> & { project_id: string; line_group_id?: string; line_group_name?: string };
   siteSheetId: string;
 };
 
 type SheetRecord = Record<string, string | number | undefined>;
 
+const MEMO_LINE_TEST_GROUP_ID = process.env.MEMO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
+
 function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim() || "Other";
+}
+
+function isMemoLineTestMode() {
+  return process.env.MEMO_LINE_TEST_MODE !== "false";
+}
+
+function lineTargetFor(context: RouteContext) {
+  if (isMemoLineTestMode()) return MEMO_LINE_TEST_GROUP_ID;
+  return textValue(context.project.line_group_id) || MEMO_LINE_TEST_GROUP_ID;
 }
 
 function requirePermission(context: RouteContext, permission: AppPermission) {
@@ -169,6 +185,38 @@ async function uploadMemoFiles(context: RouteContext, memoId: string, folderName
   return uploaded.filter((file): file is MemoAttachment => Boolean(file));
 }
 
+async function issueMemoPdfFor(req: Request, context: RouteContext, memo: MemoRecord, data: Awaited<ReturnType<typeof getMemoData>>, status: string = "issued") {
+  const memoFolderId = await getMemoFolder(context, memo.memo_id);
+  if (!memoFolderId) throw new Error("Project Drive folder is not configured");
+
+  const documentNo = textValue(memo.document_no) || createMemoDocumentNo(context.project.project_id, data.memos);
+  const origin = req.headers.get("origin") || new URL(req.url).origin;
+  const pdfAssets = await prepareMemoPdfAssets(
+    { ...memo, document_no: documentNo, status },
+    data.evidence
+  );
+  const html = buildMemoPdfHtml({
+    memo: pdfAssets.memo,
+    project: context.project,
+    logoUrl: `${origin}/logo.png`,
+    evidence: pdfAssets.evidence,
+  });
+  const pdfFolder = await findOrCreateFolder("PDF", memoFolderId);
+  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
+  const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || memoFolderId);
+
+  return {
+    patch: {
+      document_no: documentNo,
+      status,
+      pdf_file_id: uploaded.id || "",
+      pdf_url: uploaded.webViewLink || uploaded.webContentLink || "",
+      issued_at: new Date().toISOString(),
+    },
+    html,
+  };
+}
+
 async function handleCreateMemo(body: Record<string, unknown>, context: RouteContext) {
   const forbidden = requirePermission(context, "siteMemo.create");
   if (forbidden) return forbidden;
@@ -204,6 +252,11 @@ async function handleCreateMemo(body: Record<string, unknown>, context: RouteCon
     pdf_file_id: "",
     pdf_url: "",
     issued_at: "",
+    acknowledgement_token: "",
+    acknowledgement_url: "",
+    sent_to_customer_at: "",
+    line_group_id: "",
+    line_message: "",
     acknowledged_by: "",
     acknowledged_channel: "",
     acknowledged_date: "",
@@ -233,34 +286,19 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
   const memo = data.memos.find((item) => item.memo_id === memoId);
   if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
 
-  const memoFolderId = await getMemoFolder(context, memoId);
-  if (!memoFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
-
-  const documentNo = textValue(memo.document_no) || createMemoDocumentNo(context.project.project_id, data.memos);
-  const origin = req.headers.get("origin") || new URL(req.url).origin;
-  const pdfAssets = await prepareMemoPdfAssets(
-    { ...memo, document_no: documentNo, status: "issued" },
-    data.evidence
-  );
-  const html = buildMemoPdfHtml({
-    memo: pdfAssets.memo,
-    project: context.project,
-    logoUrl: `${origin}/logo.png`,
-    evidence: pdfAssets.evidence,
-  });
-  const pdfFolder = await findOrCreateFolder("PDF", memoFolderId);
-  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
-  const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || memoFolderId);
-  const pdfUrl = uploaded.webViewLink || uploaded.webContentLink || "";
-  const issuedAt = new Date().toISOString();
-
-  const patch = {
-    document_no: documentNo,
-    status: "issued",
-    pdf_file_id: uploaded.id || "",
-    pdf_url: pdfUrl,
-    issued_at: issuedAt,
-  };
+  let issued;
+  try {
+    issued = await issueMemoPdfFor(req, context, memo, data, "issued");
+  } catch (error) {
+    if (getErrorMessage(error).includes("Project Drive folder")) {
+      return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
+    }
+    throw error;
+  }
+  const patch = issued.patch;
+  const documentNo = patch.document_no;
+  const pdfUrl = patch.pdf_url;
+  const html = issued.html;
   await update("Site_Memos", Number(memo._rowIndex), patch, context.siteSheetId);
   await writeAuditLog({
     actor: actor(context),
@@ -277,6 +315,92 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
     success: true,
     data: { ...memo, ...patch },
     document_html: html,
+  });
+}
+
+async function handleSendAcknowledgement(body: Record<string, unknown>, context: RouteContext, req: Request) {
+  const forbidden = requirePermission(context, "siteMemo.issue");
+  if (forbidden) return forbidden;
+
+  const memoId = textValue(body.memo_id);
+  const data = await getMemoData(context);
+  const memo = data.memos.find((item) => item.memo_id === memoId);
+  if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
+  if (["acknowledged", "extension_approved", "closed", "rejected"].includes(String(memo.status || ""))) {
+    return NextResponse.json({ error: "Memo รายการนี้ปิดหรือรับทราบแล้ว" }, { status: 400 });
+  }
+
+  let pdfPatch: Record<string, string> = {};
+  let nextMemo = memo;
+  if (!textValue(memo.pdf_url)) {
+    try {
+      const issued = await issueMemoPdfFor(req, context, memo, data, "issued");
+      pdfPatch = issued.patch;
+      nextMemo = { ...memo, ...pdfPatch };
+    } catch (error) {
+      if (getErrorMessage(error).includes("Project Drive folder")) {
+        return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
+      }
+      throw error;
+    }
+  }
+
+  const acknowledgementToken = textValue(nextMemo.acknowledgement_token) || createMemoAcknowledgementToken();
+  const requestOrigin = textValue(body.origin);
+  const configuredOrigin = textValue(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  const acknowledgementOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const acknowledgementUrl = `${acknowledgementOrigin}/memo-acknowledgement/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(acknowledgementToken)}`;
+  nextMemo = { ...nextMemo, acknowledgement_token: acknowledgementToken, acknowledgement_url: acknowledgementUrl };
+
+  const message = buildMemoAcknowledgementLineMessage({
+    projectName: textValue(context.project.name),
+    projectId: context.project.project_id,
+    documentNo: textValue(nextMemo.document_no),
+    title: textValue(nextMemo.title),
+  });
+  const flexMessage = buildMemoAcknowledgementLineFlex({
+    projectName: textValue(context.project.name),
+    projectId: context.project.project_id,
+    documentNo: textValue(nextMemo.document_no),
+    memoType: MEMO_TYPE_LABELS[String(nextMemo.memo_type || "")] || textValue(nextMemo.memo_type),
+    title: textValue(nextMemo.title),
+    issueDate: textValue(nextMemo.issue_date),
+    detail: textValue(nextMemo.detail),
+    pdfUrl: textValue(nextMemo.pdf_url),
+    acknowledgementUrl,
+  });
+  const targetLineGroupId = lineTargetFor(context);
+
+  await sendLineMessages([flexMessage], targetLineGroupId);
+
+  const patch = {
+    ...pdfPatch,
+    status: "sent",
+    acknowledgement_token: acknowledgementToken,
+    acknowledgement_url: acknowledgementUrl,
+    sent_to_customer_at: new Date().toISOString(),
+    line_group_id: targetLineGroupId,
+    line_message: message,
+  };
+  await update("Site_Memos", Number(memo._rowIndex), patch, context.siteSheetId);
+  await writeAuditLog({
+    actor: actor(context),
+    projectId: context.project.project_id,
+    module: "site_memos",
+    action: "line_acknowledgement_sent",
+    targetId: memoId,
+    summary: `ส่ง LINE ให้ลูกค้ารับทราบ Memo: ${memo.title || memoId}`,
+    before: memo,
+    after: { ...patch, test_mode: isMemoLineTestMode() },
+  });
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      test_mode: isMemoLineTestMode(),
+      line_group_id: targetLineGroupId,
+      acknowledgement_url: acknowledgementUrl,
+    },
   });
 }
 
@@ -409,6 +533,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       data: data.memos,
       evidence: data.evidence,
       audit_logs: data.auditLogs,
+      line: {
+        test_mode: isMemoLineTestMode(),
+        target_group_id: lineTargetFor(routeContext),
+        target_group_name: isMemoLineTestMode() ? "Memo LINE Test Group" : textValue(routeContext.project.line_group_name),
+      },
     });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -427,6 +556,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
     if (action === "create_memo") return handleCreateMemo(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, req);
+    if (action === "send_acknowledgement") return handleSendAcknowledgement(body, routeContext, req);
     if (action === "acknowledge") return handleAcknowledge(body, routeContext, req);
     if (action === "update_status") return handleUpdateStatus(body, routeContext);
 

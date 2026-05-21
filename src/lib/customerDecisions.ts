@@ -23,6 +23,8 @@ export type CustomerDecisionRecord = Record<string, string | number | undefined>
   issued_at?: string;
   issued_by_name?: string;
   issued_by_email?: string;
+  approval_token?: string;
+  approval_url?: string;
   order_index?: string | number;
   active?: string;
 };
@@ -131,6 +133,10 @@ export function createCustomerDecisionId() {
   return `CD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 }
 
+export function createCustomerDecisionApprovalToken() {
+  return `cda_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function safeJsonStringify(value: unknown) {
   try {
     return JSON.stringify(value ?? []);
@@ -201,6 +207,7 @@ export function buildCustomerDecisionLineFlex({
   impactIfChanged,
   pdfUrl,
   evidenceUrl,
+  approvalUrl,
   evidenceCount = 0,
 }: {
   projectName: string;
@@ -213,9 +220,16 @@ export function buildCustomerDecisionLineFlex({
   impactIfChanged: string;
   pdfUrl?: string;
   evidenceUrl?: string;
+  approvalUrl?: string;
   evidenceCount?: number;
 }) {
   const footerContents = [
+    ...(approvalUrl ? [{
+      type: "button",
+      style: "primary",
+      color: "#0f766e",
+      action: { type: "uri", label: "ยืนยันรายการนี้", uri: approvalUrl },
+    }] : []),
     ...(pdfUrl ? [{
       type: "button",
       style: "primary",
@@ -305,6 +319,85 @@ export function buildCustomerDecisionLineFlex({
   };
 }
 
+export function buildCustomerDecisionApprovedLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  decidedBy,
+  decidedAt,
+  pdfUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo?: string;
+  title: string;
+  decidedBy: string;
+  decidedAt: string;
+  pdfUrl?: string;
+}) {
+  const approvedDate = decidedAt ? new Date(decidedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "-";
+  return {
+    type: "flex",
+    altText: `ยืนยันรายการที่ต้องตัดสินใจแล้ว | ${projectName || projectId} | ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#064e3b",
+        paddingAll: "18px",
+        paddingBottom: "16px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT DECISION APPROVED", color: "#bbf7d0", weight: "bold", size: "xs" },
+          { type: "text", text: "ลูกค้ายืนยันรายการแล้ว", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#dcfce7", size: "sm", margin: "xs", wrap: true },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
+          customerDecisionLineInfoRow("รายการ", trimCustomerDecisionLineText(title || "-")),
+          customerDecisionLineInfoRow("ผู้ยืนยัน", decidedBy || "-"),
+          customerDecisionLineInfoRow("เวลา", approvedDate),
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            margin: "md",
+            backgroundColor: "#f0fdf4",
+            cornerRadius: "8px",
+            paddingAll: "10px",
+            contents: [
+              { type: "text", text: "สถานะ", color: "#15803d", size: "xs", weight: "bold" },
+              { type: "text", text: "ลูกค้ายืนยันรายการนี้เรียบร้อยแล้ว ทีมงานสามารถดำเนินงานต่อได้ตามแผน", color: "#166534", size: "sm", wrap: true },
+            ],
+          },
+        ],
+      },
+      ...(pdfUrl ? {
+        footer: {
+          type: "box",
+          layout: "vertical",
+          spacing: "xs",
+          paddingAll: "8px",
+          contents: [{
+            type: "button",
+            style: "primary",
+            color: "#111827",
+            action: { type: "uri", label: "เปิด PDF รายการ", uri: pdfUrl },
+          }],
+        },
+      } : {}),
+    },
+  };
+}
+
 function customerDecisionLineInfoRow(label: string, value: string) {
   return {
     type: "box",
@@ -368,176 +461,207 @@ export function buildCustomerDecisionPdfHtml({
   <meta charset="utf-8" />
   <title>${escapeHtml(decision.document_no || "Customer Decision")}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
+    @page { size: A4; margin: 12mm; }
     * { box-sizing: border-box; }
-    body { margin: 0; color: #111827; font-size: 12px; line-height: 1.5; font-family: Arial, "Tahoma", sans-serif; }
-    .page { min-height: 267mm; border: 1px solid #d1d5db; padding: 18px 22px; background: #fff; display: flex; flex-direction: column; }
-    .evidence-page { page-break-before: always; display: block; }
-    .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 2px solid #f97316; padding-bottom: 12px; }
-    .brand { display: flex; align-items: center; gap: 14px; }
-    .brand img { width: 132px; height: auto; object-fit: contain; }
-    .brand-title { font-size: 16px; font-weight: 900; color: #0f172a; }
-    .brand-subtitle { margin-top: 2px; color: #64748b; font-size: 11px; }
-    .company-address { margin-top: 4px; color: #475569; font-size: 10px; line-height: 1.35; }
-    .doc-box { min-width: 164px; border: 1px solid #cbd5e1; padding: 9px 11px; text-align: right; }
-    .doc-label { color: #475569; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-    .doc-no { margin-top: 3px; font-size: 15px; font-weight: 900; color: #0f172a; }
-    h1 { margin: 14px 0 12px; text-align: center; font-size: 22px; line-height: 1.2; color: #0f172a; }
-    h2 { margin: 0 0 8px; font-size: 15px; color: #0f172a; }
-    .memo-lines { border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; margin-top: 8px; }
-    .memo-line { display: grid; grid-template-columns: 116px 1fr 104px 1fr; border-bottom: 1px solid #e5e7eb; min-height: 32px; }
-    .memo-line:last-child { border-bottom: 0; }
-    .memo-label { padding: 8px; font-weight: 900; color: #0f172a; background: #f8fafc; }
-    .memo-value { padding: 8px 10px; font-weight: 700; color: #111827; }
-    .memo-value.full { grid-column: span 3; }
-    .body-section { margin-top: 14px; }
-    .detail { min-height: 52px; white-space: pre-wrap; border: 1px solid #e5e7eb; background: #f8fafc; padding: 10px; }
-    .impact-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    .impact-table th, .impact-table td { border: 1px solid #cbd5e1; padding: 8px; vertical-align: top; }
-    .impact-table th { width: 170px; text-align: left; background: #f8fafc; color: #0f172a; }
-    .notice { margin-top: 12px; border: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; padding: 10px; font-weight: 700; }
-    .file-list { margin: 8px 0 0; padding-left: 18px; color: #475569; }
-    .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: auto; padding-top: 22px; }
-    .signature { text-align: center; min-height: 74px; }
-    .signature-line { border-top: 1px solid #64748b; margin: 34px 8px 7px; }
-    .footer { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 8px; color: #64748b; font-size: 10px; display: flex; justify-content: space-between; gap: 12px; }
-    .page-title { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; border-bottom: 2px solid #f97316; padding-bottom: 10px; }
-    .page-title h1 { margin: 0; text-align: left; font-size: 20px; }
-    .photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 14px; }
-    .photo-card { margin: 0; border: 1px solid #d1d5db; padding: 8px; min-height: 84mm; page-break-inside: avoid; }
-    .photo-frame { height: 70mm; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #f8fafc; }
+    body { margin: 0; color: #111827; font-size: 11px; line-height: 1.45; font-family: Arial, "Tahoma", sans-serif; background: #fff; }
+    .page { background: #fff; }
+    .sheet { min-height: 273mm; border: 1px solid #cbd5e1; padding: 16px 18px 12px; display: flex; flex-direction: column; }
+    .evidence-page { break-before: page; page-break-before: always; }
+    .header { display: grid; grid-template-columns: 1fr 175px; gap: 14px; border-top: 6px solid #0f172a; border-bottom: 2px solid #f97316; padding: 12px 0 10px; }
+    .brand { display: grid; grid-template-columns: 118px 1fr; gap: 14px; align-items: center; min-width: 0; }
+    .brand img { width: 112px; max-height: 48px; object-fit: contain; }
+    .brand-title { font-size: 15px; line-height: 1.2; font-weight: 900; color: #0f172a; letter-spacing: 0; }
+    .brand-subtitle { margin-top: 3px; color: #64748b; font-size: 10px; }
+    .company-address { margin-top: 5px; color: #475569; font-size: 9px; line-height: 1.35; }
+    .doc-box { border: 1px solid #cbd5e1; background: #f8fafc; padding: 9px 10px; text-align: right; align-self: stretch; }
+    .doc-label { color: #64748b; font-size: 8px; font-weight: 900; text-transform: uppercase; }
+    .doc-no { margin-top: 4px; font-size: 14px; line-height: 1.2; font-weight: 900; color: #0f172a; }
+    .doc-date { margin-top: 8px; color: #475569; font-size: 9px; font-weight: 700; }
+    .title-block { margin: 12px 0 10px; text-align: center; }
+    .title-block h1 { margin: 0; font-size: 22px; line-height: 1.15; color: #0f172a; font-weight: 900; }
+    .title-block .en { margin-top: 3px; color: #64748b; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    h2 { margin: 0 0 7px; font-size: 13px; color: #0f172a; }
+    .section-title { margin-top: 10px; display: flex; align-items: center; gap: 8px; color: #0f172a; font-size: 13px; font-weight: 900; }
+    .section-title:before { content: ""; width: 4px; height: 15px; background: #f97316; display: inline-block; }
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #cbd5e1; border-bottom: 0; }
+    .summary-item { display: grid; grid-template-columns: 96px 1fr; min-height: 29px; border-bottom: 1px solid #cbd5e1; }
+    .summary-item.full { grid-column: span 2; }
+    .summary-label { background: #f1f5f9; border-right: 1px solid #cbd5e1; padding: 7px 8px; font-weight: 900; color: #334155; }
+    .summary-value { padding: 7px 9px; font-weight: 800; color: #0f172a; }
+    .decision-box { margin-top: 10px; border: 1px solid #cbd5e1; }
+    .decision-heading { background: #0f172a; color: #fff; padding: 8px 10px; font-size: 12px; font-weight: 900; }
+    .decision-body { padding: 10px 11px; }
+    .decision-title { font-size: 15px; line-height: 1.35; color: #0f172a; font-weight: 900; }
+    .decision-meta { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .meta-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; min-height: 46px; }
+    .meta-label { color: #64748b; font-size: 9px; font-weight: 900; }
+    .meta-value { margin-top: 2px; color: #0f172a; font-size: 11px; font-weight: 800; }
+    .impact-box { margin-top: 8px; border: 1px solid #fed7aa; background: #fff7ed; padding: 9px 10px; color: #9a3412; }
+    .impact-label { color: #ea580c; font-size: 9px; font-weight: 900; text-transform: uppercase; }
+    .impact-value { margin-top: 3px; font-size: 11px; font-weight: 800; }
+    .detail-grid { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .detail-card { border: 1px solid #e2e8f0; background: #f8fafc; padding: 9px 10px; min-height: 52px; white-space: pre-wrap; }
+    .detail-card strong { display: block; margin-bottom: 4px; color: #334155; font-size: 9px; font-weight: 900; text-transform: uppercase; }
+    .notice { margin-top: 9px; border-left: 4px solid #f97316; background: #fff7ed; color: #9a3412; padding: 8px 10px; font-weight: 800; font-size: 10px; }
+    .file-list { margin: 7px 0 0; padding-left: 17px; color: #475569; }
+    .file-list li { margin-bottom: 2px; }
+    .empty-box { border: 1px dashed #cbd5e1; color: #64748b; padding: 10px; text-align: center; margin-top: 7px; background: #f8fafc; }
+    .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: auto; padding-top: 18px; }
+    .signature { text-align: center; min-height: 78px; border-top: 1px solid #94a3b8; padding-top: 7px; color: #334155; }
+    .signature strong { color: #0f172a; font-size: 10px; }
+    .footer { margin-top: 11px; border-top: 1px solid #e5e7eb; padding-top: 7px; color: #64748b; font-size: 9px; display: flex; justify-content: space-between; gap: 12px; }
+    .page-title { display: grid; grid-template-columns: 1fr 160px; gap: 14px; align-items: end; border-top: 6px solid #0f172a; border-bottom: 2px solid #f97316; padding: 12px 0 10px; }
+    .page-title h1 { margin: 0; text-align: left; font-size: 20px; line-height: 1.2; color: #0f172a; }
+    .photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
+    .photo-card { margin: 0; border: 1px solid #cbd5e1; padding: 8px; min-height: 92mm; page-break-inside: avoid; background: #fff; }
+    .photo-frame { height: 78mm; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #f8fafc; border: 1px solid #e5e7eb; }
     .photo-frame img { width: 100%; height: 100%; object-fit: contain; }
     .photo-card figcaption { margin-top: 6px; color: #334155; font-size: 10px; font-weight: 700; }
-    .empty-box { border: 1px dashed #cbd5e1; color: #64748b; padding: 18px; text-align: center; margin-top: 10px; }
   </style>
 </head>
 <body>
   <main class="page">
-    <header class="header">
-      <div class="brand">
-        ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="PMC CONNEXT" />` : ""}
-        <div>
-          <div class="brand-title">PICHAYAMONGKOL CONSTRUCTION CO., LTD.</div>
-          <div class="brand-subtitle">Customer Decision Record / บันทึกรายการที่ลูกค้าต้องตัดสินใจ</div>
-          <div class="company-address">276/1 ซอยพุทธบูชา 36 แขวงบางมด เขตทุ่งครุ กรุงเทพมหานคร 10140</div>
+    <div class="sheet">
+      <header class="header">
+        <div class="brand">
+          ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="PMC CONNEXT" />` : ""}
+          <div>
+            <div class="brand-title">PICHAYAMONGKOL CONSTRUCTION CO., LTD.</div>
+            <div class="brand-subtitle">Customer Decision Record / บันทึกรายการที่ลูกค้าต้องตัดสินใจ</div>
+            <div class="company-address">276/1 ซอยพุทธบูชา 36 แขวงบางมด เขตทุ่งครุ กรุงเทพมหานคร 10140</div>
+          </div>
         </div>
-      </div>
-      <div class="doc-box">
-        <div class="doc-label">Document No.</div>
-        <div class="doc-no">${escapeHtml(decision.document_no || "-")}</div>
-      </div>
-    </header>
+        <div class="doc-box">
+          <div class="doc-label">Document No.</div>
+          <div class="doc-no">${escapeHtml(decision.document_no || "-")}</div>
+          <div class="doc-date">Issued: ${escapeHtml(formatThaiDate(decision.issued_at))}</div>
+        </div>
+      </header>
 
-    <h1>บันทึกรายการที่ลูกค้าต้องตัดสินใจ</h1>
+      <section class="title-block">
+        <h1>บันทึกรายการที่ลูกค้าต้องตัดสินใจ</h1>
+        <div class="en">Customer Decision / Approval Record</div>
+      </section>
 
-    <section class="memo-lines">
-      <div class="memo-line">
-        <div class="memo-label">โครงการ</div>
-        <div class="memo-value">${escapeHtml(project.name || project.project_id || "-")}</div>
-        <div class="memo-label">ลูกค้า</div>
-        <div class="memo-value">${escapeHtml(project.client || "-")}</div>
-      </div>
-      <div class="memo-line">
-        <div class="memo-label">สถานที่</div>
-        <div class="memo-value full">${escapeHtml(location || "-")}</div>
-      </div>
-      <div class="memo-line">
-        <div class="memo-label">ช่วงงาน</div>
-        <div class="memo-value">${escapeHtml(decision.phase || "-")}</div>
-        <div class="memo-label">สถานะ</div>
-        <div class="memo-value">${escapeHtml(decision.decision_status || "-")}</div>
-      </div>
-      <div class="memo-line">
-        <div class="memo-label">รายการ</div>
-        <div class="memo-value full">${escapeHtml(decision.title || "-")}</div>
-      </div>
-      <div class="memo-line">
-        <div class="memo-label">ต้องตัดสินใจก่อน</div>
-        <div class="memo-value full">${escapeHtml(decision.decision_before || "-")}</div>
-      </div>
-    </section>
+      <section class="summary-grid">
+        <div class="summary-item">
+          <div class="summary-label">โครงการ</div>
+          <div class="summary-value">${escapeHtml(project.name || project.project_id || "-")}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">ลูกค้า</div>
+          <div class="summary-value">${escapeHtml(project.client || "-")}</div>
+        </div>
+        <div class="summary-item full">
+          <div class="summary-label">สถานที่</div>
+          <div class="summary-value">${escapeHtml(location || "-")}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">ช่วงงาน</div>
+          <div class="summary-value">${escapeHtml(decision.phase || "-")}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">สถานะ</div>
+          <div class="summary-value">${escapeHtml(decision.decision_status || "-")}</div>
+        </div>
+      </section>
 
-    <section class="body-section">
-      <table class="impact-table">
-        <tr>
-          <th>ผลถ้าเปลี่ยนหลังจากนี้</th>
-          <td>${escapeHtml(decision.impact_if_changed || "-")}</td>
-        </tr>
-        <tr>
-          <th>ผู้ยืนยัน</th>
-          <td>${escapeHtml(decision.decided_by || "-")}</td>
-        </tr>
-        <tr>
-          <th>วันที่ยืนยัน</th>
-          <td>${escapeHtml(formatThaiDate(decision.decided_at))}</td>
-        </tr>
-        <tr>
-          <th>แจ้งเตือนล่าสุด</th>
-          <td>${escapeHtml(formatThaiDate(decision.notified_at))}</td>
-        </tr>
-      </table>
+      <section class="decision-box">
+        <div class="decision-heading">รายการขอให้ลูกค้ายืนยันก่อนดำเนินงานต่อ</div>
+        <div class="decision-body">
+          <div class="decision-title">${escapeHtml(decision.title || "-")}</div>
+          <div class="decision-meta">
+            <div class="meta-box">
+              <div class="meta-label">ต้องตัดสินใจก่อน</div>
+              <div class="meta-value">${escapeHtml(decision.decision_before || "-")}</div>
+            </div>
+            <div class="meta-box">
+              <div class="meta-label">แจ้งเตือนล่าสุด</div>
+              <div class="meta-value">${escapeHtml(formatThaiDate(decision.notified_at))}</div>
+            </div>
+            <div class="meta-box">
+              <div class="meta-label">ผู้ยืนยัน</div>
+              <div class="meta-value">${escapeHtml(decision.decided_by || "-")}</div>
+            </div>
+            <div class="meta-box">
+              <div class="meta-label">วันที่ยืนยัน</div>
+              <div class="meta-value">${escapeHtml(formatThaiDate(decision.decided_at))}</div>
+            </div>
+          </div>
+          <div class="impact-box">
+            <div class="impact-label">ผลถ้าเปลี่ยนหลังจากนี้</div>
+            <div class="impact-value">${escapeHtml(decision.impact_if_changed || "-")}</div>
+          </div>
+        </div>
+      </section>
 
-      <h2 style="margin-top: 14px;">ผลการตัดสินใจ / หมายเหตุ</h2>
-      <div class="detail">${escapeHtml(decision.result_note || "-")}</div>
-
-      <h2 style="margin-top: 14px;">หลักฐานอ้างอิง</h2>
-      <div class="detail">${escapeHtml(decision.evidence_note || "-")}</div>
+      <section class="detail-grid">
+        <div class="detail-card">
+          <strong>ผลการตัดสินใจ / หมายเหตุ</strong>
+          ${escapeHtml(decision.result_note || "-")}
+        </div>
+        <div class="detail-card">
+          <strong>หลักฐานอ้างอิง</strong>
+          ${escapeHtml(decision.evidence_note || "-")}
+        </div>
+      </section>
 
       <div class="notice">เอกสารนี้ใช้เป็นบันทึกการแจ้งเตือนและยืนยันรายการที่ลูกค้าต้องตัดสินใจก่อนผ่านช่วงงานดังกล่าว หากมีการเปลี่ยนแปลงหลังจากจุดตัดสินใจ อาจมีผลต่อระยะเวลา ค่าใช้จ่าย หรือการดำเนินงานหน้างาน</div>
 
-      <h2 style="margin-top: 14px;">ไฟล์แนบ</h2>
+      <section>
+        <div class="section-title">ไฟล์แนบ / หลักฐานประกอบ</div>
       ${evidenceFiles.length > 0 ? `
         <ul class="file-list">
           ${evidenceFiles.map((item) => `<li>${escapeHtml(item.file_name || "-")} (${escapeHtml(item.mime_type || "file")})</li>`).join("")}
         </ul>
       ` : `<div class="empty-box">ยังไม่มีไฟล์แนบ</div>`}
-    </section>
+      </section>
 
-    <section class="signatures">
-      <div class="signature">
-        <div class="signature-line"></div>
-        <strong>ผู้จัดทำ</strong><br />
-        ${escapeHtml(decision.issued_by_name || "")}<br />
-        วันที่ ........../........../..........
-      </div>
-      <div class="signature">
-        <div class="signature-line"></div>
-        <strong>วิศวกร / ผู้ควบคุมงาน</strong><br />
-        วันที่ ........../........../..........
-      </div>
-      <div class="signature">
-        <div class="signature-line"></div>
-        <strong>ลูกค้า / ผู้ยืนยัน</strong><br />
-        ${escapeHtml(decision.decided_by || project.client || "")}<br />
-        วันที่ ........../........../..........
-      </div>
-    </section>
+      <section class="signatures">
+        <div class="signature">
+          <strong>ผู้จัดทำ</strong><br />
+          ${escapeHtml(decision.issued_by_name || "")}<br />
+          วันที่ ........../........../..........
+        </div>
+        <div class="signature">
+          <strong>วิศวกร / ผู้ควบคุมงาน</strong><br />
+          วันที่ ........../........../..........
+        </div>
+        <div class="signature">
+          <strong>ลูกค้า / ผู้ยืนยัน</strong><br />
+          ${escapeHtml(decision.decided_by || project.client || "")}<br />
+          วันที่ ........../........../..........
+        </div>
+      </section>
 
-    <footer class="footer">
-      <span>Generated by PCM CONNEXT</span>
-      <span>Page 1${evidenceImages.length ? " / 2" : ""}</span>
-    </footer>
+      <footer class="footer">
+        <span>Generated by PMC CONNEXT</span>
+        <span>Page 1${evidenceImages.length ? " / 2" : ""}</span>
+      </footer>
+    </div>
   </main>
 
   ${evidenceImages.length > 0 ? `
   <main class="page evidence-page">
-    <section class="page-title">
-      <div>
-        <h1>หลักฐานแนบประกอบ</h1>
-        <div class="brand-subtitle">${escapeHtml(project.name || project.project_id || "-")} | ${escapeHtml(decision.document_no || "-")}</div>
+    <div class="sheet">
+      <section class="page-title">
+        <div>
+          <h1>หลักฐานแนบประกอบ</h1>
+          <div class="brand-subtitle">${escapeHtml(project.name || project.project_id || "-")} | ${escapeHtml(decision.document_no || "-")}</div>
+        </div>
+        <div class="doc-box">
+          <div class="doc-label">Document No.</div>
+          <div class="doc-no">${escapeHtml(decision.document_no || "-")}</div>
+        </div>
+      </section>
+      <div class="photo-grid">
+        ${evidenceImages.slice(0, 6).map(renderImage).join("")}
       </div>
-      <div class="doc-box">
-        <div class="doc-label">Document No.</div>
-        <div class="doc-no">${escapeHtml(decision.document_no || "-")}</div>
-      </div>
-    </section>
-    <div class="photo-grid">
-      ${evidenceImages.slice(0, 6).map(renderImage).join("")}
+      <footer class="footer">
+        <span>Generated by PMC CONNEXT</span>
+        <span>Page 2 / 2 | ${escapeHtml(new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }))}</span>
+      </footer>
     </div>
-    <footer class="footer">
-      <span>Generated by PCM CONNEXT</span>
-      <span>Page 2 / 2 | ${escapeHtml(new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }))}</span>
-    </footer>
   </main>` : ""}
 </body>
 </html>`;
