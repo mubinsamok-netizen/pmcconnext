@@ -74,7 +74,7 @@ function isDecisionLineTestMode() {
 
 function lineTargetFor(context: RouteContext) {
   if (isDecisionLineTestMode()) return TEST_LINE_GROUP_ID;
-  return text(context.project.line_group_id) || TEST_LINE_GROUP_ID;
+  return text(context.project.line_group_id);
 }
 
 function normalizeDecision(row: CustomerDecisionRecord) {

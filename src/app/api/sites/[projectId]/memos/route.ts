@@ -52,7 +52,7 @@ function isMemoLineTestMode() {
 
 function lineTargetFor(context: RouteContext) {
   if (isMemoLineTestMode()) return MEMO_LINE_TEST_GROUP_ID;
-  return textValue(context.project.line_group_id) || MEMO_LINE_TEST_GROUP_ID;
+  return textValue(context.project.line_group_id);
 }
 
 function requirePermission(context: RouteContext, permission: AppPermission) {

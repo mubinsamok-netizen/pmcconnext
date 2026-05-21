@@ -74,7 +74,7 @@ function isVoLineTestMode() {
 
 function lineTargetFor(context: RouteContext) {
   if (isVoLineTestMode()) return VO_LINE_TEST_GROUP_ID;
-  return text(context.project.line_group_id) || VO_LINE_TEST_GROUP_ID;
+  return text(context.project.line_group_id);
 }
 
 function approvalOriginFrom(body: Record<string, unknown>) {

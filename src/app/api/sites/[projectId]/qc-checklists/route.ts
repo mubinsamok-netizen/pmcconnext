@@ -80,7 +80,7 @@ function isQcLineTestMode() {
 
 function lineTargetFor(context: RouteContext) {
   if (isQcLineTestMode()) return QC_LINE_TEST_GROUP_ID;
-  return text(context.project.line_group_id) || QC_LINE_TEST_GROUP_ID;
+  return text(context.project.line_group_id);
 }
 
 function todayBangkok() {

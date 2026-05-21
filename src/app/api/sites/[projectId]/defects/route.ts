@@ -67,7 +67,7 @@ function isDefectLineTestMode() {
 
 function lineTargetFor(context: RouteContext) {
   if (isDefectLineTestMode()) return DEFECT_LINE_TEST_GROUP_ID;
-  return text(context.project.line_group_id) || DEFECT_LINE_TEST_GROUP_ID;
+  return text(context.project.line_group_id);
 }
 
 function defectRoundReadyForCustomer(items: DefectItemRecord[]) {
