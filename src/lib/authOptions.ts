@@ -1,7 +1,6 @@
 import { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { verifyPasswordHash } from "@/lib/passwordHash";
 import { getAppRole } from "@/lib/roles";
 import { findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
@@ -117,7 +116,6 @@ async function upsertGoogleTeamUser({
     role: "Staff",
     email: normalizedEmail,
     password: "",
-    password_hash: "",
     phone: "",
     project_ids: "",
     active: "TRUE",
@@ -176,9 +174,7 @@ export const authOptions: AuthOptions = {
             throw new Error("บัญชีนี้ถูกปิดการใช้งาน กรุณาติดต่อ Admin");
           }
 
-          const passwordOk = isSupabaseBackend()
-            ? verifyPasswordHash(credentials.password, String(user.password_hash || ""))
-            : user.password === credentials.password;
+          const passwordOk = user.password === credentials.password;
 
           if (!passwordOk) {
             throw new Error("Invalid password");

@@ -3,7 +3,6 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { getAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
-import { hashPassword } from "@/lib/passwordHash";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTeamMembers } from "@/lib/supabaseReadModel";
 import { deleteRowMaster, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
@@ -71,7 +70,6 @@ export async function POST(req: Request) {
       name,
       email,
       password,
-      password_hash: hashPassword(String(password), memberId),
       phone: phone || "",
       role: roleValue,
       project_ids: assignedProjectIds,
@@ -140,7 +138,6 @@ export async function PUT(req: Request) {
 
     if (password !== undefined) {
       teamPatch.password = String(password || "");
-      teamPatch.password_hash = hashPassword(String(password || ""), String(member_id || email));
     }
 
     await updateMaster("Team", _rowIndex, teamPatch);

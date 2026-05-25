@@ -36,6 +36,7 @@ type SupabaseTeamMember = {
   member_id: string;
   name: string;
   email: string | null;
+  password: string | null;
   phone: string | null;
   role: string | null;
   project_ids: string | string[] | null;
@@ -44,7 +45,6 @@ type SupabaseTeamMember = {
   avatar_url: string | null;
   auth_provider: string | null;
   last_login_at: string | null;
-  password_hash?: string | null;
 };
 
 type SupabaseUserProjectAccess = {
@@ -548,7 +548,7 @@ export async function getSupabaseTeamMembers() {
     member_id: row.member_id,
     name: row.name,
     email: text(row.email),
-    password: "",
+    password: text(row.password),
     phone: text(row.phone),
     role: text(row.role),
     project_ids: listText(row.project_ids),
@@ -570,8 +570,7 @@ export async function getSupabaseTeamMemberCredentials() {
     member_id: row.member_id,
     name: row.name,
     email: text(row.email),
-    password: "",
-    password_hash: text(row.password_hash),
+    password: text(row.password),
     phone: text(row.phone),
     role: text(row.role),
     project_ids: listText(row.project_ids),

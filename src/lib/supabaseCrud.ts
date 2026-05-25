@@ -200,7 +200,7 @@ function toTeamDb(data: Record<string, SheetValue>) {
   if (data.project_ids !== undefined) payload.project_ids = listOrNull(data.project_ids);
   if (data.active !== undefined) payload.active = boolOrNull(data.active);
   if (data.last_login_at !== undefined) payload.last_login_at = emptyToNull(data.last_login_at);
-  if (data.password_hash !== undefined) payload.password_hash = emptyToNull(data.password_hash);
+  if (data.password !== undefined) payload.password = emptyToNull(data.password);
 
   return payload;
 }
