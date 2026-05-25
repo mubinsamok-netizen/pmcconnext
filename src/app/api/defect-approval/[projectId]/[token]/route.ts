@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import { buildDefectApprovedLineFlex, type DefectRoundRecord } from "@/lib/defects";
 import { sendLineMessages } from "@/lib/line";
-import { findAll, findAllMaster, update } from "@/lib/sheetsCrud";
+import { findAll, findAllMaster, findAllRaw, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type PublicProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -17,7 +18,7 @@ function text(value: unknown) {
 }
 
 async function getPublicContext(projectId: string, token: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const projects = await findAllMaster("Projects") as unknown as PublicProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) return { error: "ไม่พบโครงการ", status: 404 as const };
@@ -25,7 +26,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
   const rounds = await findAll("Defect_Rounds", siteSheetId) as unknown as DefectRoundRecord[];
   const round = rounds.find((row) => row.project_id === project.project_id && text(row.approval_token) === token);
   if (!round?._rowIndex) return { error: "ลิงก์รับงานแก้ไขไม่ถูกต้องหรือหมดอายุ", status: 404 as const };
@@ -55,6 +56,14 @@ function publicPayload(project: PublicProject, round: DefectRoundRecord) {
       pdf_url: round.pdf_url || "",
     },
   };
+}
+
+async function getFallbackRowIndex(siteSheetId: string, round: DefectRoundRecord) {
+  const numericRowIndex = Number(round._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Defect_Rounds", siteSheetId);
+  return rawRows.find((row) => row.round_id === round.round_id)?._rowIndex;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string; token: string }> }) {
@@ -88,7 +97,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     };
 
     if (context.round.status !== "acknowledged" && context.round.status !== "closed") {
-      await update("Defect_Rounds", Number(context.round._rowIndex), patch, context.siteSheetId);
+      await update(
+        "Defect_Rounds",
+        context.round.round_id || context.round._rowIndex || "",
+        patch,
+        context.siteSheetId,
+        await getFallbackRowIndex(context.siteSheetId, context.round)
+      );
       await writeAuditLog({
         actor: { name: acknowledgedBy, role: "Customer" },
         projectId: context.project.project_id,

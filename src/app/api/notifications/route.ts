@@ -5,8 +5,9 @@ import { filterProjectsForUser } from "@/lib/authz";
 import { canUserSeeNotification, isUnread, type NotificationRecord } from "@/lib/notifications";
 import { getAlertState, getLifecycleReminderTargets, getWarrantyReminderTargets, type ReminderTarget } from "@/lib/projectLifecycle";
 import { dispatchReminderIntegrations } from "@/lib/reminderIntegrations";
-import { findAll, findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type SheetRecord = Record<string, string | number | undefined>;
 
@@ -33,6 +34,26 @@ function isDoneTask(task: SheetRecord) {
   const status = String(task.status || "").toLowerCase();
   const percent = Number(task.percent_done || 0);
   return status === "done" || status === "completed" || percent >= 100;
+}
+
+async function getNotificationFallbackRowIndex(notification: NotificationRecord) {
+  const numericRowIndex = Number(notification._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllMasterRaw("Notifications");
+  return rawRows.find((row) => row.notification_id === notification.notification_id)?._rowIndex;
+}
+
+async function markNotificationRead(notification: NotificationRecord, readAt: string) {
+  await updateMaster(
+    "Notifications",
+    notification.notification_id || notification._rowIndex || "",
+    {
+      is_read: "TRUE",
+      read_at: readAt,
+    },
+    await getNotificationFallbackRowIndex(notification)
+  );
 }
 
 function makeTaskAlert(project: SheetRecord, task: SheetRecord, kind: "overdue" | "due_soon", days: number): NotificationRecord {
@@ -189,7 +210,7 @@ async function getGeneratedProjectDateAlerts(projects: SheetRecord[], existingNo
 
 export async function GET() {
   try {
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const session = await getServerSession(authOptions);
     if (!session?.user) {
@@ -232,7 +253,7 @@ export async function GET() {
 
 export async function PATCH(req: Request) {
   try {
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const session = await getServerSession(authOptions);
     if (!session?.user) {
@@ -251,10 +272,7 @@ export async function PATCH(req: Request) {
       if (!markAll && notification.notification_id !== notificationId) continue;
       if (!(await canUserSeeNotification(notification, session.user))) continue;
 
-      await updateMaster("Notifications", notification._rowIndex, {
-        is_read: "TRUE",
-        read_at: readAt,
-      });
+      await markNotificationRead(notification, readAt);
       updated += 1;
     }
 

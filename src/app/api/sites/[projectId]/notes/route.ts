@@ -26,7 +26,7 @@ type NoteRow = Record<string, string | number | undefined> & {
   attachments_json?: string;
   created_at?: string;
   updated_at?: string;
-  _rowIndex?: number;
+  _rowIndex?: number | string;
 };
 
 function safeFolderName(value: string) {
@@ -160,7 +160,7 @@ async function patchNote(body: Record<string, unknown>, context: RouteContext) {
   if (body.pinned !== undefined) patch.pinned = boolText(body.pinned);
   if (body.archived !== undefined) patch.archived = boolText(body.archived);
 
-  await update("Site_Notes", Number(current._rowIndex), patch, context.siteSheetId);
+  await update("Site_Notes", noteId, patch, context.siteSheetId, current._rowIndex);
   return NextResponse.json({ success: true, data: { ...current, ...patch } });
 }
 

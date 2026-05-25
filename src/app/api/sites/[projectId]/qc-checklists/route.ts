@@ -24,7 +24,7 @@ import {
   type QcEvidenceFile,
   type QcUploadPayload,
 } from "@/lib/qcChecklists";
-import { findAll, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -118,6 +118,24 @@ function normalizeChecklist(row: QcChecklistRecord) {
 
 async function getRows(context: RouteContext) {
   return await findAll("QC_Checklists", context.siteSheetId) as unknown as QcChecklistRecord[];
+}
+
+async function getFallbackRowIndex(context: RouteContext, checklist: QcChecklistRecord) {
+  const numericRowIndex = Number(checklist._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("QC_Checklists", context.siteSheetId);
+  return rawRows.find((row) => row.qc_id === checklist.qc_id)?._rowIndex;
+}
+
+async function updateQcChecklist(context: RouteContext, checklist: QcChecklistRecord, patch: Record<string, string>) {
+  await update(
+    "QC_Checklists",
+    checklist.qc_id || checklist._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    await getFallbackRowIndex(context, checklist)
+  );
 }
 
 async function getQcRootFolder(context: RouteContext) {
@@ -298,7 +316,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     evidence_files_json: safeJsonStringify([...currentEvidence, ...uploadedEvidence]),
   };
 
-  await update("QC_Checklists", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateQcChecklist(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -320,7 +338,7 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
 
   const patch = await issuePdfFor(context, current, rows);
-  await update("QC_Checklists", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateQcChecklist(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -393,7 +411,7 @@ async function handleSendApproval(body: Record<string, unknown>, context: RouteC
     line_group_id: targetLineGroupId,
     line_message: lineText,
   };
-  await update("QC_Checklists", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateQcChecklist(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -423,7 +441,7 @@ async function handleApprove(body: Record<string, unknown>, context: RouteContex
     customer_approved_by: text(body.customer_approved_by) || text(context.project.client),
     customer_approval_note: text(body.customer_approval_note),
   };
-  await update("QC_Checklists", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateQcChecklist(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -451,7 +469,7 @@ async function handleDelete(body: Record<string, unknown>, context: RouteContext
   }
 
   const patch = { active: "FALSE" };
-  await update("QC_Checklists", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateQcChecklist(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,

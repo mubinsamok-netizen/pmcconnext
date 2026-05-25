@@ -4,7 +4,7 @@ import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
   MEMO_TYPE_LABELS,
@@ -69,6 +69,25 @@ function actor(context: RouteContext) {
     role: context.session.user.role || "",
     googleSub: context.session.user.googleSub || "",
   };
+}
+
+async function getFallbackRowIndex(context: RouteContext, memo: MemoRecord) {
+  const numericRowIndex = Number(memo._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Site_Memos", context.siteSheetId);
+  return rawRows.find((row) => row.memo_id === memo.memo_id)?._rowIndex;
+}
+
+async function updateSiteMemo(context: RouteContext, memo: MemoRecord, patch: Record<string, string | number>) {
+  const memoId = textValue(memo.memo_id);
+  await update(
+    "Site_Memos",
+    memoId || memo._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    memoId ? await getFallbackRowIndex(context, memo) : memo._rowIndex
+  );
 }
 
 function decodeDataUrl(dataUrl?: string) {
@@ -299,7 +318,7 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
   const documentNo = patch.document_no;
   const pdfUrl = patch.pdf_url;
   const html = issued.html;
-  await update("Site_Memos", Number(memo._rowIndex), patch, context.siteSheetId);
+  await updateSiteMemo(context, memo, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -382,7 +401,7 @@ async function handleSendAcknowledgement(body: Record<string, unknown>, context:
     line_group_id: targetLineGroupId,
     line_message: message,
   };
-  await update("Site_Memos", Number(memo._rowIndex), patch, context.siteSheetId);
+  await updateSiteMemo(context, memo, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -448,7 +467,7 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
     acknowledged_date: acknowledgedDate,
     acknowledgement_note: notes,
   };
-  await update("Site_Memos", Number(memo._rowIndex), patch, context.siteSheetId);
+  await updateSiteMemo(context, memo, patch);
 
   const memoFolderId = await getMemoFolder(context, memoId);
   const documentNo = textValue(memo.document_no) || createMemoDocumentNo(context.project.project_id, data.memos);
@@ -473,7 +492,7 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
       pdf_file_id: uploaded.id || "",
       pdf_url: uploaded.webViewLink || uploaded.webContentLink || "",
     };
-    await update("Site_Memos", Number(memo._rowIndex), refreshedPdf, context.siteSheetId);
+    await updateSiteMemo(context, memo, refreshedPdf);
   }
 
   await writeAuditLog({
@@ -503,7 +522,7 @@ async function handleUpdateStatus(body: Record<string, unknown>, context: RouteC
   const memo = data.memos.find((item) => item.memo_id === memoId);
   if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
 
-  await update("Site_Memos", Number(memo._rowIndex), { status }, context.siteSheetId);
+  await updateSiteMemo(context, memo, { status });
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,

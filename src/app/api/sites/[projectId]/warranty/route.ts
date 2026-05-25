@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { findAll, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { addYears, isIsoDate } from "@/lib/projectLifecycle";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
@@ -15,6 +15,16 @@ const warrantyFields = [
   "architecture_expiry_date",
   "architecture_notes",
 ];
+
+type WarrantyRow = Awaited<ReturnType<typeof findAll>>[number];
+
+async function getFallbackRowIndex(siteSheetId: string, warrantyId: string, current?: WarrantyRow) {
+  const currentRowIndex = Number(current?._rowIndex);
+  if (Number.isFinite(currentRowIndex)) return currentRowIndex;
+
+  const rawRows = await findAllRaw("Project_Warranty", siteSheetId);
+  return rawRows.find((row) => row.warranty_id === warrantyId)?._rowIndex;
+}
 
 function withCalculatedExpiry(patch: Record<string, string>) {
   const handoverDate = patch.handover_date || "";
@@ -60,7 +70,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ projectI
     patch = withCalculatedExpiry({ ...current, ...patch } as Record<string, string>);
 
     if (current?._rowIndex) {
-      await update("Project_Warranty", Number(current._rowIndex), patch, context.siteSheetId);
+      const warrantyId = String(current.warranty_id || "");
+      const fallbackRowIndex = warrantyId ? await getFallbackRowIndex(context.siteSheetId, warrantyId, current) : current._rowIndex;
+      await update("Project_Warranty", warrantyId || current._rowIndex, patch, context.siteSheetId, fallbackRowIndex);
       return NextResponse.json({ success: true, data: { ...current, ...patch } });
     }
 

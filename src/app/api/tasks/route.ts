@@ -3,23 +3,45 @@ import { deleteRow, findAll, insert, update } from "@/lib/sheetsCrud";
 import { createSessionNotification } from "@/lib/notifications";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Internal server error";
+}
+
+async function findTaskRowIndex(sheetId: string, projectId: string | null, taskId: string) {
+  const rows = await findAll("Tasks", sheetId);
+  const row = rows.find((task) => (
+    task.task_id === taskId &&
+    (!projectId || task.project_id === projectId)
+  ));
+  return row?._rowIndex;
 }
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
-    const { sheetId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
-    
-    let tasks = await findAll("Tasks", sheetId);
-    if (projectId) {
-      tasks = tasks.filter(t => t.project_id === projectId);
+
+    const readSheetsTasks = async () => {
+      const { sheetId } = await getProjectContext(projectId);
+      await ensureSchema(sheetId);
+
+      let tasks = await findAll("Tasks", sheetId);
+      if (projectId) {
+        tasks = tasks.filter(t => t.project_id === projectId);
+      }
+
+      return tasks;
+    };
+
+    if (isSupabaseReadEnabled("site")) {
+      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
+      return NextResponse.json({ success: true, data: tasks });
     }
-    
+
+    const tasks = await readSheetsTasks();
     return NextResponse.json({ success: true, data: tasks });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -53,7 +75,7 @@ export async function POST(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(project_id);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     const existingTasks = (await findAll("Tasks", sheetId)).filter((task) => task.project_id === project_id);
     const nextOrder = existingTasks.length + 1;
@@ -101,14 +123,18 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     const body = await req.json();
-    const { _rowIndex, project_id, ...updates } = body;
+    const { _rowIndex, task_id, project_id, ...updates } = body;
+    const taskId = typeof task_id === "string" ? task_id.trim() : "";
+    const legacyRowIndex = _rowIndex ? String(_rowIndex) : "";
 
-    if (!_rowIndex) {
-      return NextResponse.json({ error: "Missing _rowIndex for update" }, { status: 400 });
+    if (!taskId && !legacyRowIndex) {
+      return NextResponse.json({ error: "Missing task_id for update" }, { status: 400 });
     }
 
     const { sheetId } = await getProjectContext(project_id);
-    await update("Tasks", Number(_rowIndex), updates, sheetId);
+    const fallbackRowIndex = legacyRowIndex || (taskId ? await findTaskRowIndex(sheetId, project_id, taskId) : undefined);
+    const rowKey = isSupabaseBackend() && taskId ? taskId : legacyRowIndex || taskId;
+    await update("Tasks", rowKey, { ...updates, ...(taskId ? { task_id: taskId } : {}) }, sheetId, fallbackRowIndex);
 
     if (updates.status || updates.percent_done) {
       try {
@@ -133,15 +159,18 @@ export async function PUT(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const rowIndex = Number(searchParams.get("_rowIndex"));
+    const rowIndex = searchParams.get("_rowIndex") || "";
+    const taskId = searchParams.get("task_id") || "";
     const projectId = searchParams.get("project_id");
 
-    if (!rowIndex) {
-      return NextResponse.json({ error: "Missing _rowIndex for delete" }, { status: 400 });
+    if (!taskId && !rowIndex) {
+      return NextResponse.json({ error: "Missing task_id for delete" }, { status: 400 });
     }
 
     const { sheetId } = await getProjectContext(projectId);
-    await deleteRow("Tasks", rowIndex, sheetId);
+    const fallbackRowIndex = rowIndex || (taskId ? await findTaskRowIndex(sheetId, projectId, taskId) : undefined);
+    const rowKey = isSupabaseBackend() && taskId ? taskId : rowIndex || taskId;
+    await deleteRow("Tasks", rowKey, sheetId, fallbackRowIndex);
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {

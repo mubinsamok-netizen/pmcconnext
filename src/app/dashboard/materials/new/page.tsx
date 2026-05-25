@@ -2,10 +2,15 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Save, ShoppingCart } from "lucide-react";
+import { ArrowLeft, ShoppingCart } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+
+type Project = {
+  project_id: string;
+  name?: string;
+};
 
 export default function NewMaterialPage() {
   const router = useRouter();
@@ -13,7 +18,7 @@ export default function NewMaterialPage() {
   const [error, setError] = useState<string | null>(null);
 
   const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
-  const projects = projectsData?.data || [];
+  const projects = (projectsData?.data || []) as Project[];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -47,8 +52,8 @@ export default function NewMaterialPage() {
       }
 
       router.push("/dashboard/materials");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save material order");
       setLoading(false);
     }
   };
@@ -87,7 +92,7 @@ export default function NewMaterialPage() {
                 className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 focus:border-orange-400 outline-none transition"
               >
                 <option value="">-- เลือกโครงการ --</option>
-                {projects.map((p: any) => (
+                {projects.map((p) => (
                   <option key={p.project_id} value={p.project_id}>{p.project_id} - {p.name}</option>
                 ))}
               </select>

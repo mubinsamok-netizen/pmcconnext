@@ -1,9 +1,12 @@
 import { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
+import { verifyPasswordHash } from "@/lib/passwordHash";
 import { getAppRole } from "@/lib/roles";
-import { findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { getSupabaseTeamMemberCredentials } from "@/lib/supabaseReadModel";
 
 const COMPANY_DOMAIN = "pichayamongkolconstruction.com";
 
@@ -33,15 +36,32 @@ function createMemberId() {
 
 async function updateLoginStamp(user: TeamRecord, patch: Record<string, string>) {
   if (!user._rowIndex) return;
-  await updateMaster("Team", Number(user._rowIndex), {
-    ...patch,
-    last_login_at: new Date().toISOString(),
-  });
+  await updateMaster(
+    "Team",
+    isSupabaseBackend() ? String(user.member_id || user._rowIndex) : user._rowIndex,
+    {
+      ...patch,
+      ...(user.member_id ? { member_id: String(user.member_id) } : {}),
+      last_login_at: new Date().toISOString(),
+    },
+    user._rowIndex
+  );
 }
 
 async function getTeamUserByEmail(email: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const users = await findAllMaster("Team") as TeamRecord[];
+  return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
+}
+
+async function getCredentialsTeamUserByEmail(email: string) {
+  if (isSupabaseBackend()) {
+    const users = await getSupabaseTeamMemberCredentials() as TeamRecord[];
+    return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
+  }
+
+  await ensureMasterSchema();
+  const users = await findAllMasterRaw("Team") as TeamRecord[];
   return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
 }
 
@@ -56,7 +76,7 @@ async function upsertGoogleTeamUser({
   googleSub: string;
   avatarUrl: string;
 }) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const users = await findAllMaster("Team") as TeamRecord[];
   const normalizedEmail = normalizeEmail(email);
   const existing = users.find((user) => (
@@ -97,6 +117,7 @@ async function upsertGoogleTeamUser({
     role: "Staff",
     email: normalizedEmail,
     password: "",
+    password_hash: "",
     phone: "",
     project_ids: "",
     active: "TRUE",
@@ -145,7 +166,7 @@ export const authOptions: AuthOptions = {
         }
 
         try {
-          const user = await getTeamUserByEmail(credentials.email);
+          const user = await getCredentialsTeamUserByEmail(credentials.email);
 
           if (!user) {
             throw new Error("User not found");
@@ -155,7 +176,11 @@ export const authOptions: AuthOptions = {
             throw new Error("บัญชีนี้ถูกปิดการใช้งาน กรุณาติดต่อ Admin");
           }
 
-          if (user.password !== credentials.password) {
+          const passwordOk = isSupabaseBackend()
+            ? verifyPasswordHash(credentials.password, String(user.password_hash || ""))
+            : user.password === credentials.password;
+
+          if (!passwordOk) {
             throw new Error("Invalid password");
           }
 

@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import { buildCustomerDecisionApprovedLineFlex, parseDecisionEvidenceFiles, type CustomerDecisionRecord } from "@/lib/customerDecisions";
 import { sendLineMessages } from "@/lib/line";
-import { findAll, findAllMaster, update } from "@/lib/sheetsCrud";
+import { findAll, findAllMaster, findAllRaw, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type PublicProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -17,7 +18,7 @@ function text(value: unknown) {
 }
 
 async function getPublicContext(projectId: string, token: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const projects = await findAllMaster("Projects") as unknown as PublicProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) return { error: "ไม่พบโครงการ", status: 404 as const };
@@ -25,7 +26,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
   const rows = await findAll("Customer_Decisions", siteSheetId) as unknown as CustomerDecisionRecord[];
   const decision = rows.find((row) => row.project_id === project.project_id && row.active !== "FALSE" && text(row.approval_token) === token);
   if (!decision?._rowIndex) return { error: "ลิงก์ยืนยันไม่ถูกต้องหรือหมดอายุ", status: 404 as const };
@@ -58,6 +59,14 @@ function publicPayload(project: PublicProject, decision: CustomerDecisionRecord)
   };
 }
 
+async function getFallbackRowIndex(siteSheetId: string, decision: CustomerDecisionRecord) {
+  const numericRowIndex = Number(decision._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Customer_Decisions", siteSheetId);
+  return rawRows.find((row) => row.decision_id === decision.decision_id)?._rowIndex;
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string; token: string }> }) {
   try {
     const { projectId, token } = await params;
@@ -87,7 +96,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     };
 
     if (context.decision.decision_status !== "ยืนยันแล้ว") {
-      await update("Customer_Decisions", Number(context.decision._rowIndex), patch, context.siteSheetId);
+      await update(
+        "Customer_Decisions",
+        context.decision.decision_id || context.decision._rowIndex || "",
+        patch,
+        context.siteSheetId,
+        await getFallbackRowIndex(context.siteSheetId, context.decision)
+      );
       await writeAuditLog({
         actor: { name: decidedBy, role: "Customer" },
         projectId: context.project.project_id,

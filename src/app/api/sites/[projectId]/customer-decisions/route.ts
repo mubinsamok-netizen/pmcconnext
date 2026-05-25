@@ -18,7 +18,7 @@ import {
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -170,6 +170,24 @@ async function getRows(context: RouteContext) {
   return await findAll("Customer_Decisions", context.siteSheetId) as unknown as CustomerDecisionRecord[];
 }
 
+async function getFallbackRowIndex(context: RouteContext, decision: CustomerDecisionRecord) {
+  const numericRowIndex = Number(decision._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Customer_Decisions", context.siteSheetId);
+  return rawRows.find((row) => row.decision_id === decision.decision_id)?._rowIndex;
+}
+
+async function updateCustomerDecision(context: RouteContext, decision: CustomerDecisionRecord, patch: Record<string, string>) {
+  await update(
+    "Customer_Decisions",
+    decision.decision_id || decision._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    await getFallbackRowIndex(context, decision)
+  );
+}
+
 async function seedDefaultRows(context: RouteContext) {
   const projectId = context.project.project_id;
   await Promise.all(DEFAULT_CUSTOMER_DECISIONS.map((item, index) => insert("Customer_Decisions", {
@@ -252,7 +270,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
       evidence_files_json: safeJsonStringify(nextEvidenceFiles),
     };
 
-    await update("Customer_Decisions", Number(current._rowIndex), patch, context.siteSheetId);
+    await updateCustomerDecision(context, current, patch);
     await writeAuditLog({
       actor: actor(context),
       projectId: context.project.project_id,
@@ -304,7 +322,7 @@ async function handleDelete(body: Record<string, unknown>, context: RouteContext
   const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการลบ" }, { status: 404 });
 
-  await update("Customer_Decisions", Number(current._rowIndex), { active: "FALSE" }, context.siteSheetId);
+  await updateCustomerDecision(context, current, { active: "FALSE" });
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -412,7 +430,7 @@ async function handleNotify(req: Request, body: Record<string, unknown>, context
     approval_url: approvalUrl,
   };
 
-  await update("Customer_Decisions", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateCustomerDecision(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -435,7 +453,7 @@ async function handleIssuePdf(req: Request, body: Record<string, unknown>, conte
 
   const patch = await issueDecisionPdfFor(req, context, current, rows);
 
-  await update("Customer_Decisions", Number(current._rowIndex), patch, context.siteSheetId);
+  await updateCustomerDecision(context, current, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,

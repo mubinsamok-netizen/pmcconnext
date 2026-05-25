@@ -1,17 +1,27 @@
 "use client";
 
-import { Plus, FileText, Image as ImageIcon, MapPin } from "lucide-react";
+import { Plus, Image as ImageIcon, MapPin } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+
+type Report = {
+  report_id?: string;
+  project_id?: string;
+  date?: string;
+  weather?: string;
+  workers?: string | number;
+  work_done?: string;
+  photos_folder_id?: string;
+};
 
 export default function ReportsPage() {
   const searchParams = useSearchParams();
   const projectId = searchParams.get("project_id");
   const reportKey = projectId ? `/api/reports?project_id=${projectId}` : "/api/reports";
   const { data, error, isLoading } = useSWR(reportKey, fetcher);
-  const reports = data?.data || [];
+  const reports = (data?.data || []) as Report[];
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -36,7 +46,7 @@ export default function ReportsPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {reports.map((report: any, i: number) => (
+        {reports.map((report, i) => (
           <div key={i} className="bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition overflow-hidden">
             <div className="p-5 border-b border-gray-100">
               <div className="flex items-center justify-between mb-2">

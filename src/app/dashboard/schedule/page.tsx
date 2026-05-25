@@ -1,5 +1,6 @@
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { CalendarRange } from "lucide-react";
 import SchedulePlanner from "./SchedulePlanner";
 
@@ -18,7 +19,7 @@ export default async function SchedulePage() {
   let error: string | null = null;
 
   try {
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     projects = await findAllMaster("Projects") as unknown as Project[];
   } catch (e: unknown) {
     console.error("Failed to fetch projects for schedule:", e);

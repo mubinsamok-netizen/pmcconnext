@@ -3,6 +3,9 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { getAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
+import { hashPassword } from "@/lib/passwordHash";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { getSupabaseTeamMembers } from "@/lib/supabaseReadModel";
 import { deleteRowMaster, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
@@ -23,9 +26,14 @@ export async function GET() {
     const forbidden = await requireAdmin();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    const readSheetsTeam = async () => {
+      if (!isSupabaseBackend()) await ensureMasterSchema();
+      return await findAllMaster("Team");
+    };
 
-    const team = await findAllMaster("Team");
+    const team = isSupabaseReadEnabled("admin")
+      ? await readWithSheetsFallback("team", getSupabaseTeamMembers, readSheetsTeam)
+      : await readSheetsTeam();
     return NextResponse.json({ success: true, data: team });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -37,7 +45,7 @@ export async function POST(req: Request) {
     const forbidden = await requireAdmin();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const body = await req.json();
     const { name, email, password, phone, role, project_ids } = body;
@@ -63,6 +71,7 @@ export async function POST(req: Request) {
       name,
       email,
       password,
+      password_hash: hashPassword(String(password), memberId),
       phone: phone || "",
       role: roleValue,
       project_ids: assignedProjectIds,
@@ -94,7 +103,7 @@ export async function PUT(req: Request) {
     const forbidden = await requireAdmin();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const body = await req.json();
     const { _rowIndex, member_id, name, email, password, phone, role, project_ids } = body;
@@ -119,23 +128,29 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "อีเมลนี้มีอยู่ในระบบแล้ว" }, { status: 400 });
     }
 
-    await updateMaster("Team", Number(_rowIndex), {
+    const teamPatch = {
       member_id,
       name,
       email,
-      password,
       phone: phone || "",
       role: roleValue,
       project_ids: assignedProjectIds,
       active: "TRUE",
-    });
+    } as Record<string, string>;
+
+    if (password !== undefined) {
+      teamPatch.password = String(password || "");
+      teamPatch.password_hash = hashPassword(String(password || ""), String(member_id || email));
+    }
+
+    await updateMaster("Team", _rowIndex, teamPatch);
 
     const existingUserSites = await findAllMaster("UserSites");
     const rowsToDelete = existingUserSites
       .filter((item) => item.email === email || item.email === currentMember?.email)
-      .map((item) => Number(item._rowIndex))
+      .map((item) => item._rowIndex)
       .filter(Boolean)
-      .sort((a, b) => b - a);
+      .sort((a, b) => Number(b) - Number(a));
 
     for (const rowIndex of rowsToDelete) {
       await deleteRowMaster("UserSites", rowIndex);

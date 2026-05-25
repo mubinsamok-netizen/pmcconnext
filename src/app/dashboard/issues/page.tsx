@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, AlertTriangle, CheckCircle2, Clock, CircleDot } from "lucide-react";
+import type { ReactNode } from "react";
+import { Plus, CheckCircle2, Clock, CircleDot } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
@@ -13,24 +14,39 @@ const PRIORITY_STYLES: Record<string, string> = {
   Low: "bg-blue-50 text-blue-700 border-blue-200"
 };
 
-const STATUS_ICONS: Record<string, any> = {
+const STATUS_ICONS: Record<string, ReactNode> = {
   "Open": <CircleDot size={14} className="text-red-500" />,
   "In Progress": <Clock size={14} className="text-orange-500" />,
   "Resolved": <CheckCircle2 size={14} className="text-green-500" />
+};
+
+type Project = {
+  project_id: string;
+  name?: string;
+};
+
+type Issue = {
+  issue_id?: string;
+  project_id?: string;
+  title?: string;
+  priority?: string;
+  status?: string;
+  owner?: string;
+  due_date?: string;
 };
 
 export default function IssuesPage() {
   const searchParams = useSearchParams();
   const [selectedProject, setSelectedProject] = useState(searchParams.get("project_id") || "");
   const issueKey = selectedProject ? `/api/issues?project_id=${selectedProject}` : "/api/issues";
-  const { data: issuesData, error, isLoading, mutate } = useSWR(issueKey, fetcher);
+  const { data: issuesData, error, isLoading } = useSWR(issueKey, fetcher);
   const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   
-  const issues = issuesData?.data || [];
-  const projects = projectsData?.data || [];
+  const issues = (issuesData?.data || []) as Issue[];
+  const projects = (projectsData?.data || []) as Project[];
 
   const filteredIssues = selectedProject 
-    ? issues.filter((i: any) => i.project_id === selectedProject) 
+    ? issues.filter((i) => i.project_id === selectedProject)
     : issues;
 
   return (
@@ -57,7 +73,7 @@ export default function IssuesPage() {
           className="px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-red-200 text-sm min-w-[200px]"
         >
           <option value="">ทั้งหมด (All Projects)</option>
-          {projects.map((p: any) => (
+          {projects.map((p) => (
             <option key={p.project_id} value={p.project_id}>{p.project_id} - {p.name}</option>
           ))}
         </select>
@@ -83,7 +99,10 @@ export default function IssuesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
-              {filteredIssues.map((issue: any, i: number) => (
+              {filteredIssues.map((issue, i) => {
+                const priority = issue.priority || "Medium";
+                const status = issue.status || "Open";
+                return (
                 <tr key={i} className="hover:bg-gray-50 transition">
                   <td className="p-4">
                     <p className="font-semibold text-gray-900">{issue.title}</p>
@@ -93,14 +112,14 @@ export default function IssuesPage() {
                     {issue.project_id}
                   </td>
                   <td className="p-4">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${PRIORITY_STYLES[issue.priority] || PRIORITY_STYLES.Medium}`}>
-                      {issue.priority}
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${PRIORITY_STYLES[priority] || PRIORITY_STYLES.Medium}`}>
+                      {priority}
                     </span>
                   </td>
                   <td className="p-4">
                     <div className="flex items-center gap-1.5">
-                      {STATUS_ICONS[issue.status] || STATUS_ICONS.Open}
-                      <span className="font-medium text-gray-700">{issue.status}</span>
+                      {STATUS_ICONS[status] || STATUS_ICONS.Open}
+                      <span className="font-medium text-gray-700">{status}</span>
                     </div>
                   </td>
                   <td className="p-4 text-gray-600">
@@ -110,7 +129,8 @@ export default function IssuesPage() {
                     {issue.due_date || "-"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               
               {isLoading && (
                 <tr>

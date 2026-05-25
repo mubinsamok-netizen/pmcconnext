@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { Plus, Package, Truck, Clock, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -13,10 +14,28 @@ const STATUS_STYLES: Record<string, string> = {
   "Delivered": "bg-green-50 text-green-700 border-green-200"
 };
 
-const STATUS_ICONS: Record<string, any> = {
+const STATUS_ICONS: Record<string, ReactNode> = {
   "Pending": <Clock size={14} className="text-orange-500" />,
   "Ordered": <Truck size={14} className="text-blue-500" />,
   "Delivered": <CheckCircle2 size={14} className="text-green-500" />
+};
+
+type Project = {
+  project_id: string;
+  name?: string;
+};
+
+type Material = {
+  material_id?: string;
+  project_id?: string;
+  name?: string;
+  supplier?: string;
+  quantity?: string | number;
+  unit?: string;
+  cost?: string | number;
+  order_date?: string;
+  delivery_date?: string;
+  status?: string;
 };
 
 export default function MaterialsPage() {
@@ -26,14 +45,14 @@ export default function MaterialsPage() {
   const { data: materialsData, error, isLoading } = useSWR(materialKey, fetcher);
   const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   
-  const materials = materialsData?.data || [];
-  const projects = projectsData?.data || [];
+  const materials = (materialsData?.data || []) as Material[];
+  const projects = (projectsData?.data || []) as Project[];
 
   const filteredMaterials = selectedProject 
-    ? materials.filter((m: any) => m.project_id === selectedProject) 
+    ? materials.filter((m) => m.project_id === selectedProject)
     : materials;
 
-  const totalCost = filteredMaterials.reduce((sum: number, m: any) => sum + (parseFloat(m.cost) || 0), 0);
+  const totalCost = filteredMaterials.reduce((sum, m) => sum + (parseFloat(String(m.cost || 0)) || 0), 0);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -73,7 +92,7 @@ export default function MaterialsPage() {
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-200 transition"
             >
               <option value="">ทั้งหมด (All Projects)</option>
-              {projects.map((p: any) => (
+              {projects.map((p) => (
                 <option key={p.project_id} value={p.project_id}>{p.project_id} - {p.name}</option>
               ))}
             </select>
@@ -102,7 +121,9 @@ export default function MaterialsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
-              {filteredMaterials.map((item: any, i: number) => (
+              {filteredMaterials.map((item, i) => {
+                const status = item.status || "Pending";
+                return (
                 <tr key={i} className="hover:bg-gray-50 transition">
                   <td className="p-4">
                     <p className="font-semibold text-gray-900 line-clamp-1">{item.name}</p>
@@ -118,7 +139,7 @@ export default function MaterialsPage() {
                     {item.quantity} <span className="text-gray-500 font-normal text-xs">{item.unit}</span>
                   </td>
                   <td className="p-4 text-gray-900 font-semibold text-right">
-                    {parseFloat(item.cost || 0).toLocaleString()}
+                    {parseFloat(String(item.cost || 0)).toLocaleString()}
                   </td>
                   <td className="p-4">
                     <div className="text-xs text-gray-500 space-y-1">
@@ -127,13 +148,14 @@ export default function MaterialsPage() {
                     </div>
                   </td>
                   <td className="p-4">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${STATUS_STYLES[item.status] || STATUS_STYLES.Pending}`}>
-                      {STATUS_ICONS[item.status] || STATUS_ICONS.Pending}
-                      {item.status}
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${STATUS_STYLES[status] || STATUS_STYLES.Pending}`}>
+                      {STATUS_ICONS[status] || STATUS_ICONS.Pending}
+                      {status}
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               
               {isLoading && (
                 <tr>

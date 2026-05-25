@@ -3,8 +3,9 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import {
   buildVoApprovedLineFlex,
   numberValue,
@@ -33,7 +34,7 @@ function safeFolderName(value: string) {
 }
 
 async function getPublicContext(projectId: string, token: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const projects = await findAllMaster("Projects") as unknown as PublicProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) return { error: "ไม่พบโครงการ", status: 404 as const };
@@ -41,7 +42,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
   const [voRows, itemRows, documentRows] = await Promise.all([
     findAll("Variation_Orders", siteSheetId) as Promise<VoRecord[]>,
     findAll("VO_Items", siteSheetId) as Promise<VoItemRecord[]>,
@@ -55,6 +56,14 @@ async function getPublicContext(projectId: string, token: string) {
     .sort((a, b) => numberValue(a.item_no) - numberValue(b.item_no));
   const documents = documentRows.filter((document) => document.project_id === project.project_id && document.vo_id === vo.vo_id);
   return { project, siteSheetId, vo, items, documents };
+}
+
+async function getFallbackRowIndex(siteSheetId: string, vo: VoRecord) {
+  const numericRowIndex = Number(vo._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Variation_Orders", siteSheetId);
+  return rawRows.find((row) => row.vo_id === vo.vo_id)?._rowIndex;
 }
 
 function latestPdf(documents: SheetRecord[], type?: string) {
@@ -208,7 +217,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     };
 
     const nextVo = { ...context.vo, ...patch } as VoRecord;
-    await update("Variation_Orders", Number(context.vo._rowIndex), patch, context.siteSheetId);
+    await update(
+      "Variation_Orders",
+      context.vo.vo_id || context.vo._rowIndex || "",
+      patch,
+      context.siteSheetId,
+      await getFallbackRowIndex(context.siteSheetId, context.vo)
+    );
     const approvalDocument = await insertApprovalDocument({
       project: context.project,
       siteSheetId: context.siteSheetId,

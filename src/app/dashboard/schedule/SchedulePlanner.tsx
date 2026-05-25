@@ -46,7 +46,7 @@ type Project = {
 };
 
 type Task = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
   task_id: string;
   project_id: string;
   name: string;
@@ -75,7 +75,7 @@ type Task = {
 };
 
 type Milestone = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
   milestone_id: string;
   project_id: string;
   title: string;
@@ -123,7 +123,8 @@ type UploadPayload = {
 };
 
 type TaskForm = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
+  task_id?: string;
   name: string;
   category: string;
   assignee: string;
@@ -141,7 +142,8 @@ type TaskForm = {
 };
 
 type MilestoneForm = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
+  milestone_id?: string;
   title: string;
   date: string;
   type: string;
@@ -747,6 +749,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
     setTaskForm({
       _rowIndex: task._rowIndex,
+      task_id: task.task_id,
       name: task.name,
       category: task.category || (isHeadingTask(task) ? task.name : ""),
       assignee: task.assignee || "",
@@ -766,7 +769,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const openDateEditTask = (task: Task) => {
-    if (!task._rowIndex || isHeadingTask(task)) return;
+    if ((!task.task_id && !task._rowIndex) || isHeadingTask(task)) return;
     setMessage("");
     setDateEditTask(task);
     setDateEditForm({
@@ -776,7 +779,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const saveTaskPatch = async (task: Task, patch: TaskPatch, successMessage: string) => {
-    if (!task._rowIndex) return false;
+    if (!task.task_id && !task._rowIndex) return false;
 
     setSaving(true);
     setMessage("");
@@ -785,7 +788,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       const res = await fetch("/api/tasks", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _rowIndex: task._rowIndex, project_id: task.project_id, ...patch }),
+        body: JSON.stringify({ task_id: task.task_id, _rowIndex: task._rowIndex, project_id: task.project_id, ...patch }),
       });
 
       if (!res.ok) {
@@ -834,11 +837,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       await Promise.all(nextTasks.map((item, index) => {
-        if (!item._rowIndex || item.order_index === String(index + 1)) return Promise.resolve();
+        if ((!item.task_id && !item._rowIndex) || item.order_index === String(index + 1)) return Promise.resolve();
         return fetch("/api/tasks", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ _rowIndex: item._rowIndex, project_id: item.project_id, order_index: String(index + 1) }),
+          body: JSON.stringify({ task_id: item.task_id, _rowIndex: item._rowIndex, project_id: item.project_id, order_index: String(index + 1) }),
         }).then(async (res) => {
           if (!res.ok) {
             const json = await res.json();
@@ -892,7 +895,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       const res = await fetch("/api/tasks", {
-        method: taskForm._rowIndex ? "PUT" : "POST",
+        method: taskForm.task_id || taskForm._rowIndex ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -913,13 +916,18 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const deleteTask = async (task: Task) => {
-    if (!task._rowIndex) return;
+    if (!task.task_id && !task._rowIndex) return;
 
     setSaving(true);
     setMessage("");
 
     try {
-      const res = await fetch(`/api/tasks?_rowIndex=${task._rowIndex}&project_id=${encodeURIComponent(task.project_id)}`, {
+      const params = new URLSearchParams({
+        project_id: task.project_id,
+      });
+      if (task.task_id) params.set("task_id", task.task_id);
+      if (task._rowIndex) params.set("_rowIndex", String(task._rowIndex));
+      const res = await fetch(`/api/tasks?${params.toString()}`, {
         method: "DELETE",
       });
 
@@ -951,6 +959,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
     setMilestoneForm({
       _rowIndex: milestone._rowIndex,
+      milestone_id: milestone.milestone_id,
       title: milestone.title,
       date: milestone.date,
       type: milestone.type || "งวดงาน",
@@ -974,7 +983,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       const res = await fetch("/api/milestones", {
-        method: milestoneForm._rowIndex ? "PUT" : "POST",
+        method: milestoneForm.milestone_id || milestoneForm._rowIndex ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -995,13 +1004,18 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const deleteMilestone = async () => {
-    if (!milestoneForm._rowIndex) return;
+    if (!milestoneForm.milestone_id && !milestoneForm._rowIndex) return;
 
     setSaving(true);
     setMessage("");
 
     try {
-      const res = await fetch(`/api/milestones?_rowIndex=${milestoneForm._rowIndex}&project_id=${encodeURIComponent(selectedProject)}`, {
+      const params = new URLSearchParams({
+        project_id: selectedProject,
+      });
+      if (milestoneForm.milestone_id) params.set("milestone_id", milestoneForm.milestone_id);
+      if (milestoneForm._rowIndex) params.set("_rowIndex", String(milestoneForm._rowIndex));
+      const res = await fetch(`/api/milestones?${params.toString()}`, {
         method: "DELETE",
       });
 
@@ -1659,8 +1673,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           form={taskForm}
           saving={saving}
           onClose={() => setShowTaskForm(false)}
-          onDelete={taskForm._rowIndex ? () => {
-            const task = tasks.find((item) => item._rowIndex === taskForm._rowIndex);
+          onDelete={taskForm.task_id || taskForm._rowIndex ? () => {
+            const task = tasks.find((item) => (
+              (taskForm.task_id && item.task_id === taskForm.task_id) ||
+              (taskForm._rowIndex && item._rowIndex === taskForm._rowIndex)
+            ));
             if (task) setPendingDeleteTask(task);
           } : undefined}
           onSubmit={saveTask}
@@ -1685,7 +1702,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           form={milestoneForm}
           saving={saving}
           onClose={() => setShowMilestoneForm(false)}
-          onDelete={milestoneForm._rowIndex ? () => setMilestoneDeleteOpen(true) : undefined}
+          onDelete={milestoneForm.milestone_id || milestoneForm._rowIndex ? () => setMilestoneDeleteOpen(true) : undefined}
           onSubmit={saveMilestone}
           onChange={setMilestoneForm}
         />
@@ -2529,7 +2546,9 @@ function TaskModal({
   onChange: React.Dispatch<React.SetStateAction<TaskForm>>;
   parentOptions: Task[];
 }) {
-  const availableParents = parentOptions.filter((task) => task._rowIndex !== form._rowIndex);
+  const availableParents = parentOptions.filter((task) => (
+    task.task_id !== form.task_id && task._rowIndex !== form._rowIndex
+  ));
   const isHeadingForm = form.task_type === "heading";
   const headingSelectValue = isHeadingForm && TASK_CATEGORIES.includes(form.name) ? form.name : CUSTOM_HEADING_VALUE;
 
@@ -2537,7 +2556,7 @@ function TaskModal({
     <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl">
         <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-gray-900">{form._rowIndex ? "แก้ไขแผนงาน" : "เพิ่มแผนงาน"}</h3>
+          <h3 className="text-lg font-bold text-gray-900">{form.task_id || form._rowIndex ? "แก้ไขแผนงาน" : "เพิ่มแผนงาน"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>
@@ -2766,7 +2785,7 @@ function MilestoneModal({
     <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
         <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-gray-900">{form._rowIndex ? "แก้ไข Milestone" : "เพิ่ม Milestone"}</h3>
+          <h3 className="text-lg font-bold text-gray-900">{form.milestone_id || form._rowIndex ? "แก้ไข Milestone" : "เพิ่ม Milestone"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>

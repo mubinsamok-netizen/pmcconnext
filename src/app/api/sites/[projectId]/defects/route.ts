@@ -15,7 +15,7 @@ import {
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -101,6 +101,36 @@ function calculateRoundCounts(items: DefectItemRecord[]) {
   return { itemCount, openCount };
 }
 
+async function fallbackRowIndex(siteSheetId: string, tableName: string, keyColumn: string, keyValue: string, currentRowIndex?: string | number) {
+  const numericRowIndex = Number(currentRowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw(tableName, siteSheetId);
+  return rawRows.find((row) => row[keyColumn] === keyValue)?._rowIndex;
+}
+
+async function updateDefectRound(context: RouteContext, round: DefectRoundRecord, patch: Record<string, string | number>) {
+  const roundId = text(round.round_id);
+  await update(
+    "Defect_Rounds",
+    roundId || round._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    roundId ? await fallbackRowIndex(context.siteSheetId, "Defect_Rounds", "round_id", roundId, round._rowIndex) : round._rowIndex
+  );
+}
+
+async function updateDefectItem(context: RouteContext, item: DefectItemRecord, patch: Record<string, string | number>) {
+  const itemId = text(item.item_id);
+  await update(
+    "Defect_Items",
+    itemId || item._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    itemId ? await fallbackRowIndex(context.siteSheetId, "Defect_Items", "item_id", itemId, item._rowIndex) : item._rowIndex
+  );
+}
+
 async function getDefectData(context: RouteContext) {
   const [siteRows, auditLogs] = await Promise.all([
     findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, Record<string, string | number | undefined>[]>>,
@@ -181,10 +211,10 @@ async function attachPhotoDataUrls(photos: DefectPhotoRef[]) {
 async function updateRoundCounts(context: RouteContext, round: DefectRoundRecord, items: DefectItemRecord[]) {
   if (!round._rowIndex) return;
   const counts = calculateRoundCounts(items.filter((item) => item.round_id === round.round_id));
-  await update("Defect_Rounds", Number(round._rowIndex), {
+  await updateDefectRound(context, round, {
     item_count: counts.itemCount,
     open_count: counts.openCount,
-  }, context.siteSheetId);
+  });
 }
 
 async function handleCreateRound(body: Record<string, unknown>, context: RouteContext) {
@@ -358,7 +388,7 @@ async function handleIssuePdf(_body: Record<string, unknown>, context: RouteCont
   const uploaded = await uploadFile(`${documentNo}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || roundFolderId);
   const pdfUrl = uploaded.webViewLink || uploaded.webContentLink || "";
 
-  await update("Defect_Rounds", Number(round._rowIndex), {
+  await updateDefectRound(context, round, {
     document_no: documentNo,
     status: "issued",
     pdf_file_id: uploaded.id || "",
@@ -367,7 +397,7 @@ async function handleIssuePdf(_body: Record<string, unknown>, context: RouteCont
     issued_by_name: context.session.user.name || "",
     issued_by_email: context.session.user.email || "",
     snapshot_json: safeJsonStringify(stripSnapshotDataUrls(snapshot)),
-  }, context.siteSheetId);
+  });
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -420,14 +450,14 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   }, context.siteSheetId)));
 
   const lockedAt = new Date().toISOString();
-  await update("Defect_Rounds", Number(round._rowIndex), {
+  await updateDefectRound(context, round, {
     status: "acknowledged",
     acknowledged_by: acknowledgedBy,
     acknowledged_channel: channel,
     acknowledged_date: acknowledgedDate,
     acknowledgement_note: notes,
     locked_at: lockedAt,
-  }, context.siteSheetId);
+  });
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -486,7 +516,7 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
     line_group_id: targetLineGroupId,
     line_message: lineMessage,
   };
-  await update("Defect_Rounds", Number(round._rowIndex), patch, context.siteSheetId);
+  await updateDefectRound(context, round, patch);
   await writeAuditLog({
     actor: actor(context),
     projectId: context.project.project_id,
@@ -519,7 +549,7 @@ async function handleUpdateItemStatus(body: Record<string, unknown>, context: Ro
     after_photos_json: safeJsonStringify([...currentAfterPhotos, ...uploadedAfterPhotos]),
   };
 
-  await update("Defect_Items", Number(item._rowIndex), patch, context.siteSheetId);
+  await updateDefectItem(context, item, patch);
   const nextItems = data.items.map((row) => row.item_id === itemId ? { ...row, ...patch } : row);
   await updateRoundCounts(context, round, nextItems);
   await writeAuditLog({

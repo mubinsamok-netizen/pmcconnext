@@ -3,7 +3,7 @@ import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { createNotification } from "@/lib/notifications";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAllBatch, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
 import { toAppRole } from "@/lib/roles";
@@ -61,6 +61,7 @@ type UploadedVoFile = {
   file_url: string;
   mime_type: string;
 };
+type SheetPatch = Record<string, string | number | boolean | null | undefined>;
 
 const VO_LINE_TEST_GROUP_ID = process.env.VO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
 
@@ -110,6 +111,36 @@ function getDateValue(value?: unknown) {
 
 function parseRows<T>(rows: unknown) {
   return (Array.isArray(rows) ? rows : []) as T[];
+}
+
+async function fallbackRowIndex(context: RouteContext, tableName: string, keyColumn: string, keyValue: string, currentRowIndex?: string | number) {
+  const numericRowIndex = Number(currentRowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw(tableName, context.siteSheetId);
+  return rawRows.find((row) => row[keyColumn] === keyValue)?._rowIndex;
+}
+
+async function updateVo(context: RouteContext, vo: VoRecord, patch: SheetPatch) {
+  const voId = text(vo.vo_id);
+  await update(
+    "Variation_Orders",
+    voId || vo._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    voId ? await fallbackRowIndex(context, "Variation_Orders", "vo_id", voId, vo._rowIndex) : vo._rowIndex
+  );
+}
+
+async function updateTaskFromVo(context: RouteContext, task: SheetRecord, patch: SheetPatch) {
+  const taskId = text(task.task_id);
+  await update(
+    "Tasks",
+    taskId || task._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    taskId ? await fallbackRowIndex(context, "Tasks", "task_id", taskId, task._rowIndex) : task._rowIndex
+  );
 }
 
 function decodeDataUrl(dataUrl?: string) {
@@ -529,10 +560,10 @@ async function handleSubmitVo(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "ส่งอนุมัติได้เฉพาะสถานะร่าง" }, { status: 400 });
   }
 
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: "pending_approval",
     notes: String(checklist.pm_remarks || vo.notes || ""),
-  }, context.siteSheetId);
+  });
   await notifyRole(context, "client", "vo_pending_approval", `รออนุมัติ ${voId}`, `${vo.title || "งานเพิ่ม-ลด"} มูลค่า ${formatMoney(vo.grand_total)} บาท`);
   await writeAuditLog({
     actor: userActor(context),
@@ -611,7 +642,7 @@ async function handleSendApproval(body: Record<string, unknown>, context: RouteC
     line_group_id: targetLineGroupId,
     line_message: lineMessage,
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
   const nextVo = { ...vo, ...patch } as VoRecord;
   await notifyRole(context, "client", "vo_pending_approval", `รออนุมัติ ${voId}`, `${vo.title || "งานเพิ่ม-ลด"} มูลค่า ${formatMoney(vo.grand_total)} บาท`);
   await writeAuditLog({
@@ -678,7 +709,7 @@ async function handleApproveOnBehalf(body: Record<string, unknown>, context: Rou
     evidence_json: safeJsonStringify(evidencePayload),
     task_plan_status: "pending_plan",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
 
   const nextVo = { ...vo, ...patch } as VoRecord;
   const voItems = getVoItems(items, voId);
@@ -735,10 +766,10 @@ async function handleClientDecision(body: Record<string, unknown>, context: Rout
       status: "rejected",
       rejection_json: safeJsonStringify(rejectionPayload),
     } as VoRecord;
-    await update("Variation_Orders", Number(vo._rowIndex), {
+    await updateVo(context, vo, {
       status: "rejected",
       rejection_json: nextVo.rejection_json,
-    }, context.siteSheetId);
+    });
     await notifyRole(context, "Project Manager", "vo_rejected", `ลูกค้าปฏิเสธ ${voId}`, rejectionPayload.reason);
     await writeAuditLog({
       actor: userActor(context),
@@ -770,7 +801,7 @@ async function handleClientDecision(body: Record<string, unknown>, context: Rout
     evidence_json: safeJsonStringify(evidencePayload),
     task_plan_status: "pending_plan",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
 
   const nextVo = { ...vo, ...patch } as VoRecord;
   const voItems = getVoItems(items, voId);
@@ -854,12 +885,12 @@ async function handleAddToPlan(body: Record<string, unknown>, context: RouteCont
     const label = voType === "VO-" ? "ลดตาม" : "สับเปลี่ยนตาม";
     const existingNotes = String(task.notes || "").trim();
     const nextNote = [existingNotes, `${label} ${vo.vo_id}: ${vo.title || ""}`].filter(Boolean).join("\n");
-    await update("Tasks", Number(task._rowIndex), {
+    await updateTaskFromVo(context, task, {
       notes: nextNote,
       linked_vo_id: vo.vo_id,
       vo_badge: voType === "VO-" ? "งานลด" : "สับเปลี่ยน",
       payment_note: `อ้างอิง ${vo.vo_id}`,
-    }, context.siteSheetId);
+    });
   }
 
   await insert("VO_Task_Links", {
@@ -873,10 +904,10 @@ async function handleAddToPlan(body: Record<string, unknown>, context: RouteCont
     created_by_name: context.session.user.name || "",
     created_by_email: context.session.user.email || "",
   }, context.siteSheetId);
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     task_plan_status: "planned",
     linked_tasks_json: safeJsonStringify([linkedTaskId]),
-  }, context.siteSheetId);
+  });
   await notifyRole(context, "Engineer", "vo_task_planned", `งานจาก ${vo.vo_id} เข้าแผนแล้ว`, `${vo.title || "งานเพิ่ม-ลด"} อยู่ในแผนงานแล้ว`);
   await writeAuditLog({
     actor: userActor(context),
@@ -918,7 +949,7 @@ async function handleCreateInvoice(body: Record<string, unknown>, context: Route
     balance: numberValue(vo.grand_total) - numberValue(vo.amount_paid),
     payment_status: "waiting_payment",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
   await insert("VO_Finance_Ledger", {
     ledger_id: makeId("VFL"),
     vo_id: vo.vo_id,
@@ -990,12 +1021,12 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     recorded_by_name: context.session.user.name || "",
     recorded_by_email: context.session.user.email || "",
   }, context.siteSheetId);
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: nextStatus,
     amount_paid: cumulativePaid,
     balance,
     payment_status: balance <= 0 ? "paid" : "partial_payment",
-  }, context.siteSheetId);
+  });
   await insert("VO_Finance_Ledger", {
     ledger_id: makeId("VFL"),
     vo_id: vo.vo_id,
@@ -1041,10 +1072,10 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     const linkedIds = new Set(taskLinks.filter((link) => link.vo_id === vo.vo_id).map((link) => String(link.task_id || "")));
     await Promise.all(tasks
       .filter((task) => task._rowIndex && linkedIds.has(String(task.task_id || "")))
-      .map((task) => update("Tasks", Number(task._rowIndex), {
+      .map((task) => updateTaskFromVo(context, task, {
         vo_badge: "ชำระแล้ว",
         payment_note: `ชำระครบตาม ${vo.vo_id}`,
-      }, context.siteSheetId)));
+      })));
     clearanceHtml = buildVoClearanceReportHtml({ vo: nextVo, items: voItems, project: context.project, taskCount: linkedIds.size });
     await insertVoDocument({
       context,
@@ -1089,10 +1120,10 @@ async function handleCancelVo(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "VO นี้วางบิล/ชำระเงินแล้ว ต้อง void invoice ก่อนยกเลิก" }, { status: 400 });
   }
 
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: "cancelled",
     notes: [vo.notes, `ยกเลิก: ${reason}`].filter(Boolean).join("\n"),
-  }, context.siteSheetId);
+  });
   await writeAuditLog({
     actor: userActor(context),
     projectId: context.project.project_id,
@@ -1124,7 +1155,7 @@ async function handleExpiryCheck(_body: Record<string, unknown>, context: RouteC
     const daysUntilDeadline = daysBetweenDates(today, deadline);
 
     if (daysPastDeadline > 0) {
-      await update("Variation_Orders", Number(vo._rowIndex), { status: "expired" }, context.siteSheetId);
+      await updateVo(context, vo, { status: "expired" });
       expired.push({ vo_id: vo.vo_id, days_expired: daysPastDeadline, title: String(vo.title || "") });
       await writeAuditLog({
         actor: userActor(context),
@@ -1174,10 +1205,10 @@ async function handleOverdueCheck(_body: Record<string, unknown>, context: Route
     if (dayDiff < 0 && balance > 0) {
       const daysOverdue = Math.abs(dayDiff);
       if (status !== "overdue") {
-        await update("Variation_Orders", Number(vo._rowIndex), {
+        await updateVo(context, vo, {
           status: "overdue",
           payment_status: "overdue",
-        }, context.siteSheetId);
+        });
         await writeAuditLog({
           actor: userActor(context),
           projectId: context.project.project_id,

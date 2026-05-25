@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/authOptions";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type ContactLog = {
   round: number;
@@ -51,7 +52,7 @@ export async function GET(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const url = new URL(req.url);
     const includeClosed = url.searchParams.get("include_closed") === "true";
     const customers = await findAllMaster("Customers");
@@ -59,7 +60,7 @@ export async function GET(req: Request) {
       .filter((customer) => includeClosed || customer.active !== "FALSE")
       .map((customer) => ({
         ...customer,
-        contact_logs: parseContactLogs(customer.contact_logs_json),
+        contact_logs: parseContactLogs(String(customer.contact_logs_json || "")),
       }));
 
     return NextResponse.json({ success: true, data });
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const body = await req.json();
     const fullName = String(body.full_name || "").trim();
     const phone = String(body.phone || "").trim();
@@ -117,7 +118,7 @@ export async function PUT(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const body = await req.json();
     const id = String(body.id || "").trim();
 
@@ -141,7 +142,7 @@ export async function PUT(req: Request) {
         return NextResponse.json({ error: "กรุณาใส่บันทึกการติดต่อ" }, { status: 400 });
       }
 
-      const logs = parseContactLogs(current.contact_logs_json);
+      const logs = parseContactLogs(String(current.contact_logs_json || ""));
       const date = body.date || new Date().toISOString().slice(0, 10);
       logs.push({
         round: logs.length + 1,
@@ -189,7 +190,8 @@ export async function PUT(req: Request) {
       });
     }
 
-    await updateMaster("Customers", Number(current._rowIndex), patch);
+    const rowKey = isSupabaseBackend() ? id : current._rowIndex;
+    await updateMaster("Customers", rowKey, { ...patch, id }, current._rowIndex);
     return NextResponse.json({ success: true, data: { ...current, ...patch } });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

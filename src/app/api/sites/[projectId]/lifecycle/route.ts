@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { findAll, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
 const lifecycleFields = [
@@ -22,6 +22,16 @@ const lifecycleFields = [
   "construction_end_date",
   "notes",
 ];
+
+type LifecycleRow = Awaited<ReturnType<typeof findAll>>[number];
+
+async function getFallbackRowIndex(siteSheetId: string, lifecycleId: string, current?: LifecycleRow) {
+  const currentRowIndex = Number(current?._rowIndex);
+  if (Number.isFinite(currentRowIndex)) return currentRowIndex;
+
+  const rawRows = await findAllRaw("Project_Lifecycle", siteSheetId);
+  return rawRows.find((row) => row.lifecycle_id === lifecycleId)?._rowIndex;
+}
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
@@ -54,7 +64,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ projectI
     });
 
     if (current?._rowIndex) {
-      await update("Project_Lifecycle", Number(current._rowIndex), patch, context.siteSheetId);
+      const lifecycleId = String(current.lifecycle_id || "");
+      const fallbackRowIndex = lifecycleId ? await getFallbackRowIndex(context.siteSheetId, lifecycleId, current) : current._rowIndex;
+      await update("Project_Lifecycle", lifecycleId || current._rowIndex, patch, context.siteSheetId, fallbackRowIndex);
       return NextResponse.json({ success: true, data: { ...current, ...patch } });
     }
 

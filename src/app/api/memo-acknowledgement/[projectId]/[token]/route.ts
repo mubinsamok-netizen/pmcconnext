@@ -3,8 +3,9 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import {
   buildMemoAcknowledgedLineFlex,
   buildMemoPdfHtml,
@@ -67,7 +68,7 @@ async function prepareMemoPdfAssets(memo: MemoRecord, evidence: MemoEvidenceReco
 }
 
 async function getPublicContext(projectId: string, token: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const projects = await findAllMaster("Projects") as unknown as PublicProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) return { error: "ไม่พบโครงการ", status: 404 as const };
@@ -75,7 +76,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
   const [memos, evidence] = await Promise.all([
     findAll("Site_Memos", siteSheetId) as unknown as Promise<MemoRecord[]>,
     findAll("Site_Memo_Evidence", siteSheetId) as unknown as Promise<MemoEvidenceRecord[]>,
@@ -90,6 +91,14 @@ async function getPublicContext(projectId: string, token: string) {
     memos: memos.filter((row) => row.project_id === project.project_id),
     evidence: evidence.filter((row) => row.project_id === project.project_id),
   };
+}
+
+async function getFallbackRowIndex(siteSheetId: string, memo: MemoRecord) {
+  const numericRowIndex = Number(memo._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("Site_Memos", siteSheetId);
+  return rawRows.find((row) => row.memo_id === memo.memo_id)?._rowIndex;
 }
 
 async function getMemoFolder(project: PublicProject, memoId: string) {
@@ -211,7 +220,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       refreshedPdf = await refreshMemoPdf(req, context, nextMemo, nextEvidence);
       nextMemo = { ...nextMemo, ...refreshedPdf };
 
-      await update("Site_Memos", Number(context.memo._rowIndex), { ...patch, ...refreshedPdf }, context.siteSheetId);
+      await update(
+        "Site_Memos",
+        context.memo.memo_id || context.memo._rowIndex || "",
+        { ...patch, ...refreshedPdf },
+        context.siteSheetId,
+        await getFallbackRowIndex(context.siteSheetId, context.memo)
+      );
       await writeAuditLog({
         actor: { name: acknowledgedBy, role: "Customer" },
         projectId: context.project.project_id,

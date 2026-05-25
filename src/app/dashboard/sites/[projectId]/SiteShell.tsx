@@ -8,7 +8,6 @@ export type SitePageProject = {
 };
 
 export function SiteShell({
-  project,
   eyebrow,
   title,
   description,

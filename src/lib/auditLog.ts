@@ -30,7 +30,7 @@ function toJson(value: unknown) {
 export async function writeAuditLog(input: AuditLogInput) {
   const timestamp = new Date().toISOString();
   await insertMaster("AuditLogs", {
-    log_id: `LOG-${Date.now()}`,
+    log_id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
     timestamp,
     actor_email: input.actor?.email || "",
     actor_name: input.actor?.name || "",

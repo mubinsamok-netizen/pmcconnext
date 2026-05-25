@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Plus, MoreHorizontal, Clock, CalendarDays, User } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Plus, MoreHorizontal, CalendarDays } from "lucide-react";
 
 const COLUMNS = ["To Do", "In Progress", "Review", "Done"];
 
@@ -12,13 +12,33 @@ const STATUS_COLORS: Record<string, string> = {
   "Done": "bg-green-100 text-green-700"
 };
 
-export default function TaskBoard({ projects, team }: { projects: any[], team: any[] }) {
+type Project = {
+  project_id: string;
+  name?: string;
+};
+
+type TeamMember = {
+  member_id: string;
+  name?: string;
+};
+
+type Task = {
+  _rowIndex?: number | string;
+  task_id: string;
+  project_id: string;
+  name?: string;
+  assignee?: string;
+  end?: string;
+  status?: string;
+};
+
+export default function TaskBoard({ projects, team }: { projects: Project[], team: TeamMember[] }) {
   const [selectedProject, setSelectedProject] = useState(projects[0]?.project_id || "");
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   
   // Drag state
-  const [draggedTask, setDraggedTask] = useState<any | null>(null);
+  const [draggedTask, setDraggedTask] = useState<Task | null>(null);
 
   // New task modal state
   const [showNewTask, setShowNewTask] = useState(false);
@@ -26,13 +46,7 @@ export default function TaskBoard({ projects, team }: { projects: any[], team: a
   const [newTaskAssignee, setNewTaskAssignee] = useState("");
   const [newTaskEnd, setNewTaskEnd] = useState("");
 
-  useEffect(() => {
-    if (selectedProject) {
-      fetchTasks(selectedProject);
-    }
-  }, [selectedProject]);
-
-  const fetchTasks = async (projectId: string) => {
+  const fetchTasks = useCallback(async (projectId: string) => {
     setLoading(true);
     try {
       const res = await fetch(`/api/tasks?project_id=${projectId}`);
@@ -45,9 +59,15 @@ export default function TaskBoard({ projects, team }: { projects: any[], team: a
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleDragStart = (e: React.DragEvent, task: any) => {
+  useEffect(() => {
+    if (selectedProject) {
+      void Promise.resolve().then(() => fetchTasks(selectedProject));
+    }
+  }, [fetchTasks, selectedProject]);
+
+  const handleDragStart = (e: React.DragEvent, task: Task) => {
     setDraggedTask(task);
     // Needed for Firefox
     e.dataTransfer.setData("text/plain", task.task_id);
@@ -74,6 +94,7 @@ export default function TaskBoard({ projects, team }: { projects: any[], team: a
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          task_id: draggedTask.task_id,
           _rowIndex: draggedTask._rowIndex,
           project_id: draggedTask.project_id,
           status
@@ -116,7 +137,7 @@ export default function TaskBoard({ projects, team }: { projects: any[], team: a
         body: JSON.stringify(newTask)
       });
       if (res.ok) {
-        // Refetch to get real _rowIndex and ID
+        // Refetch to get the persisted task ID and legacy row index.
         fetchTasks(selectedProject);
       }
     } catch (err) {

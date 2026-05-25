@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import { sendLineMessages } from "@/lib/line";
 import { buildQcApprovedLineFlex, getQcApprovalReadiness, parseQcEvidence, parseQcItems, type QcChecklistRecord } from "@/lib/qcChecklists";
-import { findAll, findAllMaster, update } from "@/lib/sheetsCrud";
+import { findAll, findAllMaster, findAllRaw, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type PublicProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -17,7 +18,7 @@ function text(value: unknown) {
 }
 
 async function getPublicContext(projectId: string, token: string) {
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const projects = await findAllMaster("Projects") as unknown as PublicProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) return { error: "ไม่พบโครงการ", status: 404 as const };
@@ -25,7 +26,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
   const rows = await findAll("QC_Checklists", siteSheetId) as unknown as QcChecklistRecord[];
   const checklist = rows.find((row) => row.project_id === project.project_id && row.active !== "FALSE" && text(row.approval_token) === token);
   if (!checklist?._rowIndex) return { error: "ลิงก์อนุมัติไม่ถูกต้องหรือหมดอายุ", status: 404 as const };
@@ -65,6 +66,14 @@ function publicPayload(project: PublicProject, checklist: QcChecklistRecord) {
   };
 }
 
+async function getFallbackRowIndex(siteSheetId: string, checklist: QcChecklistRecord) {
+  const numericRowIndex = Number(checklist._rowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw("QC_Checklists", siteSheetId);
+  return rawRows.find((row) => row.qc_id === checklist.qc_id)?._rowIndex;
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string; token: string }> }) {
   try {
     const { projectId, token } = await params;
@@ -96,7 +105,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     };
 
     if (context.checklist.approval_status !== "approved") {
-      await update("QC_Checklists", Number(context.checklist._rowIndex), patch, context.siteSheetId);
+      await update(
+        "QC_Checklists",
+        context.checklist.qc_id || context.checklist._rowIndex || "",
+        patch,
+        context.siteSheetId,
+        await getFallbackRowIndex(context.siteSheetId, context.checklist)
+      );
       await writeAuditLog({
         actor: { name: approvedBy, role: "Customer" },
         projectId: context.project.project_id,

@@ -8,6 +8,7 @@ import { isAdminRole } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +73,7 @@ export default async function SalesCustomerDetailPage({ params }: { params: Prom
 
   const isAdmin = isAdminRole(session?.user?.role);
 
-  await ensureMasterSchema();
+  if (!isSupabaseBackend()) await ensureMasterSchema();
   const [customers, projects] = await Promise.all([
     findAllMaster("Customers") as unknown as Promise<Customer[]>,
     findAllMaster("Projects") as unknown as Promise<Project[]>,

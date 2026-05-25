@@ -34,6 +34,37 @@ export async function sendLineMessages(messages: LineMessage[], to: string = LIN
   return response.json();
 }
 
+export async function replyLineMessages(messages: LineMessage[], replyToken: string) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN) {
+    throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
+  }
+
+  if (!replyToken) {
+    throw new Error("LINE reply token is not configured");
+  }
+
+  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    console.error("LINE Reply API Error:", errorData);
+    const detail = errorData ? ` ${JSON.stringify(errorData)}` : "";
+    throw new Error(`Failed to reply LINE message: ${response.status} ${response.statusText}.${detail}`);
+  }
+
+  return response.json();
+}
+
 export async function sendLineNotification(message: string, to: string = LINE_GROUP_ID) {
   try {
     return await sendLineMessages([{ type: "text", text: message }], to);

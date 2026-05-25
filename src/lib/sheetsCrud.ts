@@ -1,5 +1,14 @@
 import { MASTER_SHEET_ID, sheets, SHEET_ID } from "./google";
 import { MASTER_SCHEMA, SITE_SCHEMA } from "./sheetsSetup";
+import {
+  deleteSupabase,
+  findAllSupabase,
+  getSupabaseMasterConfig,
+  getSupabaseSiteConfig,
+  insertSupabase,
+  updateSupabase,
+} from "./supabaseCrud";
+import { isSupabaseBackend, shouldFallbackToSheets } from "./supabaseRest";
 
 // Convert A1 notation column index (0-based) to Letter
 const colToLetter = (col: number) => {
@@ -16,7 +25,8 @@ type SheetValue = string | number | boolean | null | undefined;
 type SiteTable = keyof typeof SITE_SCHEMA;
 type MasterTable = keyof typeof MASTER_SCHEMA;
 type SheetSchema = Record<string, readonly string[]>;
-type SheetRow = { _rowIndex: number } & Record<string, string>;
+type RowKey = number | string;
+type SheetRow = { _rowIndex: number | string } & Record<string, string | number | undefined>;
 
 const MASTER_READ_CACHE_TTL_MS = 10 * 60 * 1000;
 const MASTER_READ_STALE_TTL_MS = 60 * 60 * 1000;
@@ -97,6 +107,10 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string) {
 
 export async function findAllRaw(tableName: string, spreadsheetId: string = SHEET_ID) {
   return findAllFromSheet(spreadsheetId, tableName);
+}
+
+export async function findAllMasterRaw(tableName: MasterTable) {
+  return findAllFromSheet(MASTER_SHEET_ID, String(tableName));
 }
 
 async function findAllFromSiteCache(spreadsheetId: string, tableName: string) {
@@ -256,7 +270,26 @@ async function deleteRowFromSheet(spreadsheetId: string, tableName: string, rowI
   }
 }
 
+function shouldUseSupabase() {
+  return isSupabaseBackend();
+}
+
+function warnSupabaseFallback(operation: string, error: unknown) {
+  if (!shouldFallbackToSheets()) return;
+  console.warn(`Supabase ${operation} failed. Falling back to Google Sheets.`, error);
+}
+
 export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID) {
+  const supabaseConfig = getSupabaseSiteConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await findAllSupabase(supabaseConfig);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`read ${String(tableName)}`, error);
+    }
+  }
+
   return findAllFromSiteCache(spreadsheetId, String(tableName));
 }
 
@@ -268,6 +301,24 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
   const now = Date.now();
 
   uniqueTableNames.forEach((tableName) => {
+    const supabaseConfig = getSupabaseSiteConfig(tableName);
+    if (shouldUseSupabase() && supabaseConfig) {
+      pendingPromises.push(
+        findAllSupabase(supabaseConfig)
+          .then((rows) => {
+            result[tableName as SiteTable] = rows;
+          })
+          .catch((error) => {
+            if (!shouldFallbackToSheets()) throw error;
+            warnSupabaseFallback(`batch read ${tableName}`, error);
+            return findAllFromSiteCache(spreadsheetId, tableName).then((rows) => {
+              result[tableName as SiteTable] = rows;
+            });
+          })
+      );
+      return;
+    }
+
     const cacheKey = getReadCacheKey(spreadsheetId, tableName);
     const cached = siteReadCache.get(cacheKey);
 
@@ -344,6 +395,16 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
 }
 
 export async function findAllMaster(tableName: MasterTable) {
+  const supabaseConfig = getSupabaseMasterConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await findAllSupabase(supabaseConfig);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`read ${String(tableName)}`, error);
+    }
+  }
+
   const cacheKey = `${MASTER_SHEET_ID}:${String(tableName)}`;
   const cached = masterReadCache.get(cacheKey);
   const now = Date.now();
@@ -390,37 +451,136 @@ export async function findAllMaster(tableName: MasterTable) {
 }
 
 export async function insert(tableName: SiteTable, data: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
+  const supabaseConfig = getSupabaseSiteConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await insertSupabase(supabaseConfig, data);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`insert ${String(tableName)}`, error);
+    }
+  }
+
   const result = await insertToSheet(spreadsheetId, SITE_SCHEMA, String(tableName), data);
   clearSiteReadCache(spreadsheetId, String(tableName));
   return result;
 }
 
 export async function insertMaster(tableName: MasterTable, data: Record<string, SheetValue>) {
+  const supabaseConfig = getSupabaseMasterConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await insertSupabase(supabaseConfig, data);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`insert ${String(tableName)}`, error);
+    }
+  }
+
   const result = await insertToSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), data);
   clearMasterReadCache(tableName);
   return result;
 }
 
-export async function update(tableName: SiteTable, rowIndex: number, patch: Record<string, SheetValue>, spreadsheetId: string = SHEET_ID) {
-  const result = await updateInSheet(spreadsheetId, SITE_SCHEMA, String(tableName), rowIndex, patch);
+export async function update(
+  tableName: SiteTable,
+  rowIndex: RowKey,
+  patch: Record<string, SheetValue>,
+  spreadsheetId: string = SHEET_ID,
+  fallbackRowIndex?: RowKey
+) {
+  const supabaseConfig = getSupabaseSiteConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await updateSupabase(supabaseConfig, rowIndex, patch);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`update ${String(tableName)}`, error);
+    }
+  }
+
+  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  if (!Number.isFinite(numericRowIndex)) {
+    throw new Error(`Google Sheets update for ${String(tableName)} requires a numeric row index`);
+  }
+
+  const result = await updateInSheet(spreadsheetId, SITE_SCHEMA, String(tableName), numericRowIndex, patch);
   clearSiteReadCache(spreadsheetId, String(tableName));
   return result;
 }
 
-export async function updateMaster(tableName: MasterTable, rowIndex: number, patch: Record<string, SheetValue>) {
-  const result = await updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), rowIndex, patch);
+export async function updateMaster(
+  tableName: MasterTable,
+  rowIndex: RowKey,
+  patch: Record<string, SheetValue>,
+  fallbackRowIndex?: RowKey
+) {
+  const supabaseConfig = getSupabaseMasterConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await updateSupabase(supabaseConfig, rowIndex, patch);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`update ${String(tableName)}`, error);
+    }
+  }
+
+  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  if (!Number.isFinite(numericRowIndex)) {
+    throw new Error(`Google Sheets update for ${String(tableName)} requires a numeric row index`);
+  }
+
+  const result = await updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), numericRowIndex, patch);
   clearMasterReadCache(tableName);
   return result;
 }
 
-export async function deleteRow(tableName: SiteTable, rowIndex: number, spreadsheetId: string = SHEET_ID) {
-  const result = await deleteRowFromSheet(spreadsheetId, String(tableName), rowIndex);
+export async function deleteRow(
+  tableName: SiteTable,
+  rowIndex: RowKey,
+  spreadsheetId: string = SHEET_ID,
+  fallbackRowIndex?: RowKey
+) {
+  const supabaseConfig = getSupabaseSiteConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await deleteSupabase(supabaseConfig, rowIndex);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`delete ${String(tableName)}`, error);
+    }
+  }
+
+  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  if (!Number.isFinite(numericRowIndex)) {
+    throw new Error(`Google Sheets delete for ${String(tableName)} requires a numeric row index`);
+  }
+
+  const result = await deleteRowFromSheet(spreadsheetId, String(tableName), numericRowIndex);
   clearSiteReadCache(spreadsheetId, String(tableName));
   return result;
 }
 
-export async function deleteRowMaster(tableName: MasterTable, rowIndex: number) {
-  const result = await deleteRowFromSheet(MASTER_SHEET_ID, String(tableName), rowIndex);
+export async function deleteRowMaster(tableName: MasterTable, rowIndex: RowKey, fallbackRowIndex?: RowKey) {
+  const supabaseConfig = getSupabaseMasterConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      return await deleteSupabase(supabaseConfig, rowIndex);
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`delete ${String(tableName)}`, error);
+      if (fallbackRowIndex === undefined) {
+        throw error;
+      }
+    }
+  }
+
+  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  if (!Number.isFinite(numericRowIndex)) {
+    throw new Error(`Google Sheets delete for ${String(tableName)} requires a numeric row index`);
+  }
+
+  const result = await deleteRowFromSheet(MASTER_SHEET_ID, String(tableName), numericRowIndex);
   clearMasterReadCache(tableName);
   return result;
 }

@@ -611,6 +611,7 @@ function CreateSection({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ApprovalSection({
   vo,
   evidence,
@@ -882,6 +883,7 @@ function PlanSection({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FinanceSection({
   vo,
   invoice,
@@ -1191,6 +1193,7 @@ function HistoryPrintSection({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Bar({ label, value, max, className }: { label: string; value: number; max: number; className: string }) {
   const width = Math.max(2, Math.round((value / max) * 100));
   return (

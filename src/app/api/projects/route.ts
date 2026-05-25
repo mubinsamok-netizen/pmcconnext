@@ -5,6 +5,8 @@ import { filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
@@ -255,14 +257,21 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const mode = searchParams.get("mode");
-    await ensureMasterSchema();
 
     const session = await getServerSession(authOptions);
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const projects = await findAllMaster("Projects");
+    const readSheetsProjects = async () => {
+      await ensureMasterSchema();
+      return await findAllMaster("Projects");
+    };
+
+    const shouldReadSupabase = mode === "basic" && isSupabaseReadEnabled("projects");
+    const projects = shouldReadSupabase
+      ? await readWithSheetsFallback("projects", getSupabaseProjects, readSheetsProjects)
+      : await readSheetsProjects();
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
     if (mode === "basic") {
@@ -281,7 +290,7 @@ export async function POST(req: Request) {
     const forbidden = await requireProjectManagementAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const { payload: body, coverFile } = await readProjectPayload(req);
     const {
@@ -351,7 +360,7 @@ export async function POST(req: Request) {
         throw error;
       }
     } else {
-      await ensureSchema(siteSheetId);
+      if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
     }
 
     let coverFileId = "";
@@ -409,10 +418,12 @@ export async function POST(req: Request) {
         const customers = await findAllMaster("Customers");
         const customer = customers.find((item) => item.id === sales_customer_id);
         if (customer?._rowIndex) {
-          await updateMaster("Customers", Number(customer._rowIndex), {
+          const customerRowKey = isSupabaseBackend() ? sales_customer_id : customer._rowIndex;
+          await updateMaster("Customers", customerRowKey, {
             project_id,
             status: "deposited",
-          });
+            id: sales_customer_id,
+          }, customer._rowIndex);
         }
       } catch (error: unknown) {
         console.warn(`Failed to link Sales CRM customer ${sales_customer_id} to ${project_id}:`, error);
@@ -431,7 +442,7 @@ export async function PUT(req: Request) {
     const forbidden = await requireProjectManagementAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const { payload: body, coverFile } = await readProjectPayload(req);
     const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
@@ -447,9 +458,9 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    const value = (key: string, fallback = "") => {
+    const value = (key: string, fallback: unknown = "") => {
       const nextValue = body[key];
-      return typeof nextValue === "string" ? nextValue : fallback;
+      return typeof nextValue === "string" ? nextValue : String(fallback || "");
     };
 
     let driveFolderId = value("drive_folder_id", current.drive_folder_id || "").trim();
@@ -471,7 +482,7 @@ export async function PUT(req: Request) {
     }
 
     if (siteSheetId && siteSheetId !== current.site_sheet_id) {
-      await ensureSchema(siteSheetId);
+      if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
     }
 
     if (driveFolderId === DRIVE_ROOT_FOLDER_ID) {
@@ -537,7 +548,7 @@ export async function PUT(req: Request) {
       line_notify_enabled: value("line_notify_enabled", current.line_notify_enabled || "TRUE"),
     };
 
-    await updateMaster("Projects", Number(current._rowIndex), patch);
+    await updateMaster("Projects", current._rowIndex, patch);
 
     return NextResponse.json({
       success: true,
@@ -555,7 +566,7 @@ export async function DELETE(req: Request) {
     const forbidden = await requireProjectManagementAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
 
     const body = await req.json();
     const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
@@ -571,7 +582,7 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    await updateMaster("Projects", Number(current._rowIndex), { active: "FALSE" });
+    await updateMaster("Projects", current._rowIndex, { active: "FALSE" });
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {

@@ -8,6 +8,7 @@ import { createPdfReportFile } from "@/lib/reportPdf";
 import { findAll, findAllBatch, insert } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type SheetRecord = Record<string, string | number | undefined>;
 type ProjectContext = MasterProject & { line_group_id?: string; line_group_name?: string; line_notify_enabled?: string };
@@ -456,7 +457,7 @@ export async function GET(req: Request) {
     const month = searchParams.get("month");
     const mode = searchParams.get("mode");
     const { sheetId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     if (mode === "summary" && projectId && month) {
       const session = await getServerSession(authOptions);
@@ -492,7 +493,7 @@ export async function POST(req: Request) {
 
     const project = await getProject(projectId);
     const { sheetId, driveFolderId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
     const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
 

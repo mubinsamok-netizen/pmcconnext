@@ -9,6 +9,7 @@ import { createPdfReportFile } from "@/lib/reportPdf";
 import { findAll, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type ReportRecord = Record<string, string | number | undefined>;
 type ProjectWithLine = MasterProject & {
@@ -91,7 +92,7 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
     const { sheetId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     let reports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
     if (projectId) {
@@ -127,7 +128,7 @@ export async function POST(req: Request) {
     const project = await getProject(project_id);
     const { sheetId, driveFolderId } = await getProjectContext(project_id);
     step = "ตรวจสอบ schema ของ Google Sheets";
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) {
@@ -251,7 +252,7 @@ export async function POST(req: Request) {
 
       if (inserted?._rowIndex) {
         step = "อัปเดตสถานะ LINE ใน Google Sheets";
-        await update("Daily_Reports", Number(inserted._rowIndex), linePatch, sheetId);
+        await update("Daily_Reports", report_id, linePatch, sheetId, inserted._rowIndex);
       }
     }
 

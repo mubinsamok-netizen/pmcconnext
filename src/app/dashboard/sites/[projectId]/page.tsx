@@ -30,6 +30,7 @@ import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
 import { findAllBatch } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
 import { getSiteWeather } from "@/lib/siteWeather";
@@ -312,7 +313,7 @@ function isForemanVisibleHref(href: string) {
 async function getDashboardData(project: MasterProject): Promise<DashboardData> {
   try {
     const { sheetId } = await getProjectContext(project.project_id);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     const rows = await findAllBatch([
       "Tasks",
