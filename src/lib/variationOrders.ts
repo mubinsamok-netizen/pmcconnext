@@ -1,4 +1,4 @@
-export type VoType = "VO+" | "VO-" | "VO0";
+﻿export type VoType = "VO+" | "VO-" | "VO0";
 export type VoStatus =
   | "draft"
   | "pending_approval"
@@ -168,13 +168,9 @@ export function normalizeVoItems(items: VoItemInput[]) {
 export function calculateVoTotals({
   items,
   tax,
-  contractBefore,
-  voType,
 }: {
   items: VoItemInput[];
   tax?: VoTaxSettings;
-  contractBefore?: string | number;
-  voType?: string;
 }): VoCalculation {
   const normalizedItems = normalizeVoItems(items);
   const subtotal = normalizedItems.reduce((sum, item) => sum + item.amount, 0);
@@ -185,9 +181,6 @@ export function calculateVoTotals({
   const grandTotal = subtotal + vatAmount;
   const whtAmount = grandTotal * (withholdingTax / 100);
   const netPayable = grandTotal - whtAmount;
-  const before = numberValue(contractBefore);
-  const type = asVoType(voType);
-  const contractAfter = type === "VO-" ? before - subtotal : type === "VO0" ? before : before + subtotal;
 
   return {
     items: normalizedItems,
@@ -199,8 +192,8 @@ export function calculateVoTotals({
     wht_amount: whtAmount,
     grand_total: grandTotal,
     net_payable: netPayable,
-    contract_before: before,
-    contract_after: contractAfter,
+    contract_before: 0,
+    contract_after: 0,
   };
 }
 
@@ -511,8 +504,8 @@ export function buildVoApprovedLineFlex({
             cornerRadius: "8px",
             paddingAll: "12px",
             contents: [
-              { type: "text", text: "สถานะเอกสาร", color: "#047857", size: "xs", weight: "bold" },
-              { type: "text", text: "สามารถใช้เป็นหลักฐานประกอบการวางบิลและดำเนินงานต่อได้", color: "#064E3B", size: "xs", wrap: true, margin: "xs" },
+              { type: "text", text: "สถานะงาน", color: "#047857", size: "xs", weight: "bold" },
+              { type: "text", text: "ได้รับการอนุมัติแล้ว ทีมงานสามารถดำเนินงานนี้ต่อได้", color: "#064E3B", size: "xs", wrap: true, margin: "xs" },
             ],
           },
         ],

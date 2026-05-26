@@ -209,7 +209,7 @@ export function buildMemoAcknowledgementLineFlex({
   pdfUrl: string;
   acknowledgementUrl: string;
 }) {
-  const preview = detail.length > 118 ? `${detail.slice(0, 115)}...` : detail;
+  const preview = detail.trim();
   const actions = [
     {
       type: "button",
@@ -225,8 +225,8 @@ export function buildMemoAcknowledgementLineFlex({
   if (pdfUrl) {
     actions.push({
       type: "button",
-      style: "secondary",
-      color: "#111827",
+      style: "primary",
+      color: "#2563eb",
       action: {
         type: "uri",
         label: "เปิด PDF Memo",
@@ -281,6 +281,7 @@ export function buildMemoAcknowledgementLineFlex({
             backgroundColor: "#fff7ed",
             cornerRadius: "8px",
             paddingAll: "12px",
+            spacing: "xs",
             contents: [
               { type: "text", text: "รายละเอียดโดยย่อ", size: "xs", color: "#ea580c", weight: "bold" },
               { type: "text", text: preview || "-", size: "sm", color: "#7c2d12", wrap: true, margin: "xs" },
@@ -341,7 +342,15 @@ export function buildMemoAcknowledgedLineFlex({
         spacing: "md",
         contents: [
           { type: "text", text: projectName || projectId, size: "lg", weight: "bold", color: "#111827", wrap: true },
-          lineFlexInfo("เรื่อง", title || "-"),
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            contents: [
+              { type: "text", text: "เรื่อง", color: "#64748b", size: "xs" },
+              { type: "text", text: title || "-", color: "#111827", size: "sm", weight: "bold", wrap: true },
+            ],
+          },
           lineFlexInfo("ผู้รับทราบ", acknowledgedBy || "-"),
           lineFlexInfo("เวลา", acknowledgedAt || "-"),
           {
@@ -360,11 +369,12 @@ export function buildMemoAcknowledgedLineFlex({
       footer: {
         type: "box",
         layout: "vertical",
+        spacing: "sm",
         paddingAll: "16px",
         contents: pdfUrl ? [{
           type: "button",
-          style: "secondary",
-          color: "#111827",
+          style: "primary",
+          color: "#1d4ed8",
           action: { type: "uri", label: "เปิด PDF Memo", uri: pdfUrl },
         }] : [],
       },

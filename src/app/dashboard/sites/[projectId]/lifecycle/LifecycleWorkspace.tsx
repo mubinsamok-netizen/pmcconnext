@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import Link from "next/link";
-import { ArrowRight, Bell, CheckCircle2, Database, ExternalLink, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
+import { ArrowRight, Bell, ExternalLink, FileUp, FolderOpen, Loader2, Save } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
@@ -303,8 +303,6 @@ export default function LifecycleWorkspace({
   const [loading, setLoading] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const {
-    error: lifecycleError,
-    isLoading: lifecycleLoading,
     mutate: mutateLifecycle,
   } = useSWR<ApiResponse<Record<string, string> | null>>(lifecycleKey, fetcher, {
     onSuccess(result) {
@@ -312,8 +310,6 @@ export default function LifecycleWorkspace({
     },
   });
   const {
-    error: warrantyError,
-    isLoading: warrantyLoading,
     mutate: mutateWarranty,
   } = useSWR<ApiResponse<Record<string, string> | null>>(activeTab === "warranty" ? warrantyKey : null, fetcher, {
     onSuccess(result) {
@@ -322,14 +318,10 @@ export default function LifecycleWorkspace({
   });
   const {
     data: documentsData,
-    error: documentsError,
-    isLoading: documentsLoading,
     mutate: mutateDocuments,
   } = useSWR<ApiResponse<DocumentRecord[]>>(activeTab === "documents" ? documentsKey : null, fetcher);
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
-  const apiHasError = Boolean(lifecycleError || (activeTab === "warranty" && warrantyError) || (activeTab === "documents" && documentsError));
-  const apiIsLoading = lifecycleLoading || (activeTab === "warranty" && warrantyLoading) || (activeTab === "documents" && documentsLoading);
   const filledLifecycleDates = lifecycleDateFields.filter((field) => Boolean(lifecycleForm[field])).length;
   const filledWarrantyDates = warrantyDateFields.filter((field) => Boolean(warrantyForm[field as keyof typeof emptyWarranty])).length;
   const tabs: { id: WorkspaceTab; label: string; description: string; meta: string }[] = [
@@ -431,40 +423,6 @@ export default function LifecycleWorkspace({
           {message}
         </div>
       )}
-
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
-          <ConnectionCard
-            icon={<Database size={18} />}
-            label="Site Sheet"
-            value={projectMeta.siteSheetId ? "เชื่อมแล้ว" : "ยังไม่ได้เชื่อม"}
-            ok={Boolean(projectMeta.siteSheetId)}
-          />
-          <ConnectionCard
-            icon={<FolderOpen size={18} />}
-            label="Drive Folder"
-            value={projectMeta.driveFolderId ? "พร้อมอัปโหลด" : "ยังไม่มีโฟลเดอร์"}
-            ok={Boolean(projectMeta.driveFolderId)}
-          />
-          <ConnectionCard
-            icon={<ShieldCheck size={18} />}
-            label="สิทธิ์แก้ไข"
-            value={isAdmin ? "Admin" : "ดูอย่างเดียว"}
-            ok={isAdmin}
-          />
-          <ConnectionCard
-            icon={apiIsLoading ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-            label="Backend"
-            value={apiIsLoading ? "กำลังอ่านข้อมูล" : apiHasError ? "อ่านข้อมูลไม่สำเร็จ" : "เชื่อมต่อได้"}
-            ok={!apiHasError && !apiIsLoading}
-          />
-        </div>
-        {!projectMeta.driveFolderId && (
-          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
-            การบันทึกรายละเอียดงานและประกันยังใช้ได้ แต่การอัปโหลด PDF ต้องมี Google Drive Folder ID ก่อน
-          </div>
-        )}
-      </section>
 
       <nav className="grid grid-cols-1 gap-3 md:grid-cols-3">
         {tabs.map((tab) => (
@@ -794,30 +752,6 @@ function StatusDestinationCard({
           <ArrowRight size={16} />
         </button>
       )}
-    </div>
-  );
-}
-
-function ConnectionCard({
-  icon,
-  label,
-  value,
-  ok,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  ok: boolean;
-}) {
-  return (
-    <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${ok ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-amber-100 bg-amber-50 text-amber-700"}`}>
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/80">
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="truncate text-xs font-extrabold opacity-70">{label}</p>
-        <p className="truncate text-sm font-extrabold">{value}</p>
-      </div>
     </div>
   );
 }

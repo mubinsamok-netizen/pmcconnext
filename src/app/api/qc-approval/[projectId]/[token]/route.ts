@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 import { writeAuditLog } from "@/lib/auditLog";
+import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
-import { buildQcApprovedLineFlex, getQcApprovalReadiness, parseQcEvidence, parseQcItems, type QcChecklistRecord } from "@/lib/qcChecklists";
+import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { buildQcApprovedLineFlex, buildQcPdfHtml, getQcApprovalReadiness, parseQcEvidence, parseQcItems, safeJsonStringify, type QcChecklistRecord, type QcEvidenceFile } from "@/lib/qcChecklists";
 import { findAll, findAllMaster, findAllRaw, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
@@ -11,10 +15,26 @@ type PublicProject = Record<string, string | number | undefined> & {
   name?: string;
   client?: string;
   site_sheet_id?: string;
+  drive_folder_id?: string;
 };
+
+const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
 
 function text(value: unknown) {
   return String(value || "").trim();
+}
+
+function safeFolderName(value: string) {
+  return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim() || "Other";
+}
+
+function getLogoDataUrl() {
+  try {
+    const logo = fs.readFileSync(LOGO_PATH);
+    return `data:image/png;base64,${logo.toString("base64")}`;
+  } catch {
+    return "";
+  }
 }
 
 async function getPublicContext(projectId: string, token: string) {
@@ -74,6 +94,59 @@ async function getFallbackRowIndex(siteSheetId: string, checklist: QcChecklistRe
   return rawRows.find((row) => row.qc_id === checklist.qc_id)?._rowIndex;
 }
 
+async function attachEvidenceDataUrls(checklist: QcChecklistRecord) {
+  const evidence = parseQcEvidence(checklist.evidence_files_json);
+  const hydrated = await Promise.all(evidence.map(async (file: QcEvidenceFile) => {
+    if (!file.file_id || !String(file.mime_type || "").startsWith("image/")) return file;
+    try {
+      const downloaded = await downloadFile(file.file_id);
+      const mimeType = downloaded.mimeType || file.mime_type || "image/jpeg";
+      return {
+        ...file,
+        mime_type: mimeType,
+        data_url: `data:${mimeType};base64,${downloaded.buffer.toString("base64")}`,
+      };
+    } catch (error) {
+      console.warn(`Failed to embed QC evidence ${file.file_id}:`, error);
+      return file;
+    }
+  }));
+
+  return {
+    ...checklist,
+    evidence_files_json: safeJsonStringify(hydrated),
+  };
+}
+
+async function getQcFolder(project: PublicProject, qcId: string) {
+  const rootFolderId = text(project.drive_folder_id);
+  if (!rootFolderId) return null;
+  const qcRoot = await findOrCreateFolder("QC Checklists", rootFolderId);
+  const qcFolder = await findOrCreateFolder(safeFolderName(qcId), qcRoot.id || rootFolderId);
+  return qcFolder.id || qcRoot.id || rootFolderId;
+}
+
+async function regenerateApprovedPdf(project: PublicProject, checklist: QcChecklistRecord) {
+  const qcFolderId = await getQcFolder(project, checklist.qc_id);
+  if (!qcFolderId) throw new Error("Project Drive folder is not configured");
+
+  const pdfChecklist = await attachEvidenceDataUrls(checklist);
+  const html = buildQcPdfHtml({
+    checklist: pdfChecklist,
+    project,
+    logoUrl: getLogoDataUrl(),
+  });
+  const documentNo = text(checklist.document_no) || checklist.qc_id;
+  const pdfFolder = await findOrCreateFolder("PDF", qcFolderId);
+  const pdfBuffer = await renderHtmlToPdfBuffer(html, documentNo);
+  const uploaded = await uploadFile(`${documentNo}-approved.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || qcFolderId);
+
+  return {
+    pdf_file_id: uploaded.id || "",
+    pdf_url: uploaded.webViewLink || uploaded.webContentLink || "",
+  };
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string; token: string }> }) {
   try {
     const { projectId, token } = await params;
@@ -96,13 +169,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const approvedBy = text(body.customer_approved_by) || text(context.project.client) || "ลูกค้า";
     const approvedAt = new Date().toISOString();
-    const patch = {
+    let patch: Record<string, string> = {
       status: "customer_approved",
       approval_status: "approved",
       customer_approved_at: approvedAt,
       customer_approved_by: approvedBy,
       customer_approval_note: text(body.customer_approval_note),
     };
+    let pdfUpdateError = "";
+
+    if (context.checklist.approval_status !== "approved") {
+      try {
+        const pdfPatch = await regenerateApprovedPdf(context.project, { ...context.checklist, ...patch });
+        patch = { ...patch, ...pdfPatch };
+      } catch (error) {
+        pdfUpdateError = error instanceof Error ? error.message : "Failed to update approved QC PDF";
+        console.warn("Failed to update QC approved PDF:", error);
+      }
+    }
 
     if (context.checklist.approval_status !== "approved") {
       await update(
@@ -124,15 +208,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       });
 
       const lineGroupId = text(context.checklist.line_group_id);
+      const nextChecklist = { ...context.checklist, ...patch };
       if (lineGroupId) {
         await sendLineMessages([buildQcApprovedLineFlex({
           projectName: text(context.project.name),
           projectId: context.project.project_id,
-          documentNo: text(context.checklist.document_no),
-          title: text(context.checklist.title),
+          documentNo: text(nextChecklist.document_no),
+          title: text(nextChecklist.title),
           approvedBy,
           approvedAt,
-          pdfUrl: text(context.checklist.pdf_url),
+          pdfUrl: text(nextChecklist.pdf_url),
         })], lineGroupId).catch((error) => console.warn("Failed to notify LINE after QC approval:", error));
       }
     }
@@ -140,6 +225,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     return NextResponse.json({
       success: true,
       data: publicPayload(context.project, { ...context.checklist, ...patch }),
+      pdf_update_error: pdfUpdateError,
     });
   } catch (error: unknown) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "บันทึกอนุมัติไม่สำเร็จ" }, { status: 500 });

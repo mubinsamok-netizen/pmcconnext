@@ -5,6 +5,7 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import {
   QC_APPROVAL_LABELS,
   QC_STATUS_LABELS,
@@ -353,7 +354,7 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
   return NextResponse.json({ success: true, data: { ...current, ...patch } });
 }
 
-async function handleSendApproval(body: Record<string, unknown>, context: RouteContext) {
+async function handleSendApproval(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const qcId = text(body.qc_id);
   const rows = await getRows(context);
   const current = rows.find((row) => row.qc_id === qcId && row.project_id === context.project.project_id);
@@ -369,9 +370,8 @@ async function handleSendApproval(body: Record<string, unknown>, context: RouteC
   }
 
   const approvalToken = text(nextRecord.approval_token) || createQcApprovalToken();
-  const requestOrigin = text(body.origin);
-  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  const approvalOrigin = (requestOrigin || configuredOrigin).replace(/\/$/, "");
+  const approvalOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
+  if (!approvalOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์อนุมัติ" }, { status: 400 });
   const approvalUrl = `${approvalOrigin}/qc-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
   nextRecord = { ...nextRecord, approval_token: approvalToken, approval_url: approvalUrl };
 
@@ -526,7 +526,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     if (action === "create") return handleCreate(body, routeContext);
     if (action === "save") return handleSave(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext);
-    if (action === "send_approval") return handleSendApproval(body, routeContext);
+    if (action === "send_approval") return handleSendApproval(req, body, routeContext);
     if (action === "approve") return handleApprove(body, routeContext);
     if (action === "delete") return handleDelete(body, routeContext);
 

@@ -15,6 +15,7 @@ import {
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
@@ -485,9 +486,8 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
   }
 
   const approvalToken = text(round.approval_token) || createDefectApprovalToken();
-  const requestOrigin = text(body.origin);
-  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  const approvalOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const approvalOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
+  if (!approvalOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์อนุมัติ" }, { status: 400 });
   const approvalUrl = `${approvalOrigin}/defect-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
   const targetLineGroupId = lineTargetFor(context);
   const lineMessage = [

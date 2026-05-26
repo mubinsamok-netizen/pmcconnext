@@ -18,6 +18,7 @@ import {
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
@@ -384,9 +385,8 @@ async function handleNotify(req: Request, body: Record<string, unknown>, context
   }
 
   const approvalToken = text(nextRecord.approval_token) || createCustomerDecisionApprovalToken();
-  const requestOrigin = text(body.origin);
-  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  const approvalOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const approvalOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
+  if (!approvalOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์ยืนยัน" }, { status: 400 });
   const approvalUrl = `${approvalOrigin}/decision-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
   nextRecord = { ...nextRecord, approval_token: approvalToken, approval_url: approvalUrl };
 

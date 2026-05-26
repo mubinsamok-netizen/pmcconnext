@@ -4,6 +4,7 @@ import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
@@ -365,9 +366,8 @@ async function handleSendAcknowledgement(body: Record<string, unknown>, context:
   }
 
   const acknowledgementToken = textValue(nextMemo.acknowledgement_token) || createMemoAcknowledgementToken();
-  const requestOrigin = textValue(body.origin);
-  const configuredOrigin = textValue(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  const acknowledgementOrigin = (requestOrigin || configuredOrigin || new URL(req.url).origin).replace(/\/$/, "");
+  const acknowledgementOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
+  if (!acknowledgementOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์รับทราบ" }, { status: 400 });
   const acknowledgementUrl = `${acknowledgementOrigin}/memo-acknowledgement/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(acknowledgementToken)}`;
   nextMemo = { ...nextMemo, acknowledgement_token: acknowledgementToken, acknowledgement_url: acknowledgementUrl };
 

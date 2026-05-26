@@ -30,8 +30,6 @@ type ApprovalData = {
     approval_deadline?: string;
     grand_total?: string | number;
     net_payable?: string | number;
-    contract_before?: string | number;
-    contract_after?: string | number;
     extension_days?: string | number;
     customer_approved_at?: string;
     customer_approved_by?: string;
@@ -85,7 +83,7 @@ export default function PublicVariationOrderApprovalClient({ projectId, token }:
       return;
     }
     if (!accepted) {
-      setError("กรุณาติ๊กยืนยันว่าได้ตรวจสอบเอกสารและยอมรับผลกระทบด้านราคา/เวลาแล้ว");
+      setError("กรุณาติ๊กยืนยันว่าได้ตรวจสอบรายการ ราคา และระยะเวลาที่ขอดำเนินการแล้ว");
       return;
     }
     setSaving(true);
@@ -169,7 +167,7 @@ export default function PublicVariationOrderApprovalClient({ projectId, token }:
           <Info label="สถานะ" value={isApproved ? "อนุมัติแล้ว" : "รออนุมัติ"} />
         </section>
 
-        <section className="grid gap-5 px-5 pb-5 sm:px-8 lg:grid-cols-[1fr_320px]">
+        <section className="grid gap-5 px-5 pb-5 sm:px-8 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-5">
             <div className="rounded-2xl border border-slate-200 bg-white p-5">
               <div className="text-xs font-black uppercase text-slate-500">รายละเอียดงาน</div>
@@ -209,11 +207,11 @@ export default function PublicVariationOrderApprovalClient({ projectId, token }:
 
           <aside className="space-y-4">
             <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5">
-              <div className="text-xs font-black uppercase text-orange-600">ผลทางสัญญา</div>
+              <div className="text-xs font-black uppercase text-orange-600">สรุปรายการ VO</div>
               <div className="mt-3 space-y-2 text-sm font-bold text-orange-950">
-                <div className="flex justify-between gap-3"><span>มูลค่าสัญญาเดิม</span><span>{formatMoney(vo?.contract_before)}</span></div>
-                <div className="flex justify-between gap-3"><span>มูลค่าสัญญาใหม่</span><span>{formatMoney(vo?.contract_after)}</span></div>
-                <div className="flex justify-between gap-3 border-t border-orange-200 pt-2"><span>ยอดสุทธิ</span><span>{formatMoney(vo?.net_payable)} บาท</span></div>
+                <div className="grid grid-cols-[1fr_auto] gap-3"><span>ยอดสุทธิของ VO นี้</span><span className="text-right">{formatMoney(vo?.net_payable)} บาท</span></div>
+                <div className="grid grid-cols-[1fr_auto] gap-3 border-t border-orange-200 pt-2"><span>ระยะเวลาที่ขอเพิ่ม</span><span className="text-right">{formatMoney(vo?.extension_days)} วัน</span></div>
+                <p className="border-t border-orange-200 pt-2 text-xs leading-5 text-orange-800">ตรวจสอบเฉพาะรายการงานเพิ่ม-ลดนี้ก่อนอนุมัติให้ดำเนินการ</p>
               </div>
             </div>
 
@@ -238,9 +236,9 @@ export default function PublicVariationOrderApprovalClient({ projectId, token }:
                     <span className="text-sm font-black text-slate-700">หมายเหตุ</span>
                     <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} className="mt-1 w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-orange-200" />
                   </label>
-                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm font-bold text-slate-700">
+                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm font-bold leading-6 text-slate-700">
                     <input type="checkbox" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600" />
-                    <span>ข้าพเจ้าได้ตรวจสอบรายการ ราคา ระยะเวลา และเอกสารแนบแล้ว ยอมรับให้ดำเนินงานตาม VO นี้</span>
+                    <span>ข้าพเจ้าได้ตรวจสอบรายการ ราคา ระยะเวลา และเอกสารแนบแล้ว อนุมัติให้ทีมงานดำเนินการตาม VO นี้</span>
                   </label>
                   <button onClick={submitApproval} disabled={saving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-black text-white hover:bg-emerald-700 disabled:opacity-60">
                     {saving ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}

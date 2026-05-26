@@ -1050,6 +1050,20 @@ function formatThaiDate(value?: string | number) {
   }).format(date);
 }
 
+function formatThaiDateTime(value?: string | number) {
+  if (!value) return "-";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Bangkok",
+  }).format(date);
+}
+
 function countResults(items: QcChecklistItem[]) {
   return {
     total: items.length,
@@ -1342,6 +1356,10 @@ export function buildQcPdfHtml({
   const images = evidence.filter((item) => String(item.mime_type || "").startsWith("image/") && (item.data_url || item.file_url));
   const counts = countResults(items);
   const location = [project.address, project.district, project.province].filter(Boolean).join(" ");
+  const customerApprovedBy = checklist.customer_approved_by || project.client || "";
+  const customerApprovedAt = checklist.customer_approved_at || "";
+  const customerApprovalNote = checklist.customer_approval_note || "";
+  const approvalStamp = customerApprovedAt ? formatThaiDateTime(customerApprovedAt) : "";
   const resultSummary = `${counts.pass}/${counts.total} ผ่าน`;
   const renderImage = (item: QcEvidenceFile) => `
     <figure class="photo-card">
@@ -1390,6 +1408,11 @@ export function buildQcPdfHtml({
     .items td { border: 1px solid #cbd5e1; padding: 7px; vertical-align: top; }
     .items .result { width: 72px; text-align: center; font-weight: 900; }
     .notice { margin-top: 9px; border-left: 4px solid #f97316; background: #fff7ed; color: #9a3412; padding: 8px 10px; font-weight: 800; font-size: 10px; }
+    .approval-proof { margin-top: 9px; border: 1px solid #bbf7d0; border-left: 4px solid #16a34a; background: #f0fdf4; padding: 9px 10px; color: #14532d; }
+    .approval-proof-title { font-weight: 900; font-size: 11px; color: #166534; }
+    .approval-proof-grid { display: grid; grid-template-columns: 86px 1fr; gap: 3px 8px; margin-top: 5px; font-size: 10px; }
+    .approval-proof-label { font-weight: 900; color: #166534; }
+    .approval-proof-value { font-weight: 800; color: #052e16; }
     .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: auto; padding-top: 18px; }
     .signature { text-align: center; min-height: 78px; border-top: 1px solid #94a3b8; padding-top: 7px; color: #334155; }
     .signature strong { color: #0f172a; font-size: 10px; }
@@ -1459,6 +1482,16 @@ export function buildQcPdfHtml({
         </tbody>
       </table>
       <div class="notice">เอกสารนี้ใช้เป็นบันทึกการตรวจคุณภาพงานก่อสร้างและประกอบการอนุมัติจากลูกค้าก่อนดำเนินงานขั้นถัดไป</div>
+      ${customerApprovedAt ? `
+      <section class="approval-proof">
+        <div class="approval-proof-title">บันทึกการอนุมัติจากลูกค้า</div>
+        <div class="approval-proof-grid">
+          <div class="approval-proof-label">ผู้อนุมัติ</div><div class="approval-proof-value">${escapeHtml(customerApprovedBy || "-")}</div>
+          <div class="approval-proof-label">วันเวลา</div><div class="approval-proof-value">${escapeHtml(approvalStamp)}</div>
+          <div class="approval-proof-label">ช่องทาง</div><div class="approval-proof-value">Public QC approval link</div>
+          <div class="approval-proof-label">หมายเหตุ</div><div class="approval-proof-value">${escapeHtml(customerApprovalNote || "-")}</div>
+        </div>
+      </section>` : ""}
       <section class="signatures">
         <div class="signature"><strong>ผู้ตรวจ / วิศวกรสนาม</strong><br />${escapeHtml(checklist.inspected_by_name || "")}<br />วันที่ ........../........../..........</div>
         <div class="signature"><strong>ผู้ควบคุมงาน</strong><br />วันที่ ........../........../..........</div>

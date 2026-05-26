@@ -8,6 +8,7 @@ import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
 import { toAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import {
   VO_TYPE_LABELS,
   addCalendarDays,
@@ -78,10 +79,8 @@ function lineTargetFor(context: RouteContext) {
   return text(context.project.line_group_id);
 }
 
-function approvalOriginFrom(body: Record<string, unknown>) {
-  const requestOrigin = text(body.origin);
-  const configuredOrigin = text(process.env.NEXT_PUBLIC_APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  return (requestOrigin || configuredOrigin).replace(/\/$/, "");
+function approvalOriginFrom(req: Request, body: Record<string, unknown>) {
+  return getPublicAppOrigin({ request: req, origin: body.origin });
 }
 
 function safeFolderName(value: string) {
@@ -412,8 +411,6 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
       withholding_tax: String(body.withholding_tax || "0"),
       vat_rate: 7,
     },
-    contractBefore: String(body.contract_before || context.project.budget || 0),
-    voType,
   });
   if (calculation.items.length === 0) {
     return NextResponse.json({ error: "ต้องมีรายการอย่างน้อย 1 รายการ" }, { status: 400 });
@@ -579,7 +576,7 @@ async function handleSubmitVo(body: Record<string, unknown>, context: RouteConte
   return NextResponse.json({ success: true, data: { ...vo, status: "pending_approval" } });
 }
 
-async function handleSendApproval(body: Record<string, unknown>, context: RouteContext) {
+async function handleSendApproval(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const forbidden = requirePermission(context, "vo.submitToClient");
   if (forbidden) return forbidden;
 
@@ -606,7 +603,7 @@ async function handleSendApproval(body: Record<string, unknown>, context: RouteC
   }
 
   const approvalToken = text(vo.approval_token) || createVoApprovalToken();
-  const approvalOrigin = approvalOriginFrom(body);
+  const approvalOrigin = approvalOriginFrom(req, body);
   if (!approvalOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์อนุมัติ" }, { status: 400 });
 
   const approvalUrl = `${approvalOrigin}/variation-order-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
@@ -1346,7 +1343,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
     if (action === "create_vo") return handleCreateVo(body, routeContext);
     if (action === "submit_to_client") return handleSubmitVo(body, routeContext);
-    if (action === "send_approval") return handleSendApproval(body, routeContext);
+    if (action === "send_approval") return handleSendApproval(req, body, routeContext);
     if (action === "approve_on_behalf") return handleApproveOnBehalf(body, routeContext);
     if (action === "client_decision") return handleClientDecision(body, routeContext);
     if (action === "add_to_plan") return handleAddToPlan(body, routeContext);

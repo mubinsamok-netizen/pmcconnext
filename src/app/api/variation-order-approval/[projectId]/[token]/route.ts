@@ -92,8 +92,6 @@ function publicPayload(project: PublicProject, vo: VoRecord, items: VoItemRecord
       approval_deadline: vo.approval_deadline || "",
       grand_total: vo.grand_total || 0,
       net_payable: vo.net_payable || vo.grand_total || 0,
-      contract_before: vo.contract_before || 0,
-      contract_after: vo.contract_after || 0,
       extension_days: vo.extension_days || 0,
       customer_approved_at: vo.customer_approved_at || "",
       customer_approved_by: vo.customer_approved_by || "",

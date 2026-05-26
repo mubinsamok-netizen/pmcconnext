@@ -64,7 +64,6 @@ type CreateForm = {
   extension_days: string;
   status: string;
   client_name: string;
-  contract_before: string;
   source_type: string;
   source_ref_id: string;
   source_description: string;
@@ -83,7 +82,6 @@ const emptyCreateForm: CreateForm = {
   extension_days: "0",
   status: "pending_approval",
   client_name: "",
-  contract_before: "",
   source_type: "client_request",
   source_ref_id: "",
   source_description: "",
@@ -170,7 +168,6 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const [createForm, setCreateForm] = useState<CreateForm>({
     ...emptyCreateForm,
     client_name: project.client || "",
-    contract_before: project.budget || "",
   });
   const [supportingDocFiles, setSupportingDocFiles] = useState<File[]>([]);
   const [plan, setPlan] = useState(emptyPlan);
@@ -260,12 +257,11 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
           unit_price: createForm.amount,
         },
       ],
-      contract_before: createForm.contract_before || project.budget || "",
       supporting_doc_uploads: supportingUploads,
     });
     if (result?.data?.vo_id) {
       setSelectedVoId(result.data.vo_id);
-      setCreateForm({ ...emptyCreateForm, client_name: project.client || "", contract_before: project.budget || "" });
+      setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
       setSupportingDocFiles([]);
       setActiveTab(permissions.addToPlan ? "plan" : "history");
     }
@@ -294,14 +290,31 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
 
   const printDocument = () => {
     if (!documentHtml) return;
-    const win = window.open("", "_blank", "noopener,noreferrer,width=900,height=1200");
+    printHtml(documentHtml, 900, 1200);
+  };
+
+  const printHtml = (html: string, width = 900, height = 1200, targetWindow?: Window | null) => {
+    const win = targetWindow || window.open("", "_blank", `noopener,noreferrer,width=${width},height=${height}`);
     if (!win) return;
-    win.document.write(documentHtml);
+    win.document.open();
+    win.document.write(html);
     win.document.close();
     window.setTimeout(() => {
       win.focus();
       win.print();
     }, 400);
+  };
+
+  const printMonthlyReport = async () => {
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1100,height=800");
+    printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานรายเดือน...</body></html>");
+    printWindow?.document.close();
+    const result = await postAction("generate_monthly_report", { month: reportMonth });
+    if (result?.document_html) {
+      printHtml(String(result.document_html), 1100, 800, printWindow);
+    } else {
+      printWindow?.close();
+    }
   };
 
   return (
@@ -373,13 +386,15 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
           {activeTab === "history" && (
             <HistoryPrintSection
               vos={vos}
-              documents={data?.documents || []}
               auditLogs={data?.audit_logs || []}
               month={reportMonth}
               setMonth={setReportMonth}
               selectedVoId={selectedVo?.vo_id || ""}
               onSelect={setSelectedVoId}
               isLoading={isLoading}
+              onPrintMonthly={printMonthlyReport}
+              printing={loadingAction === "generate_monthly_report"}
+              canPrintMonthly={permissions.generateMonthlyReport}
             />
           )}
         </main>
@@ -1033,34 +1048,27 @@ function FinanceSection({
 
 function HistoryPrintSection({
   vos,
-  documents,
   auditLogs,
   month,
   setMonth,
   selectedVoId,
   onSelect,
   isLoading,
+  onPrintMonthly,
+  printing,
+  canPrintMonthly,
 }: {
   vos: Array<VoRecord & { items?: VoItemInput[] }>;
-  documents: Array<Record<string, string | number | undefined>>;
   auditLogs: Array<Record<string, string | number | undefined>>;
   month: string;
   setMonth: (month: string) => void;
   selectedVoId: string;
   onSelect: (voId: string) => void;
   isLoading: boolean;
+  onPrintMonthly: () => void;
+  printing: boolean;
+  canPrintMonthly: boolean;
 }) {
-  const documentsByVoId = useMemo(() => {
-    const grouped = new Map<string, Array<Record<string, string | number | undefined>>>();
-    documents.forEach((document) => {
-      const voId = String(document.vo_id || "");
-      if (!voId) return;
-      const current = grouped.get(voId) || [];
-      current.push(document);
-      grouped.set(voId, current);
-    });
-    return grouped;
-  }, [documents]);
   const monthlyVos = useMemo(() => {
     return vos.filter((vo) => {
       const createdMonth = String(vo.created_at || "").slice(0, 7);
@@ -1077,71 +1085,6 @@ function HistoryPrintSection({
     return { plus, minus, net: plus - minus, days, approved: approvedVos.length };
   }, [monthlyVos]);
 
-  const printMonthly = () => {
-    const rows = monthlyVos.map((vo, index) => {
-      const type = asVoType(String(vo.vo_type || ""));
-      const docs = documentsByVoId.get(vo.vo_id)?.length || 0;
-      return `
-        <tr>
-          <td>${index + 1}</td>
-          <td>${vo.vo_id || "-"}</td>
-          <td>${VO_TYPE_LABELS[type]}</td>
-          <td>${vo.title || "-"}</td>
-          <td class="right">${formatMoney(vo.grand_total)}</td>
-          <td class="right">${formatMoney(vo.extension_days)}</td>
-          <td>${VO_STATUS_LABELS[asVoStatus(String(vo.status || ""))]}</td>
-          <td class="right">${docs}</td>
-        </tr>
-      `;
-    }).join("");
-    const html = `<!doctype html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>รายงานงานเพิ่ม-ลด ${month}</title>
-          <style>
-            @page { size: A4 landscape; margin: 14mm; }
-            body { font-family: Arial, sans-serif; color: #111827; }
-            h1 { margin: 0; font-size: 22px; }
-            .muted { color: #6b7280; font-size: 12px; margin-top: 4px; }
-            .summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 18px 0; }
-            .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; }
-            .label { color: #6b7280; font-size: 11px; font-weight: 700; }
-            .value { margin-top: 6px; font-size: 18px; font-weight: 800; }
-            table { width: 100%; border-collapse: collapse; font-size: 11px; }
-            th { background: #f3f4f6; text-align: left; }
-            th, td { border: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }
-            .right { text-align: right; }
-          </style>
-        </head>
-        <body>
-          <h1>ทะเบียนงานเพิ่ม-ลด ประจำเดือน ${month}</h1>
-          <div class="muted">โครงการ ${monthlyVos[0]?.project_id || ""} / พิมพ์จากระบบ PMC CONNEXT</div>
-          <div class="summary">
-            <div class="card"><div class="label">งานเพิ่มรวม</div><div class="value">${formatMoney(monthlySummary.plus)} บาท</div></div>
-            <div class="card"><div class="label">งานลดรวม</div><div class="value">${formatMoney(monthlySummary.minus)} บาท</div></div>
-            <div class="card"><div class="label">สุทธิ</div><div class="value">${formatMoney(monthlySummary.net)} บาท</div></div>
-            <div class="card"><div class="label">วันเพิ่มรวม</div><div class="value">${formatMoney(monthlySummary.days)} วัน</div></div>
-            <div class="card"><div class="label">อนุมัติแล้ว</div><div class="value">${monthlySummary.approved} รายการ</div></div>
-          </div>
-          <table>
-            <thead>
-              <tr><th>No.</th><th>เลขที่</th><th>ประเภท</th><th>หัวข้อ</th><th class="right">มูลค่า</th><th class="right">วันเพิ่ม</th><th>สถานะ</th><th class="right">ไฟล์แนบ</th></tr>
-            </thead>
-            <tbody>${rows || `<tr><td colspan="8" class="right">ไม่มีรายการในเดือนนี้</td></tr>`}</tbody>
-          </table>
-        </body>
-      </html>`;
-    const win = window.open("", "_blank", "noopener,noreferrer,width=1100,height=800");
-    if (!win) return;
-    win.document.write(html);
-    win.document.close();
-    window.setTimeout(() => {
-      win.focus();
-      win.print();
-    }, 400);
-  };
-
   return (
     <section className="space-y-5">
       <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -1156,10 +1099,11 @@ function HistoryPrintSection({
             </Field>
             <button
               type="button"
-              onClick={printMonthly}
-              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70"
+              onClick={onPrintMonthly}
+              disabled={!canPrintMonthly || printing}
+              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Printer size={17} />
+              {printing ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
               Print รายเดือน
             </button>
           </div>
