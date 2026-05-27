@@ -212,8 +212,8 @@ export default function Sidebar({
   return (
     <>
       <aside
-        className={`relative hidden flex-col border-r border-gray-200 bg-white transition-all duration-300 ease-in-out md:flex ${
-          collapsed ? "w-[76px]" : "w-[280px]"
+        className={`relative hidden shrink-0 flex-col border-r border-gray-200 bg-white transition-all duration-300 ease-in-out md:flex ${
+          collapsed ? "w-[76px]" : "w-[236px] lg:w-[256px] 2xl:w-[280px]"
         }`}
       >
         {sidebarContent(false)}
@@ -264,7 +264,7 @@ function SidebarLink({
     >
       {active && <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-orange-600" />}
       <Icon size={20} className={active ? "text-orange-600" : "text-gray-400"} />
-      {!collapsed && <span>{name}</span>}
+      {!collapsed && <span className="min-w-0 truncate">{name}</span>}
       {collapsed && (
         <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-lg bg-gray-900 px-2.5 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
           {name}

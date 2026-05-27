@@ -24,7 +24,7 @@ export function SiteShell({
   children?: ReactNode;
 }) {
   return (
-    <div className={`${wide ? "max-w-[1680px]" : "max-w-6xl"} mx-auto space-y-6`}>
+    <div className={`${wide ? "max-w-[1680px]" : "max-w-6xl"} mx-auto min-w-0 space-y-6`}>
       <div className="schedule-screen-only flex flex-col gap-1">
         <div className="min-w-0">
           <div className="inline-flex items-center gap-2 text-sm font-semibold text-orange-600">

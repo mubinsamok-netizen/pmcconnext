@@ -279,8 +279,8 @@ export default function QcChecklistsWorkspace({
       {message ? <div className="rounded-xl border border-orange-100 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-700">{message}</div> : null}
       {error || data?.error ? <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{data?.error || "โหลดข้อมูลไม่สำเร็จ"}</div> : null}
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <aside className="space-y-4">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(280px,320px)_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="min-w-0 space-y-4">
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <ShieldCheck className="text-orange-600" size={18} />
@@ -345,7 +345,7 @@ export default function QcChecklistsWorkspace({
           </div>
         </aside>
 
-        <main className="space-y-4">
+        <main className="min-w-0 space-y-4">
           {!selected ? (
             <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-10 text-center text-gray-400">เลือกหรือสร้าง QC Checklist ก่อน</div>
           ) : (
@@ -474,9 +474,9 @@ export default function QcChecklistsWorkspace({
                   <Metric label="ยังไม่ส่ง" value={stats.pending} tone={stats.pending ? "text-orange-700" : "text-gray-900"} />
                 </div>
 
-                <div className="p-5">
-                  <div className="overflow-x-auto rounded-xl border border-gray-200">
-                    <table className="w-full min-w-[1120px] text-left text-sm">
+                <div className="p-3 sm:p-5">
+                  <div className="max-w-full overflow-x-auto rounded-xl border border-gray-200">
+                    <table className="w-full min-w-[820px] table-fixed text-left text-sm lg:min-w-[960px] 2xl:min-w-[1120px]">
                       <thead className="bg-gray-100 text-sm text-gray-700">
                         <tr>
                           <th className="px-4 py-3 font-black">หมวดตรวจ</th>
