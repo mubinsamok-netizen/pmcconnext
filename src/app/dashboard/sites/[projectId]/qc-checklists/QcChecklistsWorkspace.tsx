@@ -535,9 +535,9 @@ export default function QcChecklistsWorkspace({
                           <th className="px-4 py-3 font-black">หมายเหตุ</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-100">
+                      <tbody key={selected.qc_id} className="divide-y divide-gray-100">
                         {selectedItems.map((item) => (
-                          <tr key={item.item_id} className="align-top">
+                          <tr key={`${selected.qc_id}-${item.item_id}`} className="align-top">
                             <td className="px-4 py-3">
                               <input
                                 data-qc-item-field="section"
