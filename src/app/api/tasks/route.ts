@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
-import { createSessionNotification } from "@/lib/notifications";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
@@ -24,22 +23,6 @@ function filterProjectTasks<T extends Record<string, string | number | undefined
   return tasks.filter((task) => String(task.project_id || "") === projectId);
 }
 
-function mergeTaskRows<T extends Record<string, string | number | undefined>>(primary: T[], fallback: T[]) {
-  const merged = new Map<string, T>();
-
-  fallback.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `fallback-${index}`);
-    merged.set(key, task);
-  });
-
-  primary.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `primary-${index}`);
-    merged.set(key, task);
-  });
-
-  return Array.from(merged.values());
-}
-
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -53,13 +36,7 @@ export async function GET(req: Request) {
     };
 
     if (isSupabaseReadEnabled("site")) {
-      const tasks = await readWithSheetsFallback("tasks", async () => {
-        const supabaseTasks = await getSupabaseTasks(projectId);
-        if (!shouldFallbackToSheets()) return supabaseTasks;
-
-        const sheetTasks = await readSheetsTasks();
-        return mergeTaskRows(supabaseTasks, sheetTasks);
-      }, readSheetsTasks);
+      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
       return NextResponse.json({ success: true, data: tasks });
     }
 
@@ -99,7 +76,11 @@ export async function POST(req: Request) {
     const { sheetId } = await getProjectContext(project_id);
     if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
-    const existingTasks = filterProjectTasks(await findAllRaw("Tasks", sheetId), project_id);
+    const existingTasks = order_index
+      ? []
+      : isSupabaseReadEnabled("site")
+        ? await getSupabaseTasks(project_id)
+        : filterProjectTasks(await findAllRaw("Tasks", sheetId), project_id);
     const nextOrder = existingTasks.length + 1;
 
     const taskData = {
@@ -123,19 +104,6 @@ export async function POST(req: Request) {
     };
 
     const result = await insert("Tasks", taskData, sheetId);
-
-    try {
-      await createSessionNotification({
-        project_id,
-        type: "schedule_task_created",
-        title: "เพิ่มงานในแผนงาน",
-        message: `${name} (${assignee || "ยังไม่ระบุผู้รับผิดชอบ"})`,
-        link: `/dashboard/sites/${encodeURIComponent(project_id)}/schedule`,
-      });
-    } catch (error) {
-      console.warn("Failed to create task notification:", error);
-    }
-
     return NextResponse.json({ success: true, data: result.inserted });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -154,23 +122,11 @@ export async function PUT(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(project_id);
-    const fallbackRowIndex = legacyRowIndex || (taskId ? await findTaskRowIndex(sheetId, project_id, taskId) : undefined);
+    const fallbackRowIndex = isSupabaseBackend()
+      ? legacyRowIndex || undefined
+      : legacyRowIndex || (taskId ? await findTaskRowIndex(sheetId, project_id, taskId) : undefined);
     const rowKey = isSupabaseBackend() && taskId ? taskId : legacyRowIndex || taskId;
     await update("Tasks", rowKey, { ...updates, ...(taskId ? { task_id: taskId } : {}) }, sheetId, fallbackRowIndex);
-
-    if (updates.status || updates.percent_done) {
-      try {
-        await createSessionNotification({
-          project_id,
-          type: "schedule_task_updated",
-          title: "อัปเดตความคืบหน้างาน",
-          message: updates.status ? `เปลี่ยนสถานะเป็น ${updates.status}` : `อัปเดตความคืบหน้าเป็น ${updates.percent_done}%`,
-          link: `/dashboard/sites/${encodeURIComponent(project_id)}/schedule`,
-        });
-      } catch (error) {
-        console.warn("Failed to create task update notification:", error);
-      }
-    }
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
@@ -190,7 +146,9 @@ export async function DELETE(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(projectId);
-    const fallbackRowIndex = rowIndex || (taskId ? await findTaskRowIndex(sheetId, projectId, taskId) : undefined);
+    const fallbackRowIndex = isSupabaseBackend()
+      ? rowIndex || undefined
+      : rowIndex || (taskId ? await findTaskRowIndex(sheetId, projectId, taskId) : undefined);
     const rowKey = isSupabaseBackend() && taskId ? taskId : rowIndex || taskId;
     await deleteRow("Tasks", rowKey, sheetId, fallbackRowIndex);
 

@@ -276,12 +276,11 @@ export async function GET(req: Request) {
     }
 
     const readSheetsProjects = async () => {
-      await ensureMasterSchema();
+      if (!isSupabaseBackend()) await ensureMasterSchema();
       return await findAllMaster("Projects");
     };
 
-    const shouldReadSupabase = mode === "basic" && isSupabaseReadEnabled("projects");
-    const projects = shouldReadSupabase
+    const projects = isSupabaseReadEnabled("projects")
       ? await readWithSheetsFallback("projects", getSupabaseProjects, readSheetsProjects)
       : await readSheetsProjects();
     const activeProjects = projects.filter((project) => project.active !== "FALSE");

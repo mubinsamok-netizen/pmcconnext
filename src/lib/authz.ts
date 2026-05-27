@@ -13,8 +13,23 @@ type ProjectLike = Record<string, unknown> & {
   project_id?: string;
 };
 
+const ACCESS_CACHE_TTL_MS = 60 * 1000;
+const accessibleProjectIdsCache = new Map<string, {
+  expiresAt: number;
+  promise: Promise<Set<string> | null>;
+}>();
+
 function normalizeEmail(email?: string | null) {
   return (email || "").trim().toLowerCase();
+}
+
+function accessCacheKey(user?: SessionUserLike | null) {
+  return [
+    normalizeEmail(user?.email),
+    user?.googleSub || "",
+    getAppRole(user?.role) || user?.role || "",
+    isSupabaseReadEnabled("auth") ? "supabase" : "sheets",
+  ].join("|");
 }
 
 export function isAdminRole(role?: string | null) {
@@ -79,15 +94,32 @@ export async function getAccessibleProjectIds(user?: SessionUserLike | null) {
   if (!user?.email && !user?.googleSub) return new Set<string>();
   if (isAdminRole(user.role)) return null;
 
-  if (isSupabaseReadEnabled("auth")) {
-    return await readWithSheetsFallback(
+  const cacheKey = accessCacheKey(user);
+  const cached = accessibleProjectIdsCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = isSupabaseReadEnabled("auth")
+    ? readWithSheetsFallback(
       "authorization",
       () => getAccessibleProjectIdsFromSupabase(user),
       () => getAccessibleProjectIdsFromSheets(user)
-    );
-  }
+    )
+    : getAccessibleProjectIdsFromSheets(user);
 
-  return await getAccessibleProjectIdsFromSheets(user);
+  accessibleProjectIdsCache.set(cacheKey, {
+    expiresAt: now + ACCESS_CACHE_TTL_MS,
+    promise,
+  });
+
+  try {
+    return await promise;
+  } catch (error) {
+    accessibleProjectIdsCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 export async function filterProjectsForUser<T extends ProjectLike>(projects: T[], user?: SessionUserLike | null) {

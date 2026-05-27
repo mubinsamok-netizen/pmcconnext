@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
-import { createNotification } from "@/lib/notifications";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
-import { toAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
 import {
@@ -387,16 +385,12 @@ async function ensureVoSheetPdf({
 }
 
 async function notifyRole(context: RouteContext, targetRole: string, type: string, title: string, message: string, link?: string) {
-  await createNotification({
-    project_id: context.project.project_id,
-    target_role: toAppRole(targetRole) || targetRole,
-    type,
-    title,
-    message,
-    link: link || `/dashboard/sites/${encodeURIComponent(context.project.project_id)}/variation-orders`,
-    created_by_email: context.session.user.email || "",
-    created_by_name: context.session.user.name || "",
-  });
+  void context;
+  void targetRole;
+  void type;
+  void title;
+  void message;
+  void link;
 }
 
 async function handleCreateVo(body: Record<string, unknown>, context: RouteContext) {

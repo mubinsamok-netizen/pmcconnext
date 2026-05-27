@@ -1220,7 +1220,9 @@ export async function insertSupabase(
   const schema = await getSchemaForConfig(config, resolvedProjectId);
   const rows = await supabaseInsert<unknown>(config.table, withTimestamps(config, config.toDb(data), "insert"), { schema });
   const keyValue = getKeyValue(config, data);
-  const inserted = (await config.fromDb(resolvedProjectId)).find((row) => text(row[config.keyColumn]) === keyValue) || rows[0] as SheetLikeRecord | undefined;
+  const inserted = keyValue
+    ? ({ _rowIndex: keyValue, ...data } as SheetLikeRecord)
+    : rows[0] as SheetLikeRecord | undefined;
   return { success: true, inserted };
 }
 

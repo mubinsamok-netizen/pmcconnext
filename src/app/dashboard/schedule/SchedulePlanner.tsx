@@ -796,7 +796,15 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to update task");
       }
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: current.data.map((item) => (
+          (task.task_id && item.task_id === task.task_id) || item._rowIndex === task._rowIndex
+            ? { ...item, ...patch }
+            : item
+        )),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setMessage(successMessage);
       return true;
     } catch (error: unknown) {
@@ -850,7 +858,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         });
       }));
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: nextTasks.map((item, index) => ({ ...item, order_index: String(index + 1) })),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setMessage("อัปเดตลำดับงานเรียบร้อยแล้ว ลำดับนี้จะถูกใช้ตอนพิมพ์ด้วย");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
@@ -905,7 +917,26 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to save task");
       }
 
-      await mutateTasks();
+      const json = await res.json() as { data?: Task };
+      const savedTask = (json.data || payload) as Task;
+      void mutateTasks((current) => {
+        if (!current) return current;
+        const taskId = savedTask.task_id || taskForm.task_id;
+        const exists = current.data.some((item) => (
+          (taskId && item.task_id === taskId) || item._rowIndex === savedTask._rowIndex
+        ));
+        return {
+          ...current,
+          data: exists
+            ? current.data.map((item) => (
+              (taskId && item.task_id === taskId) || item._rowIndex === savedTask._rowIndex
+                ? { ...item, ...savedTask }
+                : item
+            ))
+            : [...current.data, savedTask],
+        };
+      }, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setShowTaskForm(false);
       setMessage("บันทึกแผนงานเรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -936,7 +967,13 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to delete task");
       }
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: current.data.filter((item) => !(
+          (task.task_id && item.task_id === task.task_id) || item._rowIndex === task._rowIndex
+        )),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setPendingDeleteTask(null);
       setMessage("ลบแผนงานเรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -993,7 +1030,26 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to save milestone");
       }
 
-      await mutateMilestones();
+      const json = await res.json() as { data?: Milestone };
+      const savedMilestone = (json.data || payload) as Milestone;
+      void mutateMilestones((current) => {
+        if (!current) return current;
+        const milestoneId = savedMilestone.milestone_id || milestoneForm.milestone_id;
+        const exists = current.data.some((item) => (
+          (milestoneId && item.milestone_id === milestoneId) || item._rowIndex === savedMilestone._rowIndex
+        ));
+        return {
+          ...current,
+          data: exists
+            ? current.data.map((item) => (
+              (milestoneId && item.milestone_id === milestoneId) || item._rowIndex === savedMilestone._rowIndex
+                ? { ...item, ...savedMilestone }
+                : item
+            ))
+            : [...current.data, savedMilestone],
+        };
+      }, { revalidate: false });
+      void mutateMilestones().catch(() => undefined);
       setShowMilestoneForm(false);
       setMessage("บันทึก Milestone เรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -1024,7 +1080,13 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to delete milestone");
       }
 
-      await mutateMilestones();
+      void mutateMilestones((current) => current ? {
+        ...current,
+        data: current.data.filter((item) => !(
+          (milestoneForm.milestone_id && item.milestone_id === milestoneForm.milestone_id) || item._rowIndex === milestoneForm._rowIndex
+        )),
+      } : current, { revalidate: false });
+      void mutateMilestones().catch(() => undefined);
       setShowMilestoneForm(false);
       setMilestoneDeleteOpen(false);
       setMessage("ลบ Milestone เรียบร้อยแล้ว");

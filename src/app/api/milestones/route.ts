@@ -89,7 +89,9 @@ export async function PUT(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(project_id);
-    const fallbackRowIndex = legacyRowIndex || (milestoneId ? await findMilestoneRowIndex(sheetId, project_id, milestoneId) : undefined);
+    const fallbackRowIndex = isSupabaseBackend()
+      ? legacyRowIndex || undefined
+      : legacyRowIndex || (milestoneId ? await findMilestoneRowIndex(sheetId, project_id, milestoneId) : undefined);
     const rowKey = isSupabaseBackend() && milestoneId ? milestoneId : legacyRowIndex || milestoneId;
     await update("Milestones", rowKey, { ...updates, ...(milestoneId ? { milestone_id: milestoneId } : {}) }, sheetId, fallbackRowIndex);
 
@@ -111,7 +113,9 @@ export async function DELETE(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(projectId);
-    const fallbackRowIndex = rowIndex || (milestoneId ? await findMilestoneRowIndex(sheetId, projectId, milestoneId) : undefined);
+    const fallbackRowIndex = isSupabaseBackend()
+      ? rowIndex || undefined
+      : rowIndex || (milestoneId ? await findMilestoneRowIndex(sheetId, projectId, milestoneId) : undefined);
     const rowKey = isSupabaseBackend() && milestoneId ? milestoneId : rowIndex || milestoneId;
     await deleteRow("Milestones", rowKey, sheetId, fallbackRowIndex);
 

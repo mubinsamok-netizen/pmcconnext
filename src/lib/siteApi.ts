@@ -23,11 +23,12 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Admin only", status: 403 as const };
   }
 
-  if (!(await canAccessProject(projectId, session.user))) {
-    return { error: "Forbidden", status: 403 as const };
-  }
+  const [canAccess, projects] = await Promise.all([
+    canAccessProject(projectId, session.user),
+    findAllMaster("Projects") as unknown as Promise<SiteApiProject[]>,
+  ]);
+  if (!canAccess) return { error: "Forbidden", status: 403 as const };
 
-  const projects = await findAllMaster("Projects") as unknown as SiteApiProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) {
     return { error: "Project not found", status: 404 as const };
