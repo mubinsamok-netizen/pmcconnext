@@ -12,7 +12,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   QC_APPROVAL_LABELS,
@@ -68,6 +68,7 @@ type UploadPayload = {
 };
 
 const RESULT_OPTIONS: Array<QcChecklistItem["result"]> = ["pending", "pass", "repair", "fail"];
+type EditableQcField = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
 function todayInputValue() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -160,6 +161,7 @@ export default function QcChecklistsWorkspace({
   const [saving, setSaving] = useState("");
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const editorRef = useRef<HTMLDivElement | null>(null);
 
   const selected = useMemo(() => {
     return checklists.find((item) => item.qc_id === selectedId) || checklists[0];
@@ -179,6 +181,35 @@ export default function QcChecklistsWorkspace({
       : stats.approvalItemCount === 0
         ? "ยังไม่มีรายการที่เลือกผ่านสำหรับส่งอนุมัติ"
         : "";
+
+  const readMetaDraft = (): Partial<QcChecklist> => {
+    const root = editorRef.current;
+    const field = (name: string) => root?.querySelector<EditableQcField>(`[data-qc-field="${name}"]`)?.value ?? "";
+    return {
+      category: field("category"),
+      phase: field("phase"),
+      title: field("title"),
+      inspection_date: field("inspection_date"),
+      inspected_by_name: field("inspected_by_name"),
+      notes: field("notes"),
+    };
+  };
+
+  const readItemFieldDraft = (itemId: string, fieldName: string, fallback = "") => {
+    const root = editorRef.current;
+    if (!root) return fallback;
+    const fields = Array.from(root.querySelectorAll<EditableQcField>("[data-qc-item-id]"));
+    return fields.find((field) => field.dataset.qcItemId === itemId && field.dataset.qcItemField === fieldName)?.value ?? fallback;
+  };
+
+  const readItemsDraft = () => selectedItems.map((item) => ({
+    ...item,
+    section: readItemFieldDraft(item.item_id, "section", item.section),
+    title: readItemFieldDraft(item.item_id, "title", item.title),
+    acceptance: readItemFieldDraft(item.item_id, "acceptance", item.acceptance),
+    result: readItemFieldDraft(item.item_id, "result", item.result) as QcChecklistItem["result"],
+    notes: readItemFieldDraft(item.item_id, "notes", item.notes || ""),
+  }));
 
   const request = async (body: Record<string, unknown>, successMessage: string) => {
     setSaving(String(body.action || "save"));
@@ -216,7 +247,7 @@ export default function QcChecklistsWorkspace({
   const saveChecklist = async (items: QcChecklistItem[] = selectedItems, patch: Partial<QcChecklist> = {}) => {
     if (!selected) return;
     const uploads = await Promise.all(files.map(fileToUploadPayload));
-    await request({
+    const json = await request({
       action: "save",
       qc_id: selected.qc_id,
       category: patch.category ?? selected.category,
@@ -231,26 +262,38 @@ export default function QcChecklistsWorkspace({
       evidence_uploads: uploads,
     }, "บันทึก QC Checklist แล้ว");
     setFiles([]);
+    return json;
   };
 
   const updateChecklistMeta = (patch: Partial<QcChecklist>) => {
-    void saveChecklist(selectedItems, patch);
+    void saveChecklist(readItemsDraft(), { ...readMetaDraft(), ...patch });
   };
 
   const updateItem = (itemId: string, patch: Partial<QcChecklistItem>) => {
-    const nextItems = selectedItems.map((item) => item.item_id === itemId ? { ...item, ...patch } : item);
-    void saveChecklist(nextItems);
+    const nextItems = readItemsDraft().map((item) => item.item_id === itemId ? { ...item, ...patch } : item);
+    void saveChecklist(nextItems, readMetaDraft());
+  };
+
+  const requestAfterSavingDraft = async (body: Record<string, unknown>, successMessage: string) => {
+    const saved = await saveChecklist(readItemsDraft(), readMetaDraft());
+    if (!saved?.success) return null;
+    return request(body, successMessage);
   };
 
   const markApproved = async () => {
     if (!selected) return;
-    if (!readyForCustomer) {
+    const draftItems = readItemsDraft();
+    const draftStats = itemStats(draftItems);
+    const draftReadyForCustomer = draftStats.approvalItemCount > 0 && draftStats.issue === 0;
+    if (!draftReadyForCustomer) {
       setMessage(approvalBlockReason || "ต้องตรวจ QC ให้ผ่านครบทุกข้อก่อนบันทึกอนุมัติ");
       return;
     }
     const approvedBy = window.prompt("ชื่อลูกค้า/ผู้อนุมัติ", clientName || "");
     if (approvedBy === null) return;
     const note = window.prompt("หมายเหตุการอนุมัติ เช่น ลูกค้าตอบอนุมัติใน LINE", "") || "";
+    const saved = await saveChecklist(draftItems, readMetaDraft());
+    if (!saved?.success) return;
     await request({
       action: "approve",
       qc_id: selected.qc_id,
@@ -350,7 +393,7 @@ export default function QcChecklistsWorkspace({
             <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-10 text-center text-gray-400">เลือกหรือสร้าง QC Checklist ก่อน</div>
           ) : (
             <>
-              <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+              <div ref={editorRef} className="rounded-2xl border border-gray-200 bg-white shadow-sm">
                 <div className="border-l-4 border-orange-600 p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div>
@@ -368,6 +411,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block">
                           <span className="text-xs font-black text-gray-500">หมวด</span>
                           <input
+                            data-qc-field="category"
                             defaultValue={selected.category || ""}
                             onBlur={(event) => updateChecklistMeta({ category: event.target.value })}
                             className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
@@ -377,6 +421,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block">
                           <span className="text-xs font-black text-gray-500">ช่วงงาน</span>
                           <input
+                            data-qc-field="phase"
                             defaultValue={selected.phase || ""}
                             onBlur={(event) => updateChecklistMeta({ phase: event.target.value })}
                             className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
@@ -386,6 +431,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block md:col-span-2">
                           <span className="text-xs font-black text-gray-500">หัวข้อเอกสาร</span>
                           <input
+                            data-qc-field="title"
                             defaultValue={selected.title || ""}
                             onBlur={(event) => updateChecklistMeta({ title: event.target.value })}
                             className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
@@ -395,6 +441,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block">
                           <span className="text-xs font-black text-gray-500">วันที่ตรวจ</span>
                           <input
+                            data-qc-field="inspection_date"
                             type="date"
                             defaultValue={selected.inspection_date || todayInputValue()}
                             onBlur={(event) => updateChecklistMeta({ inspection_date: event.target.value })}
@@ -404,6 +451,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block">
                           <span className="text-xs font-black text-gray-500">ผู้ตรวจ</span>
                           <input
+                            data-qc-field="inspected_by_name"
                             defaultValue={selected.inspected_by_name || ""}
                             onBlur={(event) => updateChecklistMeta({ inspected_by_name: event.target.value })}
                             className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
@@ -413,6 +461,7 @@ export default function QcChecklistsWorkspace({
                         <label className="block md:col-span-2">
                           <span className="text-xs font-black text-gray-500">โซน/รายละเอียดตรวจ</span>
                           <input
+                            data-qc-field="notes"
                             defaultValue={selected.notes || ""}
                             onBlur={(event) => updateChecklistMeta({ notes: event.target.value })}
                             className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
@@ -437,15 +486,15 @@ export default function QcChecklistsWorkspace({
                       ) : null}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button onClick={() => saveChecklist()} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         {saving === "save" ? <Loader2 size={16} className="animate-spin" /> : <ClipboardCheck size={16} />}
                         บันทึก
                       </button>
-                      <button onClick={() => request({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      <button onClick={() => requestAfterSavingDraft({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         <FileText size={16} />
                         ออก PDF
                       </button>
-                      <button onClick={() => request({ action: "send_approval", qc_id: selected.qc_id, origin: window.location.origin }, "ส่ง LINE ขออนุมัติ QC แล้ว")} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                      <button onClick={() => requestAfterSavingDraft({ action: "send_approval", qc_id: selected.qc_id, origin: window.location.origin }, "ส่ง LINE ขออนุมัติ QC แล้ว")} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
                         <Send size={16} />
                         ส่งรายการที่ผ่าน
                       </button>
@@ -491,6 +540,8 @@ export default function QcChecklistsWorkspace({
                           <tr key={item.item_id} className="align-top">
                             <td className="px-4 py-3">
                               <input
+                                data-qc-item-field="section"
+                                data-qc-item-id={item.item_id}
                                 defaultValue={item.section}
                                 onBlur={(event) => updateItem(item.item_id, { section: event.target.value })}
                                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-orange-200"
@@ -499,6 +550,8 @@ export default function QcChecklistsWorkspace({
                             </td>
                             <td className="px-4 py-3">
                               <textarea
+                                data-qc-item-field="title"
+                                data-qc-item-id={item.item_id}
                                 defaultValue={item.title}
                                 rows={2}
                                 onBlur={(event) => updateItem(item.item_id, { title: event.target.value })}
@@ -508,6 +561,8 @@ export default function QcChecklistsWorkspace({
                             </td>
                             <td className="px-4 py-3">
                               <textarea
+                                data-qc-item-field="acceptance"
+                                data-qc-item-id={item.item_id}
                                 defaultValue={item.acceptance}
                                 rows={2}
                                 onBlur={(event) => updateItem(item.item_id, { acceptance: event.target.value })}
@@ -517,6 +572,8 @@ export default function QcChecklistsWorkspace({
                             </td>
                             <td className="px-4 py-3">
                               <select
+                                data-qc-item-field="result"
+                                data-qc-item-id={item.item_id}
                                 value={item.result || "pending"}
                                 onChange={(event) => updateItem(item.item_id, { result: event.target.value as QcChecklistItem["result"] })}
                                 className={`rounded-lg border px-2.5 py-1.5 text-xs font-extrabold outline-none ${resultClass(item.result)}`}
@@ -526,6 +583,8 @@ export default function QcChecklistsWorkspace({
                             </td>
                             <td className="px-4 py-3">
                               <input
+                                data-qc-item-field="notes"
+                                data-qc-item-id={item.item_id}
                                 defaultValue={item.notes || ""}
                                 onBlur={(event) => updateItem(item.item_id, { notes: event.target.value })}
                                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200"
@@ -571,7 +630,7 @@ export default function QcChecklistsWorkspace({
                         </button>
                       </div>
                     ))}
-                    <button onClick={() => saveChecklist()} disabled={Boolean(saving)} className="mt-2 inline-flex w-fit items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white hover:bg-orange-700 disabled:opacity-60">
+                    <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="mt-2 inline-flex w-fit items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white hover:bg-orange-700 disabled:opacity-60">
                       อัปโหลดหลักฐานและบันทึก
                     </button>
                   </div>
