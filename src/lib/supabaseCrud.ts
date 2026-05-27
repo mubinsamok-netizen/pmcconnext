@@ -1233,7 +1233,8 @@ export async function updateSupabase(
   const keyValue = getKeyValue(config, patch, rowKey);
   if (!keyValue) throw new Error(`Missing ${config.keyColumn} for Supabase update`);
   const schema = await getSchemaForConfig(config, text(projectId || patch.project_id));
-  await supabasePatch<unknown>(config.table, config.keyColumn, keyValue, withTimestamps(config, config.toDb(patch), "update"), { schema });
+  const rows = await supabasePatch<unknown>(config.table, config.keyColumn, keyValue, withTimestamps(config, config.toDb(patch), "update"), { schema });
+  if (rows.length === 0) throw new Error(`Supabase update found no ${config.table} row for ${config.keyColumn}=${keyValue}`);
   return { success: true };
 }
 
@@ -1245,6 +1246,7 @@ export async function deleteSupabase(
   const keyValue = text(rowKey);
   if (!keyValue) throw new Error(`Missing ${config.keyColumn} for Supabase delete`);
   const schema = await getSchemaForConfig(config, projectId);
-  await supabaseDelete<unknown>(config.table, config.keyColumn, keyValue, { schema });
+  const rows = await supabaseDelete<unknown>(config.table, config.keyColumn, keyValue, { schema });
+  if (rows.length === 0) throw new Error(`Supabase delete found no ${config.table} row for ${config.keyColumn}=${keyValue}`);
   return { success: true };
 }

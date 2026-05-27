@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { deleteRow, findAll, insert, update } from "@/lib/sheetsCrud";
+import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { createSessionNotification } from "@/lib/notifications";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
@@ -11,12 +11,33 @@ function getErrorMessage(error: unknown) {
 }
 
 async function findTaskRowIndex(sheetId: string, projectId: string | null, taskId: string) {
-  const rows = await findAll("Tasks", sheetId);
+  const rows = await findAllRaw("Tasks", sheetId);
   const row = rows.find((task) => (
     task.task_id === taskId &&
     (!projectId || task.project_id === projectId)
   ));
   return row?._rowIndex;
+}
+
+function filterProjectTasks<T extends Record<string, string | number | undefined>>(tasks: T[], projectId?: string | null) {
+  if (!projectId) return tasks;
+  return tasks.filter((task) => String(task.project_id || "") === projectId);
+}
+
+function mergeTaskRows<T extends Record<string, string | number | undefined>>(primary: T[], fallback: T[]) {
+  const merged = new Map<string, T>();
+
+  fallback.forEach((task, index) => {
+    const key = String(task.task_id || task._rowIndex || `fallback-${index}`);
+    merged.set(key, task);
+  });
+
+  primary.forEach((task, index) => {
+    const key = String(task.task_id || task._rowIndex || `primary-${index}`);
+    merged.set(key, task);
+  });
+
+  return Array.from(merged.values());
 }
 
 export async function GET(req: Request) {
@@ -26,18 +47,19 @@ export async function GET(req: Request) {
 
     const readSheetsTasks = async () => {
       const { sheetId } = await getProjectContext(projectId);
-      await ensureSchema(sheetId);
+      if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
-      let tasks = await findAll("Tasks", sheetId);
-      if (projectId) {
-        tasks = tasks.filter(t => t.project_id === projectId);
-      }
-
-      return tasks;
+      return filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
     };
 
     if (isSupabaseReadEnabled("site")) {
-      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
+      const tasks = await readWithSheetsFallback("tasks", async () => {
+        const supabaseTasks = await getSupabaseTasks(projectId);
+        if (!shouldFallbackToSheets()) return supabaseTasks;
+
+        const sheetTasks = await readSheetsTasks();
+        return mergeTaskRows(supabaseTasks, sheetTasks);
+      }, readSheetsTasks);
       return NextResponse.json({ success: true, data: tasks });
     }
 
@@ -77,7 +99,7 @@ export async function POST(req: Request) {
     const { sheetId } = await getProjectContext(project_id);
     if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
-    const existingTasks = (await findAll("Tasks", sheetId)).filter((task) => task.project_id === project_id);
+    const existingTasks = filterProjectTasks(await findAllRaw("Tasks", sheetId), project_id);
     const nextOrder = existingTasks.length + 1;
 
     const taskData = {
