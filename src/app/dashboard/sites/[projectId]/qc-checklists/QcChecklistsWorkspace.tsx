@@ -395,8 +395,8 @@ export default function QcChecklistsWorkspace({
             <>
               <div ref={editorRef} className="rounded-2xl border border-gray-200 bg-white shadow-sm">
                 <div className="border-l-4 border-orange-600 p-5">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
+                  <div className="flex flex-col gap-5 xl:grid xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start xl:gap-6">
+                    <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`rounded-full border px-2.5 py-1 text-xs font-extrabold ${statusClass(selected.status)}`}>
                           {QC_STATUS_LABELS[String(selected.status || "draft")] || selected.status}
@@ -485,30 +485,30 @@ export default function QcChecklistsWorkspace({
                         </div>
                       ) : null}
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                    <div className="grid w-full grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-2 shadow-sm xl:w-[360px] [&>*]:h-10 [&>*]:min-w-0 [&>*]:justify-center [&>*]:whitespace-nowrap [&>*:nth-child(3)]:col-span-2 [&>*:nth-child(3)]:h-11 [&>*:nth-child(4)]:col-span-2">
+                      <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         {saving === "save" ? <Loader2 size={16} className="animate-spin" /> : <ClipboardCheck size={16} />}
                         บันทึก
                       </button>
-                      <button onClick={() => requestAfterSavingDraft({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving)} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      <button onClick={() => requestAfterSavingDraft({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving)} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         <FileText size={16} />
                         ออก PDF
                       </button>
-                      <button onClick={() => requestAfterSavingDraft({ action: "send_approval", qc_id: selected.qc_id, origin: window.location.origin }, "ส่ง LINE ขออนุมัติ QC แล้ว")} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                      <button onClick={() => requestAfterSavingDraft({ action: "send_approval", qc_id: selected.qc_id, origin: window.location.origin }, "ส่ง LINE ขออนุมัติ QC แล้ว")} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="col-span-2 inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-slate-950 px-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
                         <Send size={16} />
                         ส่งรายการที่ผ่าน
                       </button>
-                      <button onClick={markApproved} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">
+                      <button onClick={markApproved} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="col-span-2 inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-emerald-600 px-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">
                         <CheckCircle2 size={16} />
                         ลูกค้าอนุมัติแล้ว
                       </button>
                       {selected.pdf_url ? (
-                        <a href={String(selected.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
+                        <a href={String(selected.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50">
                           <ExternalLink size={16} />
                           เปิด PDF
                         </a>
                       ) : null}
-                      <button onClick={deleteChecklist} disabled={Boolean(saving) || !canDeleteSelected} title={canDeleteSelected ? "ลบรายการนี้" : "ลบไม่ได้ เพราะส่งให้ลูกค้าหรืออนุมัติแล้ว"} className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-sm font-bold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
+                      <button onClick={deleteChecklist} disabled={Boolean(saving) || !canDeleteSelected} title={canDeleteSelected ? "ลบรายการนี้" : "ลบไม่ได้ เพราะส่งให้ลูกค้าหรืออนุมัติแล้ว"} className={`${selected.pdf_url ? "" : "col-span-2"} inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-red-200 bg-white px-3 text-sm font-bold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50`}>
                         <Trash2 size={16} />
                         ลบรายการนี้
                       </button>
