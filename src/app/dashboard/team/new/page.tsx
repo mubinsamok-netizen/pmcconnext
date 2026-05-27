@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
@@ -24,11 +25,19 @@ function getErrorMessage(error: unknown) {
 
 export default function CreateTeamPage() {
   const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState("Engineer");
-  const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
+  const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
   const projects = projectsData?.data || [];
+
+  useEffect(() => {
+    if (sessionStatus !== "loading" && !isAdmin) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isAdmin, router, sessionStatus]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -61,6 +70,14 @@ export default function CreateTeamPage() {
       setLoading(false);
     }
   };
+
+  if (sessionStatus === "loading" || !isAdmin) {
+    return (
+      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
+        กำลังตรวจสอบสิทธิ์...
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">

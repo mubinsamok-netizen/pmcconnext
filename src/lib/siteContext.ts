@@ -1,5 +1,6 @@
 import { SHEET_ID } from "./google";
 import { getMasterProjects } from "./masterProjects";
+import { isSupabaseSiteSchemaMode, getSupabaseSiteSchemaName } from "./supabaseSchema";
 
 type MasterProject = {
   project_id: string;
@@ -35,6 +36,12 @@ export async function getProjectContext(projectId?: string | null) {
 
   const siteSheetId = String(project.site_sheet_id || "").trim();
   if (!siteSheetId) {
+    if (isSupabaseSiteSchemaMode()) {
+      return {
+        sheetId: getSupabaseSiteSchemaName(projectId),
+        driveFolderId: project?.drive_folder_id || "",
+      };
+    }
     throw new Error(`Project ${projectId} has no site sheet`);
   }
 

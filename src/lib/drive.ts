@@ -2,6 +2,22 @@ import { auth, drive, DRIVE_ROOT_FOLDER_ID } from "./google";
 import { Readable } from "stream";
 
 const FOLDER_LOOKUP_CACHE_TTL_MS = 60 * 60 * 1000;
+const GOOGLE_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
+
+export type DriveFolderFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string | null;
+  webViewLink?: string | null;
+  webContentLink?: string | null;
+  createdTime?: string | null;
+  modifiedTime?: string | null;
+  parents?: string[] | null;
+  folderPath: string;
+  isFolder: boolean;
+};
+
 const folderLookupCache = new Map<string, {
   expiresAt: number;
   folder: {
@@ -13,6 +29,10 @@ const folderLookupCache = new Map<string, {
 
 function getFolderCacheKey(folderName: string, parentId: string) {
   return `${parentId}:${folderName}`;
+}
+
+function escapeDriveQueryValue(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 export async function createFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
@@ -101,6 +121,80 @@ export async function uploadFile(
     console.error(`Error uploading file ${fileName}:`, error);
     throw error;
   }
+}
+
+export async function listDriveFolderFiles(
+  folderId: string,
+  options: {
+    recursive?: boolean;
+    maxDepth?: number;
+    pageSize?: number;
+    maxFiles?: number;
+  } = {}
+) {
+  const rootFolderId = folderId.trim();
+  if (!rootFolderId) return [] as DriveFolderFile[];
+
+  const recursive = options.recursive ?? true;
+  const maxDepth = options.maxDepth ?? 4;
+  const pageSize = options.pageSize ?? 100;
+  const maxFiles = options.maxFiles ?? 500;
+  const results: DriveFolderFile[] = [];
+  const visitedFolders = new Set<string>();
+
+  async function readFolder(currentFolderId: string, depth: number, folderPath: string) {
+    if (!currentFolderId || visitedFolders.has(currentFolderId) || results.length >= maxFiles) return;
+    visitedFolders.add(currentFolderId);
+
+    let pageToken: string | undefined;
+    do {
+      const response = await drive.files.list({
+        q: `'${escapeDriveQueryValue(currentFolderId)}' in parents and trashed = false`,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
+        spaces: "drive",
+        pageSize,
+        pageToken,
+        orderBy: "folder,name_natural",
+      });
+
+      for (const file of response.data.files || []) {
+        const id = file.id || "";
+        const name = file.name || id;
+        const mimeType = file.mimeType || "application/octet-stream";
+        const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
+        if (!id) continue;
+
+        const item: DriveFolderFile = {
+          id,
+          name,
+          mimeType,
+          size: file.size || null,
+          webViewLink: file.webViewLink || null,
+          webContentLink: file.webContentLink || null,
+          createdTime: file.createdTime || null,
+          modifiedTime: file.modifiedTime || null,
+          parents: file.parents || null,
+          folderPath,
+          isFolder,
+        };
+        results.push(item);
+        if (results.length >= maxFiles) break;
+
+        if (recursive && isFolder && depth < maxDepth) {
+          const nextPath = folderPath ? `${folderPath} / ${name}` : name;
+          await readFolder(id, depth + 1, nextPath);
+          if (results.length >= maxFiles) break;
+        }
+      }
+
+      pageToken = response.data.nextPageToken || undefined;
+    } while (pageToken && results.length < maxFiles);
+  }
+
+  await readFolder(rootFolderId, 0, "");
+  return results;
 }
 
 async function getDriveAccessToken() {

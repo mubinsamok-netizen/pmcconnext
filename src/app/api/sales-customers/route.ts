@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { isForemanRole } from "@/lib/siteAccess";
+import { isAdminRole } from "@/lib/authz";
 import { findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
@@ -41,8 +41,8 @@ async function requireSalesCrmAccess() {
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (isForemanRole(session.user.role)) {
-    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้า Sales CRM" }, { status: 403 });
+  if (!isAdminRole(session.user.role)) {
+    return NextResponse.json({ error: "Sales CRM ใช้ได้เฉพาะ Admin เท่านั้น" }, { status: 403 });
   }
   return null;
 }

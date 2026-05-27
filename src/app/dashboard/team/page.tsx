@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Edit3, Plus, Users, Mail, Phone, ShieldCheck, MapPin, Filter } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
@@ -28,9 +30,12 @@ type ApiResponse<T> = {
 };
 
 export default function TeamPage() {
+  const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
   const [roleFilter, setRoleFilter] = useState("all");
-  const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
-  const { data: projectsData } = useSWR<ApiResponse<Project>>("/api/projects?mode=basic", fetcher);
+  const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
+  const { data: projectsData } = useSWR<ApiResponse<Project>>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
   const team = useMemo(() => data?.data || [], [data?.data]);
   const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);
@@ -46,6 +51,20 @@ export default function TeamPage() {
     if (roleFilter === "all") return team;
     return team.filter((member) => getAppRole(member.role) === roleFilter);
   }, [roleFilter, team]);
+
+  useEffect(() => {
+    if (sessionStatus !== "loading" && !isAdmin) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isAdmin, router, sessionStatus]);
+
+  if (sessionStatus === "loading" || !isAdmin) {
+    return (
+      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
+        กำลังตรวจสอบสิทธิ์...
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">

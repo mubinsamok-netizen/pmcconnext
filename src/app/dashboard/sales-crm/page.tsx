@@ -25,7 +25,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
-import { isForemanRole } from "@/lib/siteAccess";
+import { getAppRole } from "@/lib/roles";
 
 type LeadStatus = "new" | "scheduled" | "waiting" | "deposited" | "not_interested";
 type InterestLevel = "low" | "medium" | "high";
@@ -223,8 +223,9 @@ function getFollowUpInfo(customer: Customer) {
 
 export default function SalesCrmPage() {
   const router = useRouter();
-  const { data: session } = useSession();
-  const { data, error, isLoading, mutate } = useSWR<CustomersResponse>("/api/sales-customers", fetcher);
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
+  const { data, error, isLoading, mutate } = useSWR<CustomersResponse>(isAdmin ? "/api/sales-customers" : null, fetcher);
   const [leadForm, setLeadForm] = useState(emptyLead);
   const [editForm, setEditForm] = useState(emptyLead);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -237,13 +238,12 @@ export default function SalesCrmPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pendingCloseLead, setPendingCloseLead] = useState<Customer | null>(null);
-  const isForeman = isForemanRole(session?.user?.role);
 
   useEffect(() => {
-    if (isForeman) {
+    if (sessionStatus !== "loading" && !isAdmin) {
       router.replace("/dashboard/projects");
     }
-  }, [isForeman, router]);
+  }, [isAdmin, router, sessionStatus]);
 
   const customers = useMemo(() => data?.data || [], [data?.data]);
 
@@ -454,6 +454,14 @@ export default function SalesCrmPage() {
     window.print();
     window.setTimeout(() => document.body.classList.remove("printing-sales-crm"), 250);
   };
+
+  if (sessionStatus === "loading" || !isAdmin) {
+    return (
+      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
+        กำลังตรวจสอบสิทธิ์...
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">

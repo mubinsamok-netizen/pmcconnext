@@ -4,6 +4,7 @@ import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 
 export type SiteApiProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -34,6 +35,9 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
 
   const siteSheetId = String(project.site_sheet_id || "").trim();
   if (!siteSheetId) {
+    if (isSupabaseSiteSchemaMode()) {
+      return { session, project, siteSheetId: getSupabaseSiteSchemaName(projectId) };
+    }
     return { error: "Project has no site sheet", status: 400 as const };
   }
 

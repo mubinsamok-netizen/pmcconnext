@@ -1,4 +1,5 @@
 import { supabaseSelect } from "@/lib/supabaseRest";
+import { getSupabaseMasterSchema, getSupabaseSiteSchema } from "@/lib/supabaseSchema";
 
 export type SheetLikeRecord = Record<string, string | number | undefined>;
 
@@ -19,6 +20,7 @@ type SupabaseProject = {
   site_link: string | null;
   pm_name: string | null;
   se_name: string | null;
+  architect_name: string | null;
   cover_file_id: string | null;
   cover_url: string | null;
   site_sheet_id: string | null;
@@ -501,9 +503,21 @@ function sheetRowFromSupabase(
   return output;
 }
 
+async function supabaseSiteSelect<T>(
+  projectId: string | null | undefined,
+  table: string,
+  params: Record<string, string>
+) {
+  return supabaseSelect<T>(table, params, {
+    schema: await getSupabaseSiteSchema(projectId),
+  });
+}
+
 export async function getSupabaseProjects() {
   const rows = await supabaseSelect<SupabaseProject>("projects", {
     order: "project_id.asc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -524,6 +538,7 @@ export async function getSupabaseProjects() {
     site_link: text(row.site_link),
     pm_name: text(row.pm_name),
     se_name: text(row.se_name),
+    architect_name: text(row.architect_name),
     cover_file_id: text(row.cover_file_id),
     cover_url: text(row.cover_url),
     site_sheet_id: text(row.site_sheet_id),
@@ -541,6 +556,8 @@ export async function getSupabaseProjects() {
 export async function getSupabaseTeamMembers() {
   const rows = await supabaseSelect<SupabaseTeamMember>("team_members", {
     order: "name.asc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -563,6 +580,8 @@ export async function getSupabaseTeamMembers() {
 export async function getSupabaseTeamMemberCredentials() {
   const rows = await supabaseSelect<SupabaseTeamMember>("team_members", {
     order: "name.asc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -585,6 +604,8 @@ export async function getSupabaseTeamMemberCredentials() {
 export async function getSupabaseUserProjectAccess() {
   const rows = await supabaseSelect<SupabaseUserProjectAccess>("user_project_access", {
     order: "project_id.asc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -601,6 +622,8 @@ export async function getSupabaseUserProjectAccess() {
 export async function getSupabaseCustomers() {
   const rows = await supabaseSelect<SupabaseRow>("customers", {
     order: "created_at.desc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row) => sheetRowFromSupabase(row, "id", [
@@ -637,6 +660,8 @@ export async function getSupabaseCustomers() {
 export async function getSupabaseNotifications() {
   const rows = await supabaseSelect<SupabaseNotification>("notifications", {
     order: "created_at.desc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -661,6 +686,8 @@ export async function getSupabaseNotifications() {
 export async function getSupabaseAuditLogs() {
   const rows = await supabaseSelect<SupabaseAuditLog>("audit_logs", {
     order: "timestamp.desc",
+  }, {
+    schema: getSupabaseMasterSchema(),
   });
 
   return rows.map((row): SheetLikeRecord => ({
@@ -687,7 +714,7 @@ export async function getSupabaseTasks(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseTask>("tasks", params);
+  const rows = await supabaseSiteSelect<SupabaseTask>(projectId, "tasks", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.task_id,
@@ -723,7 +750,7 @@ export async function getSupabaseMilestones(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseMilestone>("milestones", params);
+  const rows = await supabaseSiteSelect<SupabaseMilestone>(projectId, "milestones", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.milestone_id,
@@ -743,7 +770,7 @@ export async function getSupabaseBudget(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("budget", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "budget", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "budget_id", [
     "budget_id",
@@ -765,7 +792,7 @@ export async function getSupabaseMaterials(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("materials", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "materials", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "material_id", [
     "material_id",
@@ -794,7 +821,7 @@ export async function getSupabaseIssues(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("issues", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "issues", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "issue_id", [
     "issue_id",
@@ -818,7 +845,7 @@ export async function getSupabaseDailyReports(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseDailyReport>("daily_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -864,7 +891,7 @@ export async function getSupabaseWeeklyReports(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseWeeklyReport>("weekly_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseWeeklyReport>(projectId, "weekly_reports", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -904,7 +931,7 @@ export async function getSupabaseMonthlyReports(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseMonthlyReport>("monthly_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseMonthlyReport>(projectId, "monthly_reports", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -954,7 +981,7 @@ export async function getSupabaseSiteNotes(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseSiteNote>("site_notes", params);
+  const rows = await supabaseSiteSelect<SupabaseSiteNote>(projectId, "site_notes", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.note_id,
@@ -985,7 +1012,7 @@ export async function getSupabaseSiteMemos(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseSiteMemo>("site_memos", params);
+  const rows = await supabaseSiteSelect<SupabaseSiteMemo>(projectId, "site_memos", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "memo_id", [
     "memo_id",
@@ -1039,7 +1066,7 @@ export async function getSupabaseSiteMemoEvidence(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseSiteMemoEvidence>("site_memo_evidence", params);
+  const rows = await supabaseSiteSelect<SupabaseSiteMemoEvidence>(projectId, "site_memo_evidence", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "evidence_id", [
     "evidence_id",
@@ -1069,7 +1096,7 @@ export async function getSupabaseProjectDocuments(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseProjectDocument>("project_documents", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectDocument>(projectId, "project_documents", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.document_id,
@@ -1097,7 +1124,7 @@ export async function getSupabaseProjectLifecycle(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseProjectLifecycle>("project_lifecycle", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectLifecycle>(projectId, "project_lifecycle", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.lifecycle_id,
@@ -1132,7 +1159,7 @@ export async function getSupabaseProjectWarranty(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseProjectWarranty>("project_warranty", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectWarranty>(projectId, "project_warranty", params);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.warranty_id,
@@ -1159,7 +1186,7 @@ export async function getSupabaseDefectRounds(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("defect_rounds", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_rounds", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "round_id", [
     "round_id",
@@ -1210,7 +1237,7 @@ export async function getSupabaseDefectItems(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("defect_items", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_items", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "item_id", [
     "item_id",
@@ -1251,7 +1278,7 @@ export async function getSupabaseDefectEvidence(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("defect_evidence", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_evidence", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "evidence_id", [
     "evidence_id",
@@ -1282,7 +1309,7 @@ export async function getSupabaseQcChecklists(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("qc_checklists", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "qc_checklists", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "qc_id", [
     "qc_id",
@@ -1334,7 +1361,7 @@ export async function getSupabaseCustomerDecisions(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("customer_decisions", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "customer_decisions", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "decision_id", [
     "decision_id",
@@ -1382,7 +1409,7 @@ export async function getSupabaseVariationOrders(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseVariationOrder>("variation_orders", params);
+  const rows = await supabaseSiteSelect<SupabaseVariationOrder>(projectId, "variation_orders", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "vo_id", [
     "vo_id",
@@ -1459,7 +1486,7 @@ export async function getSupabaseVoItems(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("vo_items", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_items", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "item_id", [
     "item_id",
@@ -1484,7 +1511,7 @@ export async function getSupabaseVoPayments(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("vo_payments", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_payments", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "payment_id", [
     "payment_id",
@@ -1513,7 +1540,7 @@ export async function getSupabaseVoDocuments(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("vo_documents", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_documents", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "document_id", [
     "document_id",
@@ -1540,7 +1567,7 @@ export async function getSupabaseVoTaskLinks(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("vo_task_links", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_task_links", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "link_id", [
     "link_id",
@@ -1565,7 +1592,7 @@ export async function getSupabaseVoFinanceLedger(projectId?: string | null) {
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSelect<SupabaseRow>("vo_finance_ledger", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_finance_ledger", params);
 
   return rows.map((row) => sheetRowFromSupabase(row, "ledger_id", [
     "ledger_id",

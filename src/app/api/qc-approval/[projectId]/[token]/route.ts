@@ -5,7 +5,7 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { buildQcApprovedLineFlex, buildQcPdfHtml, getQcApprovalReadiness, parseQcEvidence, parseQcItems, safeJsonStringify, type QcChecklistRecord, type QcEvidenceFile } from "@/lib/qcChecklists";
+import { buildQcApprovedLineFlex, buildQcPdfHtml, getQcApprovalItems, getQcApprovalReadiness, parseQcEvidence, parseQcItems, safeJsonStringify, type QcChecklistRecord, type QcEvidenceFile } from "@/lib/qcChecklists";
 import { findAll, findAllMaster, findAllRaw, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
@@ -55,9 +55,10 @@ async function getPublicContext(projectId: string, token: string) {
 }
 
 function publicPayload(project: PublicProject, checklist: QcChecklistRecord) {
-  const items = parseQcItems(checklist.items_json);
+  const allItems = parseQcItems(checklist.items_json);
+  const items = getQcApprovalItems(allItems);
   const evidence = parseQcEvidence(checklist.evidence_files_json);
-  const readiness = getQcApprovalReadiness(items);
+  const readiness = getQcApprovalReadiness(allItems);
   return {
     project: {
       project_id: project.project_id,
@@ -74,6 +75,7 @@ function publicPayload(project: PublicProject, checklist: QcChecklistRecord) {
       approval_status: checklist.approval_status || "pending",
       inspection_date: checklist.inspection_date || "",
       inspected_by_name: checklist.inspected_by_name || "",
+      notes: checklist.notes || "",
       customer_approved_at: checklist.customer_approved_at || "",
       customer_approved_by: checklist.customer_approved_by || "",
       customer_approval_note: checklist.customer_approval_note || "",

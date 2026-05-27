@@ -214,9 +214,16 @@ body {
 .dark .dashboard-shell .bg-gray-50,
 .dark .dashboard-shell .bg-slate-50,
 .dark .dashboard-shell .bg-orange-50,
+.dark .dashboard-shell .bg-amber-50,
+.dark .dashboard-shell .bg-blue-50,
+.dark .dashboard-shell .bg-emerald-50,
 .dark .dashboard-shell .bg-red-50,
 .dark .dashboard-shell .bg-gray-100,
-.dark .dashboard-shell .bg-slate-100 {
+.dark .dashboard-shell .bg-slate-100,
+.dark .dashboard-shell .bg-gray-50\/70,
+.dark .dashboard-shell .bg-slate-50\/60,
+.dark .dashboard-shell .bg-orange-50\/40,
+.dark .dashboard-shell .bg-orange-50\/70 {
   background-color: var(--dashboard-surface-muted) !important;
 }
 
@@ -239,6 +246,8 @@ body {
 
 .dark .dashboard-shell .text-gray-950,
 .dark .dashboard-shell .text-gray-900,
+.dark .dashboard-shell .text-gray-800,
+.dark .dashboard-shell .text-slate-800,
 .dark .dashboard-shell .text-slate-900,
 .dark .dashboard-shell .text-slate-950 {
   color: var(--dashboard-text) !important;

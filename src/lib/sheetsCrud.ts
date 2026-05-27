@@ -9,6 +9,7 @@ import {
   updateSupabase,
 } from "./supabaseCrud";
 import { isSupabaseBackend, shouldFallbackToSheets } from "./supabaseRest";
+import { isSupabaseSiteSchemaMode, resolveSupabaseProjectId } from "./supabaseSchema";
 
 // Convert A1 notation column index (0-based) to Letter
 const colToLetter = (col: number) => {
@@ -279,11 +280,20 @@ function warnSupabaseFallback(operation: string, error: unknown) {
   console.warn(`Supabase ${operation} failed. Falling back to Google Sheets.`, error);
 }
 
+async function resolveSiteProjectId(spreadsheetId: string, data?: Record<string, SheetValue>) {
+  if (!isSupabaseSiteSchemaMode()) return textValue(data?.project_id) || "";
+  return await resolveSupabaseProjectId(textValue(data?.project_id) || spreadsheetId);
+}
+
+function textValue(value: unknown) {
+  return String(value ?? "").trim();
+}
+
 export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID) {
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await findAllSupabase(supabaseConfig);
+      return await findAllSupabase(supabaseConfig, await resolveSiteProjectId(spreadsheetId));
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
       warnSupabaseFallback(`read ${String(tableName)}`, error);
@@ -299,12 +309,13 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
   const pendingTables: string[] = [];
   const pendingPromises: Promise<void>[] = [];
   const now = Date.now();
+  const supabaseProjectId = shouldUseSupabase() ? await resolveSiteProjectId(spreadsheetId) : "";
 
   uniqueTableNames.forEach((tableName) => {
     const supabaseConfig = getSupabaseSiteConfig(tableName);
     if (shouldUseSupabase() && supabaseConfig) {
       pendingPromises.push(
-        findAllSupabase(supabaseConfig)
+        findAllSupabase(supabaseConfig, supabaseProjectId)
           .then((rows) => {
             result[tableName as SiteTable] = rows;
           })
@@ -454,7 +465,7 @@ export async function insert(tableName: SiteTable, data: Record<string, SheetVal
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await insertSupabase(supabaseConfig, data);
+      return await insertSupabase(supabaseConfig, data, await resolveSiteProjectId(spreadsheetId, data));
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
       warnSupabaseFallback(`insert ${String(tableName)}`, error);
@@ -487,12 +498,13 @@ export async function update(
   rowIndex: RowKey,
   patch: Record<string, SheetValue>,
   spreadsheetId: string = SHEET_ID,
-  fallbackRowIndex?: RowKey
+  fallbackRowIndex?: RowKey,
+  projectId?: string | null
 ) {
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await updateSupabase(supabaseConfig, rowIndex, patch);
+      return await updateSupabase(supabaseConfig, rowIndex, patch, await resolveSiteProjectId(projectId || spreadsheetId, patch));
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
       warnSupabaseFallback(`update ${String(tableName)}`, error);
@@ -539,12 +551,13 @@ export async function deleteRow(
   tableName: SiteTable,
   rowIndex: RowKey,
   spreadsheetId: string = SHEET_ID,
-  fallbackRowIndex?: RowKey
+  fallbackRowIndex?: RowKey,
+  projectId?: string | null
 ) {
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await deleteSupabase(supabaseConfig, rowIndex);
+      return await deleteSupabase(supabaseConfig, rowIndex, await resolveSiteProjectId(projectId || spreadsheetId));
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
       warnSupabaseFallback(`delete ${String(tableName)}`, error);

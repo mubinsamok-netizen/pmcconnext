@@ -964,6 +964,44 @@ export const QC_TEMPLATES = [
         "ไม่มีเศษวัสดุอุดตันและฝาปิดเรียบร้อย"
       ]
     ]
+  },
+  {
+    "template_id": "qc-spc-general",
+    "category": "SPC",
+    "phase": "งาน SPC",
+    "title": "ตรวจงาน SPC",
+    "items": [
+      [
+        "เตรียมพื้นที่",
+        "ระบุโซน/พื้นที่ตรวจชัดเจนและตรงกับแผนงานจริง",
+        "ตรวจตำแหน่งหน้างาน เทียบแบบ/รายการงาน และบันทึกโซนก่อนเริ่มตรวจ"
+      ],
+      [
+        "เตรียมพื้นที่",
+        "พื้นที่พร้อมตรวจ ไม่มีสิ่งกีดขวางหรือความเสี่ยงที่กระทบคุณภาพงาน",
+        "เคลียร์พื้นที่ ทำความสะอาด และกั้นเขตทำงานก่อนตรวจ"
+      ],
+      [
+        "วัสดุและอุปกรณ์",
+        "วัสดุ อุปกรณ์ และเครื่องมือที่ใช้ตรงตามสเปกหรือรายการอนุมัติ",
+        "ตรวจเอกสารอนุมัติวัสดุ ปริมาณ และสภาพก่อนใช้งาน"
+      ],
+      [
+        "ระหว่างดำเนินงาน",
+        "ขั้นตอนทำงานเป็นไปตามแบบ วิธีการ และมาตรฐานที่โครงการกำหนด",
+        "ตรวจแนว ระดับ ระยะ และรายละเอียดสำคัญตามงานจริงในแต่ละโซน"
+      ],
+      [
+        "ผลสำเร็จงาน",
+        "ผลงานเรียบร้อย ได้แนว ได้ระดับ ไม่มีรอยเสียหายหรือจุดบกพร่องที่ต้องแก้",
+        "ตรวจคุณภาพผิว งานเก็บรายละเอียด และจุดต่อเนื่องกับงานข้างเคียง"
+      ],
+      [
+        "ส่งมอบพื้นที่",
+        "เก็บงาน ทำความสะอาด และถ่ายรูปหลักฐานก่อนส่งอนุมัติ",
+        "แนบรูป/เอกสารประกอบ พร้อมหมายเหตุเฉพาะโซนที่ตรวจ"
+      ]
+    ]
   }
 ] as const;
 export function createQcId() {
@@ -1008,6 +1046,10 @@ export function parseQcEvidence(value?: string | number) {
   } catch {
     return [];
   }
+}
+
+export function getQcApprovalItems(items: QcChecklistItem[]) {
+  return items.filter((item) => item.result === "pass");
 }
 
 export function safeJsonStringify(value: unknown) {
@@ -1077,18 +1119,19 @@ function countResults(items: QcChecklistItem[]) {
 export function getQcApprovalReadiness(items: QcChecklistItem[]) {
   const counts = countResults(items);
   const issue = counts.fail + counts.repair;
-  const ready = counts.total > 0 && counts.pass === counts.total && issue === 0 && counts.pending === 0;
+  const approvalItemCount = getQcApprovalItems(items).length;
+  const ready = approvalItemCount > 0 && issue === 0;
   let reason = "";
   if (!counts.total) reason = "ยังไม่มีรายการตรวจ QC";
   else if (issue > 0) reason = `ยังอนุมัติไม่ได้ เพราะมีรายการต้องแก้ไข/ไม่ผ่าน ${issue} ข้อ`;
-  else if (counts.pending > 0) reason = `ยังอนุมัติไม่ได้ เพราะยังไม่ได้ตรวจ ${counts.pending} ข้อ`;
-  else if (counts.pass !== counts.total) reason = "ยังอนุมัติไม่ได้ เพราะรายการ QC ยังผ่านไม่ครบทุกข้อ";
+  else if (approvalItemCount === 0) reason = "ยังไม่มีรายการที่เลือกผ่านสำหรับส่งอนุมัติ";
   return {
     ...counts,
     issue,
+    approvalItemCount,
     ready,
     reason,
-    summary: issue > 0 ? `${counts.pass}/${counts.total} ผ่าน, ${issue} ต้องแก้ไข` : `${counts.pass}/${counts.total} ผ่าน`,
+    summary: issue > 0 ? `${counts.pass} ผ่าน, ${issue} ต้องแก้ไข` : `${approvalItemCount} รายการผ่าน`,
   };
 }
 
@@ -1098,6 +1141,7 @@ export function buildQcLineMessage({
   title,
   category,
   phase,
+  notes,
   resultSummary,
 }: {
   projectName: string;
@@ -1105,15 +1149,20 @@ export function buildQcLineMessage({
   title: string;
   category: string;
   phase: string;
+  notes?: string;
   resultSummary: string;
 }) {
-  return [
+  const lines = [
     "แจ้งขออนุมัติ QC Checklist",
     "",
     `โครงการ: ${projectName || projectId}`,
     `หมวดงาน: ${category}`,
     `ช่วงงาน: ${phase}`,
     `รายการตรวจ: ${title}`,
+  ];
+  if (notes) lines.push(`โซน/รายละเอียด: ${notes}`);
+  return [
+    ...lines,
     `ผลตรวจ: ${resultSummary}`,
     "",
     "กรุณาตรวจสอบรายงานและยืนยันอนุมัติในกลุ่มนี้ เพื่อให้ทีมงานดำเนินงานขั้นถัดไปครับ",
@@ -1127,6 +1176,7 @@ export function buildQcLineFlex({
   title,
   category,
   phase,
+  notes,
   resultSummary,
   pdfUrl,
   evidenceUrl,
@@ -1138,6 +1188,7 @@ export function buildQcLineFlex({
   title: string;
   category: string;
   phase: string;
+  notes?: string;
   resultSummary: string;
   pdfUrl?: string;
   evidenceUrl?: string;
@@ -1190,6 +1241,7 @@ export function buildQcLineFlex({
           { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
           qcLineRow("หมวดงาน", category || "-"),
           qcLineRow("ช่วงงาน", phase || "-"),
+          ...(notes ? [qcLineRow("โซน/รายละเอียด", notes)] : []),
           qcLineRow("สถานะ", "รออนุมัติจากลูกค้า"),
           { type: "separator", margin: "md", color: "#e5e7eb" },
           {
@@ -1351,7 +1403,7 @@ export function buildQcPdfHtml({
   project: Record<string, string | number | undefined>;
   logoUrl: string;
 }) {
-  const items = parseQcItems(checklist.items_json);
+  const items = getQcApprovalItems(parseQcItems(checklist.items_json));
   const evidence = parseQcEvidence(checklist.evidence_files_json);
   const images = evidence.filter((item) => String(item.mime_type || "").startsWith("image/") && (item.data_url || item.file_url));
   const counts = countResults(items);
@@ -1455,6 +1507,7 @@ export function buildQcPdfHtml({
         <div class="summary-item"><div class="summary-label">หมวดงาน</div><div class="summary-value">${escapeHtml(checklist.category || "-")}</div></div>
         <div class="summary-item"><div class="summary-label">ช่วงงาน</div><div class="summary-value">${escapeHtml(checklist.phase || "-")}</div></div>
         <div class="summary-item full"><div class="summary-label">รายการตรวจ</div><div class="summary-value">${escapeHtml(checklist.title || "-")}</div></div>
+        <div class="summary-item full"><div class="summary-label">โซน/รายละเอียด</div><div class="summary-value">${escapeHtml(checklist.notes || "-")}</div></div>
         <div class="summary-item"><div class="summary-label">ผู้ตรวจ</div><div class="summary-value">${escapeHtml(checklist.inspected_by_name || "-")}</div></div>
         <div class="summary-item"><div class="summary-label">วันที่ตรวจ</div><div class="summary-value">${escapeHtml(formatThaiDate(checklist.inspection_date))}</div></div>
       </section>

@@ -26,6 +26,7 @@ type Project = {
   site_sheet_id?: string;
   drive_folder_id?: string;
   deposit_status?: string;
+  architect_name?: string;
   tasks_count?: string;
   completed_tasks?: string;
   overdue_tasks?: string;
@@ -45,6 +46,9 @@ type ProjectsResponse = {
 const validStatuses = new Set(["Planning", "In Progress", "On Hold", "Completed", "Cancelled"]);
 const ALL_ENGINEERS = "__all__";
 const UNASSIGNED_ENGINEER = "__unassigned__";
+const FILTER_SITE_ENGINEER = "site_engineer";
+const FILTER_ARCHITECT = "architect";
+type ResponsibilityFilter = typeof FILTER_SITE_ENGINEER | typeof FILTER_ARCHITECT;
 const statusStyles = {
   Planning: {
     badge: "border-sky-100 bg-sky-50 text-sky-700",
@@ -182,6 +186,22 @@ function normalizeEngineerName(value?: string) {
   return String(value || "").trim();
 }
 
+function getResponsibleName(project: Project, filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? normalizeEngineerName(project.architect_name) : normalizeEngineerName(project.se_name);
+}
+
+function getUnassignedLabel(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "ยังไม่ระบุ Architect" : "ยังไม่ระบุ Site Engineer";
+}
+
+function getAllLabel(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "ทุก Architect" : "ทุก Site Engineer";
+}
+
+function getFilterTitle(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
+}
+
 function extractDriveFileId(url?: string) {
   if (!url) return "";
   return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
@@ -310,13 +330,14 @@ export default function ProjectsPage() {
   const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
+  const [responsibilityFilter, setResponsibilityFilter] = useState<ResponsibilityFilter>(FILTER_SITE_ENGINEER);
   const [engineerFilter, setEngineerFilter] = useState(ALL_ENGINEERS);
   const projects = useMemo(() => data?.data || [], [data?.data]);
   const isForeman = isForemanRole(session?.user?.role);
   const engineerOptions = useMemo(() => {
     const counts = new Map<string, number>();
     projects.forEach((project) => {
-      const engineer = normalizeEngineerName(project.se_name) || UNASSIGNED_ENGINEER;
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
       counts.set(engineer, (counts.get(engineer) || 0) + 1);
     });
 
@@ -324,24 +345,24 @@ export default function ProjectsPage() {
       .map(([value, count]) => ({
         value,
         count,
-        label: value === UNASSIGNED_ENGINEER ? "ยังไม่ระบุ Site Engineer" : value,
+        label: value === UNASSIGNED_ENGINEER ? getUnassignedLabel(responsibilityFilter) : value,
       }))
       .sort((a, b) => {
         if (a.value === UNASSIGNED_ENGINEER) return 1;
         if (b.value === UNASSIGNED_ENGINEER) return -1;
         return a.label.localeCompare(b.label, "th");
       });
-  }, [projects]);
+  }, [projects, responsibilityFilter]);
   const filteredProjects = useMemo(() => {
     if (engineerFilter === ALL_ENGINEERS) return projects;
     return projects.filter((project) => {
-      const engineer = normalizeEngineerName(project.se_name) || UNASSIGNED_ENGINEER;
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
       return engineer === engineerFilter;
     });
-  }, [engineerFilter, projects]);
+  }, [engineerFilter, projects, responsibilityFilter]);
   const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
-    ? "ทุก Site Engineer"
-    : engineerOptions.find((option) => option.value === engineerFilter)?.label || "ทุก Site Engineer";
+    ? getAllLabel(responsibilityFilter)
+    : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
 
   const handleDelete = async (project: Project) => {
     setDeletingId(project.project_id);
@@ -395,7 +416,7 @@ export default function ProjectsPage() {
               <Filter size={18} />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-extrabold text-slate-900">กรองไซต์งานตาม Site Engineer</div>
+              <div className="text-sm font-extrabold text-slate-900">{getFilterTitle(responsibilityFilter)}</div>
               <div className="mt-0.5 text-xs font-medium text-slate-500">
                 แสดง {filteredProjects.length} จาก {projects.length} ไซต์ · {activeEngineerLabel}
               </div>
@@ -403,12 +424,24 @@ export default function ProjectsPage() {
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <select
+              value={responsibilityFilter}
+              onChange={(event) => {
+                setResponsibilityFilter(event.target.value as ResponsibilityFilter);
+                setEngineerFilter(ALL_ENGINEERS);
+              }}
+              className="h-10 min-w-[190px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
+              aria-label="เลือกประเภทผู้รับผิดชอบ"
+            >
+              <option value={FILTER_SITE_ENGINEER}>Site Engineer</option>
+              <option value={FILTER_ARCHITECT}>Architect</option>
+            </select>
+            <select
               value={engineerFilter}
               onChange={(event) => setEngineerFilter(event.target.value)}
               className="h-10 min-w-[260px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
-              aria-label="กรองไซต์งานตาม Site Engineer"
+              aria-label={getFilterTitle(responsibilityFilter)}
             >
-              <option value={ALL_ENGINEERS}>ทุก Site Engineer ({projects.length})</option>
+              <option value={ALL_ENGINEERS}>{getAllLabel(responsibilityFilter)} ({projects.length})</option>
               {engineerOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label} ({option.count})
@@ -476,6 +509,7 @@ export default function ProjectsPage() {
 
                   <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[15px] font-medium text-slate-600">
                     <span>Site Engineer: {project.se_name || "-"}</span>
+                    <span>Architect: {project.architect_name || "-"}</span>
                   </div>
 
                   {dailyReportWarning && (

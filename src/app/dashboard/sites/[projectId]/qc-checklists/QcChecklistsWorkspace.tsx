@@ -124,10 +124,13 @@ async function fileToUploadPayload(file: File) {
 }
 
 function itemStats(items: QcChecklistItem[]) {
+  const pass = items.filter((item) => item.result === "pass").length;
+  const issue = items.filter((item) => item.result === "repair" || item.result === "fail").length;
   return {
     total: items.length,
-    pass: items.filter((item) => item.result === "pass").length,
-    issue: items.filter((item) => item.result === "repair" || item.result === "fail").length,
+    pass,
+    issue,
+    approvalItemCount: pass,
     pending: items.filter((item) => item.result === "pending" || !item.result).length,
   };
 }
@@ -163,7 +166,7 @@ export default function QcChecklistsWorkspace({
   }, [checklists, selectedId]);
   const selectedItems = useMemo(() => parseItems(selected?.items_json), [selected?.items_json]);
   const stats = itemStats(selectedItems);
-  const readyForCustomer = stats.total > 0 && stats.pass === stats.total && stats.issue === 0 && stats.pending === 0;
+  const readyForCustomer = stats.approvalItemCount > 0 && stats.issue === 0;
   const canDeleteSelected = selected
     ? String(selected.approval_status || "not_sent") === "not_sent"
       && String(selected.status || "") !== "sent_to_customer"
@@ -173,11 +176,9 @@ export default function QcChecklistsWorkspace({
     ? "ยังไม่มีรายการตรวจ QC"
     : stats.issue > 0
       ? `ยังส่งอนุมัติไม่ได้ เพราะมีรายการต้องแก้ไข/ไม่ผ่าน ${stats.issue} ข้อ`
-      : stats.pending > 0
-        ? `ยังส่งอนุมัติไม่ได้ เพราะยังไม่ได้ตรวจ ${stats.pending} ข้อ`
-        : !readyForCustomer
-          ? "ยังส่งอนุมัติไม่ได้ เพราะรายการ QC ยังผ่านไม่ครบทุกข้อ"
-          : "";
+      : stats.approvalItemCount === 0
+        ? "ยังไม่มีรายการที่เลือกผ่านสำหรับส่งอนุมัติ"
+        : "";
 
   const request = async (body: Record<string, unknown>, successMessage: string) => {
     setSaving(String(body.action || "save"));
@@ -212,24 +213,28 @@ export default function QcChecklistsWorkspace({
     if (json?.data?.qc_id) setSelectedId(json.data.qc_id);
   };
 
-  const saveChecklist = async (items: QcChecklistItem[] = selectedItems) => {
+  const saveChecklist = async (items: QcChecklistItem[] = selectedItems, patch: Partial<QcChecklist> = {}) => {
     if (!selected) return;
     const uploads = await Promise.all(files.map(fileToUploadPayload));
     await request({
       action: "save",
       qc_id: selected.qc_id,
-      category: selected.category,
-      phase: selected.phase,
-      title: selected.title,
-      status: selected.status || "in_progress",
-      approval_status: selected.approval_status || "not_sent",
-      inspection_date: selected.inspection_date || todayInputValue(),
-      inspected_by_name: selected.inspected_by_name || "",
-      notes: selected.notes || "",
+      category: patch.category ?? selected.category,
+      phase: patch.phase ?? selected.phase,
+      title: patch.title ?? selected.title,
+      status: patch.status ?? selected.status ?? "in_progress",
+      approval_status: patch.approval_status ?? selected.approval_status ?? "not_sent",
+      inspection_date: patch.inspection_date ?? selected.inspection_date ?? todayInputValue(),
+      inspected_by_name: patch.inspected_by_name ?? selected.inspected_by_name ?? "",
+      notes: patch.notes ?? selected.notes ?? "",
       items,
       evidence_uploads: uploads,
     }, "บันทึก QC Checklist แล้ว");
     setFiles([]);
+  };
+
+  const updateChecklistMeta = (patch: Partial<QcChecklist>) => {
+    void saveChecklist(selectedItems, patch);
   };
 
   const updateItem = (itemId: string, patch: Partial<QcChecklistItem>) => {
@@ -359,6 +364,62 @@ export default function QcChecklistsWorkspace({
                       </div>
                       <h3 className="mt-3 text-2xl font-bold text-gray-950">{selected.title}</h3>
                       <p className="mt-1 text-sm text-gray-500">{selected.category} | {selected.phase} | วันที่ตรวจ {selected.inspection_date || "-"}</p>
+                      <div key={selected.qc_id} className="mt-4 grid gap-3 rounded-xl border border-gray-100 bg-gray-50 p-3 md:grid-cols-2 xl:grid-cols-4">
+                        <label className="block">
+                          <span className="text-xs font-black text-gray-500">หมวด</span>
+                          <input
+                            defaultValue={selected.category || ""}
+                            onBlur={(event) => updateChecklistMeta({ category: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                            placeholder="เช่น SPC"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-black text-gray-500">ช่วงงาน</span>
+                          <input
+                            defaultValue={selected.phase || ""}
+                            onBlur={(event) => updateChecklistMeta({ phase: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                            placeholder="ช่วงงาน"
+                          />
+                        </label>
+                        <label className="block md:col-span-2">
+                          <span className="text-xs font-black text-gray-500">หัวข้อเอกสาร</span>
+                          <input
+                            defaultValue={selected.title || ""}
+                            onBlur={(event) => updateChecklistMeta({ title: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                            placeholder="หัวข้อรายการตรวจ"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-black text-gray-500">วันที่ตรวจ</span>
+                          <input
+                            type="date"
+                            defaultValue={selected.inspection_date || todayInputValue()}
+                            onBlur={(event) => updateChecklistMeta({ inspection_date: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-black text-gray-500">ผู้ตรวจ</span>
+                          <input
+                            defaultValue={selected.inspected_by_name || ""}
+                            onBlur={(event) => updateChecklistMeta({ inspected_by_name: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                            placeholder="ผู้ตรวจ/วิศวกร"
+                          />
+                        </label>
+                        <label className="block md:col-span-2">
+                          <span className="text-xs font-black text-gray-500">โซน/รายละเอียดตรวจ</span>
+                          <input
+                            defaultValue={selected.notes || ""}
+                            onBlur={(event) => updateChecklistMeta({ notes: event.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-orange-200"
+                            placeholder="เช่น ชั้น 2 โซน A / ห้องน้ำ / แนวรั้วด้านหน้า"
+                          />
+                        </label>
+                      </div>
                       {selected.approval_status === "approved" ? (
                         <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">
                           ลูกค้าอนุมัติแล้ว: {selected.customer_approved_by || clientName || "-"} {selected.customer_approved_at ? `(${new Date(String(selected.customer_approved_at)).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })})` : ""}
@@ -386,7 +447,7 @@ export default function QcChecklistsWorkspace({
                       </button>
                       <button onClick={() => request({ action: "send_approval", qc_id: selected.qc_id, origin: window.location.origin }, "ส่ง LINE ขออนุมัติ QC แล้ว")} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
                         <Send size={16} />
-                        ส่งให้ลูกค้าอนุมัติ
+                        ส่งรายการที่ผ่าน
                       </button>
                       <button onClick={markApproved} disabled={Boolean(saving) || !readyForCustomer} title={readyForCustomer ? "" : approvalBlockReason} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">
                         <CheckCircle2 size={16} />
@@ -408,14 +469,14 @@ export default function QcChecklistsWorkspace({
 
                 <div className="grid gap-3 border-y border-gray-100 bg-gray-50 p-5 md:grid-cols-4">
                   <Metric label="ทั้งหมด" value={stats.total} />
-                  <Metric label="ผ่าน" value={stats.pass} tone="text-emerald-700" />
+                  <Metric label="ผ่าน/จะส่ง" value={stats.approvalItemCount} tone="text-emerald-700" />
                   <Metric label="ต้องแก้ไข/ไม่ผ่าน" value={stats.issue} tone={stats.issue ? "text-red-700" : "text-gray-900"} />
-                  <Metric label="ยังไม่ตรวจ" value={stats.pending} tone={stats.pending ? "text-orange-700" : "text-gray-900"} />
+                  <Metric label="ยังไม่ส่ง" value={stats.pending} tone={stats.pending ? "text-orange-700" : "text-gray-900"} />
                 </div>
 
                 <div className="p-5">
                   <div className="overflow-x-auto rounded-xl border border-gray-200">
-                    <table className="w-full min-w-[980px] text-left text-sm">
+                    <table className="w-full min-w-[1120px] text-left text-sm">
                       <thead className="bg-gray-100 text-sm text-gray-700">
                         <tr>
                           <th className="px-4 py-3 font-black">หมวดตรวจ</th>
@@ -428,9 +489,32 @@ export default function QcChecklistsWorkspace({
                       <tbody className="divide-y divide-gray-100">
                         {selectedItems.map((item) => (
                           <tr key={item.item_id} className="align-top">
-                            <td className="px-4 py-3 font-bold text-gray-900">{item.section}</td>
-                            <td className="px-4 py-3 font-extrabold text-gray-950">{item.title}</td>
-                            <td className="px-4 py-3 text-gray-600">{item.acceptance}</td>
+                            <td className="px-4 py-3">
+                              <input
+                                defaultValue={item.section}
+                                onBlur={(event) => updateItem(item.item_id, { section: event.target.value })}
+                                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-orange-200"
+                                placeholder="หมวดตรวจ"
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <textarea
+                                defaultValue={item.title}
+                                rows={2}
+                                onBlur={(event) => updateItem(item.item_id, { title: event.target.value })}
+                                className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm font-extrabold text-gray-950 outline-none focus:ring-2 focus:ring-orange-200"
+                                placeholder="รายการตรวจ"
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <textarea
+                                defaultValue={item.acceptance}
+                                rows={2}
+                                onBlur={(event) => updateItem(item.item_id, { acceptance: event.target.value })}
+                                className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-orange-200"
+                                placeholder="รายละเอียด/เกณฑ์ยอมรับ"
+                              />
+                            </td>
                             <td className="px-4 py-3">
                               <select
                                 value={item.result || "pending"}

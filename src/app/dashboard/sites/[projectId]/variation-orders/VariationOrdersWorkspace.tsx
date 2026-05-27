@@ -9,9 +9,11 @@ import {
   FileText,
   Loader2,
   Paperclip,
+  Pencil,
   Plus,
   Printer,
   Workflow,
+  XCircle,
 } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
@@ -165,6 +167,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   }, [isClient, permissions]);
   const [activeTab, setActiveTab] = useState(permissions.create && !isClient ? "create" : "history");
   const [selectedVoId, setSelectedVoId] = useState("");
+  const [editingVoId, setEditingVoId] = useState("");
   const [createForm, setCreateForm] = useState<CreateForm>({
     ...emptyCreateForm,
     client_name: project.client || "",
@@ -240,13 +243,14 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
       setError("กรุณากรอกมูลค่างานเพิ่ม/งานลด");
       return;
     }
-    if (supportingDocFiles.length === 0 && !createForm.supporting_docs.trim()) {
+    if (!editingVoId && supportingDocFiles.length === 0 && !createForm.supporting_docs.trim()) {
       setMessage("");
       setError("กรุณาแนบเอกสาร ใบเสร็จ/บิล หรือแคปหน้าจอจากลูกค้า");
       return;
     }
     const supportingUploads = await Promise.all(supportingDocFiles.map(fileToUploadPayload));
-    const result = await postAction("create_vo", {
+    const result = await postAction(editingVoId ? "update_vo" : "create_vo", {
+      ...(editingVoId ? { vo_id: editingVoId } : {}),
       ...createForm,
       items: [
         {
@@ -261,10 +265,53 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     });
     if (result?.data?.vo_id) {
       setSelectedVoId(result.data.vo_id);
+      setEditingVoId("");
       setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
       setSupportingDocFiles([]);
       setActiveTab(permissions.addToPlan ? "plan" : "history");
     }
+  };
+
+  const startEditVo = (vo: VoRecord & { items?: VoItemInput[] }) => {
+    const firstItem = Array.isArray(vo.items) ? vo.items[0] : undefined;
+    setSelectedVoId(vo.vo_id);
+    setEditingVoId(vo.vo_id);
+    setCreateForm({
+      vo_type: String(vo.vo_type || "VO+"),
+      title: String(vo.title || ""),
+      description: String(vo.description || ""),
+      amount: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
+      extension_days: String(vo.extension_days || "0"),
+      status: ["draft", "pending_approval", "rejected"].includes(String(vo.status || "")) ? String(vo.status || "") : "pending_approval",
+      client_name: String(vo.client_name || project.client || ""),
+      source_type: String(vo.source_type || "client_request"),
+      source_ref_id: String(vo.source_ref_id || ""),
+      source_description: String(vo.source_description || ""),
+      vat_exempt: String(vo.vat_exempt || "").toLowerCase() === "true",
+      withholding_tax: String(vo.withholding_tax || "0"),
+      supporting_docs: String(vo.supporting_docs || ""),
+      approval_deadline_days: "14",
+      items: [
+        {
+          item_no: 1,
+          description: String(firstItem?.description || vo.title || vo.description || "งานเพิ่ม-ลด"),
+          unit: String(firstItem?.unit || "LS"),
+          quantity: String(firstItem?.quantity || "1"),
+          unit_price: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
+        },
+      ],
+    });
+    setSupportingDocFiles([]);
+    setActiveTab("create");
+    setMessage(`กำลังแก้ไข ${vo.vo_id}`);
+    setError("");
+  };
+
+  const cancelEdit = () => {
+    setEditingVoId("");
+    setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
+    setSupportingDocFiles([]);
+    setMessage("");
   };
 
   const addToPlan = async () => {
@@ -368,7 +415,9 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               supportingDocFiles={supportingDocFiles}
               setSupportingDocFiles={setSupportingDocFiles}
               onSubmit={createVo}
-              loading={loadingAction === "create_vo"}
+              loading={loadingAction === "create_vo" || loadingAction === "update_vo"}
+              editingVoId={editingVoId}
+              onCancelEdit={cancelEdit}
             />
           )}
           {activeTab === "plan" && (
@@ -404,8 +453,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
             vo={selectedVo}
             documents={selectedDocuments}
             canSendApproval={permissions.submitToClient}
+            canEdit={permissions.create}
             loading={loadingAction === "send_approval"}
             onSendApproval={sendApproval}
+            onEdit={startEditVo}
           />
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="text-sm font-extrabold text-gray-900">หลักการใช้งาน</div>
@@ -513,6 +564,8 @@ function CreateSection({
   setSupportingDocFiles,
   onSubmit,
   loading,
+  editingVoId,
+  onCancelEdit,
 }: {
   form: CreateForm;
   setForm: (next: CreateForm) => void;
@@ -520,6 +573,8 @@ function CreateSection({
   setSupportingDocFiles: (next: File[]) => void;
   onSubmit: () => void;
   loading: boolean;
+  editingVoId?: string;
+  onCancelEdit?: () => void;
 }) {
   const addSupportingFiles = (files: FileList | null) => {
     const nextFiles = Array.from(files || []);
@@ -533,8 +588,22 @@ function CreateSection({
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-5">
-        <h3 className="text-lg font-extrabold text-gray-900">กรอกงานเพิ่ม-ลด / แนบหลักฐาน</h3>
-        <p className="text-sm text-gray-500">วิศวกรนำเอกสารที่ทำจากข้างนอกมาแนบในระบบ พร้อมบันทึกยอดเงินและจำนวนวันเพิ่มเพื่อสรุปภาพรวมไซต์</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-lg font-extrabold text-gray-900">{editingVoId ? `แก้ไขงานเพิ่ม-ลด ${editingVoId}` : "กรอกงานเพิ่ม-ลด / แนบหลักฐาน"}</h3>
+            <p className="text-sm text-gray-500">
+              {editingVoId
+                ? "แก้ไขข้อมูลก่อนลูกค้าอนุมัติได้ หากส่ง LINE ไปแล้วให้กดส่งอีกครั้งหลังบันทึก เพื่อให้ลูกค้าเห็นข้อมูลล่าสุด"
+                : "วิศวกรนำเอกสารที่ทำจากข้างนอกมาแนบในระบบ พร้อมบันทึกยอดเงินและจำนวนวันเพิ่มเพื่อสรุปภาพรวมไซต์"}
+            </p>
+          </div>
+          {editingVoId && onCancelEdit ? (
+            <button type="button" onClick={onCancelEdit} className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
+              <XCircle size={16} />
+              ยกเลิกแก้ไข
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="grid gap-4 lg:grid-cols-3">
         <Field label="ประเภทงาน">
@@ -619,7 +688,7 @@ function CreateSection({
       <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
         <button type="button" onClick={onSubmit} disabled={loading} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
           {loading ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}
-          บันทึกงานเพิ่ม-ลด
+          {editingVoId ? "บันทึกการแก้ไข" : "บันทึกงานเพิ่ม-ลด"}
         </button>
       </div>
     </section>
@@ -1155,14 +1224,18 @@ function SelectedVoPanel({
   vo,
   documents,
   canSendApproval,
+  canEdit,
   loading,
   onSendApproval,
+  onEdit,
 }: {
-  vo?: VoRecord;
+  vo?: VoRecord & { items?: VoItemInput[] };
   documents: Array<Record<string, string | number | undefined>>;
   canSendApproval: boolean;
+  canEdit: boolean;
   loading: boolean;
   onSendApproval: () => void;
+  onEdit: (vo: VoRecord & { items?: VoItemInput[] }) => void;
 }) {
   if (!vo) {
     return (
@@ -1173,6 +1246,7 @@ function SelectedVoPanel({
   }
   const type = asVoType(String(vo.vo_type || ""));
   const status = asVoStatus(String(vo.status || ""));
+  const canEditVo = canEdit && ["draft", "pending_approval", "rejected", "expired"].includes(status);
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -1192,6 +1266,15 @@ function SelectedVoPanel({
         <InfoRow label="แผนงาน" value={vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : "ยังไม่เพิ่มเข้าแผน"} />
       </div>
       <div className="mt-5 space-y-2 border-t border-gray-100 pt-4">
+        <button
+          type="button"
+          onClick={() => onEdit(vo)}
+          disabled={!canEditVo}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-extrabold text-orange-700 hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Pencil size={16} />
+          แก้ไขรายการนี้
+        </button>
         <button
           type="button"
           onClick={onSendApproval}

@@ -383,6 +383,7 @@ async function handleSendApproval(req: Request, body: Record<string, unknown>, c
     title: text(nextRecord.title),
     category: text(nextRecord.category),
     phase: text(nextRecord.phase),
+    notes: text(nextRecord.notes),
     resultSummary: resultSummary(nextRecord),
   });
   const flexMessage = buildQcLineFlex({
@@ -392,6 +393,7 @@ async function handleSendApproval(req: Request, body: Record<string, unknown>, c
     title: text(nextRecord.title),
     category: text(nextRecord.category),
     phase: text(nextRecord.phase),
+    notes: text(nextRecord.notes),
     resultSummary: resultSummary(nextRecord),
     pdfUrl: text(nextRecord.pdf_url),
     evidenceUrl: firstEvidenceUrl,

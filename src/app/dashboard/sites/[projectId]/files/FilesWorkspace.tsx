@@ -8,10 +8,13 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Link as LinkIcon,
+  Maximize2,
   RefreshCw,
   Search,
   Upload,
+  X,
 } from "lucide-react";
+import NextImage from "next/image";
 import { useMemo, useRef, useState, useTransition, type ComponentType } from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
@@ -26,6 +29,7 @@ type ProjectDocument = Record<string, string | number | undefined> & {
   file_name?: string;
   mime_type?: string;
   file_size?: string | number;
+  drive_file_id?: string;
   drive_url?: string;
   notes?: string;
   uploaded_by_name?: string;
@@ -70,20 +74,35 @@ type DefectPhoto = {
   mime_type?: string;
 };
 
+type DriveFolderFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string | null;
+  webViewLink?: string | null;
+  webContentLink?: string | null;
+  createdTime?: string | null;
+  modifiedTime?: string | null;
+  folderPath?: string;
+  isFolder?: boolean;
+};
+
 type FileItem = {
   id: string;
   title: string;
   fileName: string;
-  kind: "document" | "defect_pdf" | "defect_photo" | "acknowledgement";
+  kind: "document" | "defect_pdf" | "defect_photo" | "acknowledgement" | "drive_file" | "drive_image";
   category: string;
   source: string;
   url?: string;
+  previewUrl?: string;
   size?: string | number;
   date?: string | number;
   notes?: string;
+  folderPath?: string;
 };
 
-type TabKey = "all" | "documents" | "defects" | "acknowledgement" | "photos";
+type TabKey = "all" | "documents" | "defects" | "acknowledgement" | "photos" | "drive";
 
 const CATEGORY_OPTIONS = [
   ["drawing", "แบบ/Shop drawing"],
@@ -97,6 +116,7 @@ const CATEGORY_OPTIONS = [
 const TABS: Array<{ key: TabKey; label: string; icon: ComponentType<{ size?: number; className?: string }> }> = [
   { key: "all", label: "ทั้งหมด", icon: FolderOpen },
   { key: "documents", label: "เอกสารอัปโหลด", icon: FileText },
+  { key: "drive", label: "จาก Drive", icon: LinkIcon },
   { key: "defects", label: "PDF Defect", icon: AlertCircle },
   { key: "acknowledgement", label: "หลักฐานลูกค้า", icon: CheckCircle2 },
   { key: "photos", label: "รูปหน้างาน", icon: ImageIcon },
@@ -104,6 +124,8 @@ const TABS: Array<{ key: TabKey; label: string; icon: ComponentType<{ size?: num
 
 const KIND_LABELS: Record<FileItem["kind"], string> = {
   document: "เอกสาร",
+  drive_file: "ไฟล์จาก Drive",
+  drive_image: "รูปจาก Drive",
   defect_pdf: "PDF Defect",
   defect_photo: "รูป Defect",
   acknowledgement: "หลักฐานรับทราบ",
@@ -111,6 +133,8 @@ const KIND_LABELS: Record<FileItem["kind"], string> = {
 
 const KIND_STYLES: Record<FileItem["kind"], string> = {
   document: "border-blue-200 bg-blue-50 text-blue-700",
+  drive_file: "border-slate-200 bg-slate-50 text-slate-700",
+  drive_image: "border-cyan-200 bg-cyan-50 text-cyan-700",
   defect_pdf: "border-red-200 bg-red-50 text-red-700",
   defect_photo: "border-amber-200 bg-amber-50 text-amber-700",
   acknowledgement: "border-emerald-200 bg-emerald-50 text-emerald-700",
@@ -145,7 +169,7 @@ function formatDate(value?: string | number) {
   }).format(date);
 }
 
-function safeText(value?: string | number) {
+function safeText(value?: unknown) {
   return String(value || "").trim();
 }
 
@@ -156,22 +180,54 @@ function buildDriveFolderUrl(folderId?: string) {
   return `https://drive.google.com/drive/folders/${encodeURIComponent(value)}`;
 }
 
+function extractDriveFileId(value?: string | number) {
+  const text = safeText(value);
+  if (!text) return "";
+  const directMatch = text.match(/\/api\/drive\/files\/([^/?#]+)/i);
+  if (directMatch?.[1]) return decodeURIComponent(directMatch[1]);
+  const driveMatch = text.match(/\/(?:file\/d|document\/d|spreadsheets\/d|presentation\/d)\/([^/?#]+)/i);
+  if (driveMatch?.[1]) return decodeURIComponent(driveMatch[1]);
+  const idMatch = text.match(/[?&]id=([^&#]+)/i);
+  return idMatch?.[1] ? decodeURIComponent(idMatch[1]) : "";
+}
+
+function getDriveOpenUrl(file: DriveFolderFile) {
+  return safeText(file.webViewLink) || safeText(file.webContentLink) || `/api/drive/files/${encodeURIComponent(file.id)}`;
+}
+
+function buildDrivePreviewUrl(fileId?: string) {
+  const value = safeText(fileId);
+  return value ? `/api/drive/files/${encodeURIComponent(value)}` : "";
+}
+
+function isImageDriveFile(file: DriveFolderFile) {
+  return file.mimeType.startsWith("image/");
+}
+
+function isPhotoFile(file: FileItem) {
+  return file.kind === "defect_photo" || file.kind === "drive_image" || file.kind === "acknowledgement";
+}
+
 function fileMatchesTab(file: FileItem, tab: TabKey) {
   if (tab === "all") return true;
-  if (tab === "documents") return file.kind === "document";
+  if (tab === "documents") return file.kind === "document" || file.kind === "drive_file";
+  if (tab === "drive") return file.kind === "drive_file" || file.kind === "drive_image";
   if (tab === "defects") return file.kind === "defect_pdf";
   if (tab === "acknowledgement") return file.kind === "acknowledgement";
-  return file.kind === "defect_photo";
+  return file.kind === "defect_photo" || file.kind === "drive_image";
 }
 
 function collectFiles(documents: ProjectDocument[], defectData?: {
   rounds?: DefectRound[];
   items?: DefectItem[];
   evidence?: DefectEvidence[];
-}) {
+}, driveFiles: DriveFolderFile[] = []) {
   const files: FileItem[] = [];
+  const knownDriveFileIds = new Set<string>();
 
   documents.forEach((doc) => {
+    const driveFileId = safeText(doc.drive_file_id) || extractDriveFileId(doc.drive_url);
+    if (driveFileId) knownDriveFileIds.add(driveFileId);
     files.push({
       id: doc.document_id,
       title: safeText(doc.title) || safeText(doc.file_name) || "เอกสารไซต์",
@@ -222,6 +278,8 @@ function collectFiles(documents: ProjectDocument[], defectData?: {
     ];
 
     photos.forEach(({ photo, stage }, index) => {
+      const photoUrl = safeText(photo.file_url);
+      const driveFileId = extractDriveFileId(photoUrl);
       files.push({
         id: `defect-photo-${item.item_id}-${stage}-${index}`,
         title: `${stage} ${safeText(item.zone) || `รายการ ${item.item_no || ""}`}`.trim(),
@@ -229,9 +287,35 @@ function collectFiles(documents: ProjectDocument[], defectData?: {
         kind: "defect_photo",
         category: "defect",
         source: safeText(item.description) || "Defect item",
-        url: safeText(photo.file_url),
+        url: photoUrl,
+        previewUrl: driveFileId ? buildDrivePreviewUrl(driveFileId) : photoUrl,
         date: item.updated_at,
       });
+    });
+  });
+
+  files.forEach((file) => {
+    const driveFileId = extractDriveFileId(file.url);
+    if (driveFileId) knownDriveFileIds.add(driveFileId);
+  });
+
+  driveFiles.forEach((file) => {
+    if (!file.id || file.isFolder || knownDriveFileIds.has(file.id)) return;
+    const folderPath = safeText(file.folderPath);
+    const isImage = isImageDriveFile(file);
+    files.push({
+      id: `drive-${file.id}`,
+      title: file.name || "Drive file",
+      fileName: file.name || file.id,
+      kind: isImage ? "drive_image" : "drive_file",
+      category: "drive",
+      source: folderPath ? `Google Drive / ${folderPath}` : "Google Drive",
+      url: getDriveOpenUrl(file),
+      previewUrl: isImage ? buildDrivePreviewUrl(file.id) : "",
+      size: file.size || undefined,
+      date: file.modifiedTime || file.createdTime || undefined,
+      notes: "ไฟล์ที่อยู่ในโฟลเดอร์โครงการโดยตรง",
+      folderPath,
     });
   });
 
@@ -259,7 +343,7 @@ function EmptyState({ title, description }: { title: string; description: string
 
 function FilesTable({ files }: { files: FileItem[] }) {
   if (files.length === 0) {
-    return <EmptyState title="ยังไม่มีไฟล์ในหมวดนี้" description="เมื่อมีการอัปโหลดเอกสารหรือออกเอกสารจากโมดูลอื่น ไฟล์จะแสดงที่นี่อัตโนมัติ" />;
+    return <EmptyState title="ยังไม่มีไฟล์ในหมวดนี้" description="เมื่อมีไฟล์ในโฟลเดอร์ Drive ของไซต์ หรือมีการอัปโหลดเอกสารจากระบบ ไฟล์จะแสดงที่นี่อัตโนมัติ" />;
   }
 
   return (
@@ -281,7 +365,7 @@ function FilesTable({ files }: { files: FileItem[] }) {
                 <td className="px-4 py-4">
                   <div className="flex items-start gap-3">
                     <div className="mt-0.5 rounded-lg border border-gray-200 bg-white p-2 text-gray-500">
-                      {file.kind === "defect_photo" || file.kind === "acknowledgement" ? <ImageIcon size={18} /> : <FileText size={18} />}
+                      {file.kind === "defect_photo" || file.kind === "drive_image" || file.kind === "acknowledgement" ? <ImageIcon size={18} /> : <FileText size={18} />}
                     </div>
                     <div className="min-w-0">
                       <p className="font-bold text-gray-900">{file.title}</p>
@@ -321,29 +405,191 @@ function FilesTable({ files }: { files: FileItem[] }) {
   );
 }
 
+function PhotoGallery({
+  files,
+  onPreview,
+}: {
+  files: FileItem[];
+  onPreview: (file: FileItem) => void;
+}) {
+  if (files.length === 0) {
+    return <EmptyState title="ยังไม่มีรูปในโฟลเดอร์นี้" description="ลองเลือกโฟลเดอร์เดือนอื่น หรืออัปโหลดรูปเข้าผ่าน Daily Reports / Photos ใน Google Drive" />;
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      {files.map((file) => (
+        <article key={file.id} className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <button
+            type="button"
+            onClick={() => onPreview(file)}
+            className="group relative block aspect-[4/3] w-full overflow-hidden bg-gray-100 text-left"
+          >
+            {file.previewUrl ? (
+              <NextImage
+                src={file.previewUrl}
+                alt={file.title}
+                fill
+                unoptimized
+                sizes="(min-width: 1536px) 25vw, (min-width: 1280px) 33vw, (min-width: 640px) 50vw, 100vw"
+                className="object-cover transition duration-200 group-hover:scale-[1.03]"
+                loading="lazy"
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-gray-300">
+                <ImageIcon size={42} />
+              </div>
+            )}
+            <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-lg bg-slate-950/80 px-2 py-1 text-[11px] font-bold text-white opacity-0 transition group-hover:opacity-100">
+              <Maximize2 size={12} /> Preview
+            </span>
+          </button>
+          <div className="space-y-2 p-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-black text-gray-950">{file.title}</p>
+              <p className="mt-1 truncate text-xs font-semibold text-gray-500">{file.fileName}</p>
+            </div>
+            <div className="flex items-center justify-between gap-3 text-xs text-gray-500">
+              <span className="truncate">{file.folderPath || file.source || "-"}</span>
+              <span className="shrink-0">{formatDate(file.date)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-bold ${KIND_STYLES[file.kind]}`}>
+                {KIND_LABELS[file.kind]}
+              </span>
+              {file.url ? (
+                <a
+                  href={file.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-50"
+                >
+                  เปิดไฟล์ <ExternalLink size={12} />
+                </a>
+              ) : null}
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function PhotoPreviewDialog({
+  file,
+  onClose,
+}: {
+  file?: FileItem | null;
+  onClose: () => void;
+}) {
+  if (!file) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4">
+      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-black text-gray-950">{file.title}</h3>
+            <p className="mt-1 truncate text-xs font-semibold text-gray-500">{file.folderPath || file.source || file.fileName}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+            aria-label="ปิด preview"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="min-h-0 bg-gray-950 p-3">
+          {file.previewUrl ? (
+            <div className="relative h-[70vh] w-full">
+              <NextImage
+                src={file.previewUrl}
+                alt={file.title}
+                fill
+                unoptimized
+                sizes="100vw"
+                className="object-contain"
+              />
+            </div>
+          ) : (
+            <div className="flex h-[60vh] items-center justify-center text-gray-500">
+              <ImageIcon size={56} />
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 text-sm">
+          <div className="min-w-0 text-gray-600">
+            <span className="font-bold text-gray-900">{file.fileName}</span>
+            <span className="mx-2 text-gray-300">/</span>
+            <span>{formatDate(file.date)}</span>
+          </div>
+          {file.url ? (
+            <a
+              href={file.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800"
+            >
+              เปิดไฟล์ต้นฉบับ <ExternalLink size={14} />
+            </a>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FilesWorkspace({ project }: { project: MasterProject }) {
   const projectId = encodeURIComponent(project.project_id);
   const documents = useSWR<{ success?: boolean; data?: ProjectDocument[]; error?: string }>(`/api/sites/${projectId}/documents`, fetcher);
   const defects = useSWR<{ success?: boolean; rounds?: DefectRound[]; items?: DefectItem[]; evidence?: DefectEvidence[]; error?: string }>(`/api/sites/${projectId}/defects`, fetcher);
+  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string }>(`/api/sites/${projectId}/drive-files`, fetcher);
   const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
+  const [openDrivePending, setOpenDrivePending] = useState(false);
+  const [activePhotoFolder, setActivePhotoFolder] = useState("");
+  const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
-  const files = useMemo(() => collectFiles(documents.data?.data || [], defects.data), [documents.data, defects.data]);
+  const files = useMemo(
+    () => collectFiles(documents.data?.data || [], defects.data, driveFiles.data?.data || []),
+    [documents.data, defects.data, driveFiles.data]
+  );
   const filteredFiles = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return files.filter((file) => {
       if (!fileMatchesTab(file, activeTab)) return false;
+      if (activeTab === "photos" && activePhotoFolder && (file.folderPath || "__none__") !== activePhotoFolder) return false;
       if (!normalized) return true;
       return [file.title, file.fileName, file.source, file.category, file.notes]
         .join(" ")
         .toLowerCase()
         .includes(normalized);
     });
-  }, [activeTab, files, query]);
+  }, [activePhotoFolder, activeTab, files, query]);
+  const photoFolders = useMemo(() => {
+    const folderCounts = new Map<string, number>();
+    files.filter(isPhotoFile).forEach((file) => {
+      const key = file.folderPath || "__none__";
+      folderCounts.set(key, (folderCounts.get(key) || 0) + 1);
+    });
+    return Array.from(folderCounts.entries())
+      .sort(([a], [b]) => {
+        if (a === "__none__") return 1;
+        if (b === "__none__") return -1;
+        return b.localeCompare(a, "th");
+      })
+      .map(([value, count]) => ({
+        value,
+        label: value === "__none__" ? "ไม่ระบุโฟลเดอร์" : value,
+        count,
+      }));
+  }, [files]);
 
   const uploadPdf = (formData: FormData) => {
     setUploadError("");
@@ -371,6 +617,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           success: true,
           data: [uploadedDocument, ...(current?.data || [])],
         }), { revalidate: true });
+        await driveFiles.mutate();
       } catch (error: unknown) {
         setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
         setUploadMessage("");
@@ -378,21 +625,59 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
     });
   };
 
+  const openSelectedCategoryFolder = async () => {
+    setUploadError("");
+    setUploadMessage("");
+
+    if (!driveUrl) {
+      setUploadError("ยังไม่ได้ตั้งค่า Drive Folder ของไซต์งาน");
+      return;
+    }
+
+    const formData = formRef.current ? new FormData(formRef.current) : new FormData();
+    const category = String(formData.get("category") || "other");
+    setOpenDrivePending(true);
+
+    try {
+      const response = await fetch(`/api/sites/${projectId}/documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "open_category_folder",
+          category,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.data?.folder_url) {
+        throw new Error(payload?.error || "เปิดโฟลเดอร์ Drive ไม่สำเร็จ");
+      }
+
+      window.open(String(payload.data.folder_url), "_blank", "noopener,noreferrer");
+      setUploadMessage("เปิดโฟลเดอร์หมวดนี้ใน Google Drive แล้ว สามารถลากไฟล์ไปวางใน Drive ได้โดยตรง");
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "เปิดโฟลเดอร์ Drive ไม่สำเร็จ");
+    } finally {
+      setOpenDrivePending(false);
+    }
+  };
+
   const totalDocuments = files.filter((file) => file.kind === "document").length;
+  const totalDriveFiles = files.filter((file) => file.kind === "drive_file" || file.kind === "drive_image").length;
   const totalDefectPdfs = files.filter((file) => file.kind === "defect_pdf").length;
   const totalEvidence = files.filter((file) => file.kind === "acknowledgement").length;
-  const totalPhotos = files.filter((file) => file.kind === "defect_photo").length;
+  const totalPhotos = files.filter((file) => file.kind === "defect_photo" || file.kind === "drive_image").length;
   const driveUrl = buildDriveFolderUrl(project.drive_folder_id);
-  const isLoading = documents.isLoading || defects.isLoading;
-  const loadError = documents.data?.error || defects.data?.error;
+  const isLoading = documents.isLoading || defects.isLoading || driveFiles.isLoading;
+  const loadError = documents.data?.error || defects.data?.error || driveFiles.data?.error;
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-5">
         <StatCard label="เอกสารอัปโหลด" value={totalDocuments} tone="text-blue-700" />
+        <StatCard label="ไฟล์ใน Drive" value={totalDriveFiles} tone="text-slate-700" />
         <StatCard label="PDF Defect" value={totalDefectPdfs} tone="text-red-600" />
         <StatCard label="หลักฐานลูกค้า" value={totalEvidence} tone="text-emerald-700" />
-        <StatCard label="รูป Defect" value={totalPhotos} tone="text-amber-700" />
+        <StatCard label="รูปทั้งหมด" value={totalPhotos} tone="text-amber-700" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
@@ -421,7 +706,17 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
                 {isPending ? <RefreshCw className="animate-spin" size={16} /> : <Upload size={16} />}
                 {driveUrl ? "อัปโหลดตรงไป Drive" : "ต้องตั้งค่า Drive Folder ก่อน"}
               </button>
-              <p className="text-xs font-semibold text-gray-500">ไฟล์จะถูกส่งตรงไป Google Drive แล้วระบบบันทึก file id และ version history ให้อัตโนมัติ</p>
+              <button
+                type="button"
+                disabled={openDrivePending || !driveUrl}
+                onClick={openSelectedCategoryFolder}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-bold text-orange-700 transition hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {openDrivePending ? <RefreshCw className="animate-spin" size={16} /> : <FolderOpen size={16} />}
+                เปิดโฟลเดอร์หมวดนี้ใน Drive
+                <ExternalLink size={14} />
+              </button>
+              <p className="text-xs font-semibold text-gray-500">อัปโหลดผ่านระบบจะบันทึก file id และ version history ให้อัตโนมัติ ส่วนปุ่มเปิดโฟลเดอร์ใช้สำหรับแนบ/ลากไฟล์เข้า Google Drive โดยตรง</p>
             </div>
           </form>
 
@@ -470,14 +765,31 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
                   );
                 })}
               </div>
-              <div className="relative min-w-0 lg:w-80">
-                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-orange-400"
-                  placeholder="ค้นหาชื่อไฟล์ / หมวด / ที่มา"
-                />
+              <div className="grid min-w-0 gap-2 lg:w-[520px] lg:grid-cols-[1fr_220px]">
+                <div className="relative min-w-0">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-orange-400"
+                    placeholder="ค้นหาชื่อไฟล์ / หมวด / ที่มา"
+                  />
+                </div>
+                {activeTab === "photos" ? (
+                  <select
+                    value={activePhotoFolder}
+                    onChange={(event) => setActivePhotoFolder(event.target.value)}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 outline-none focus:border-orange-400"
+                    aria-label="เลือกโฟลเดอร์รูป"
+                  >
+                    <option value="">ทุกโฟลเดอร์รูป ({files.filter(isPhotoFile).length})</option>
+                    {photoFolders.map((folder) => (
+                      <option key={folder.value} value={folder.value}>
+                        {folder.label} ({folder.count})
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
               </div>
             </div>
           </div>
@@ -493,6 +805,8 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
               <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
               กำลังโหลดไฟล์
             </div>
+          ) : activeTab === "photos" ? (
+            <PhotoGallery files={filteredFiles.filter(isPhotoFile)} onPreview={setPreviewFile} />
           ) : (
             <FilesTable files={filteredFiles} />
           )}
@@ -516,6 +830,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           </div>
         </section>
       </div>
+      <PhotoPreviewDialog file={previewFile} onClose={() => setPreviewFile(null)} />
     </div>
   );
 }

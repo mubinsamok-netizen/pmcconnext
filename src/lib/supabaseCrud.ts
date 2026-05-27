@@ -33,6 +33,7 @@ import {
   type SheetLikeRecord,
 } from "@/lib/supabaseReadModel";
 import { supabaseDelete, supabaseInsert, supabasePatch } from "@/lib/supabaseRest";
+import { getSupabaseMasterSchema, getSupabaseSiteSchema } from "@/lib/supabaseSchema";
 
 type SheetValue = string | number | boolean | null | undefined;
 type SheetRow = { _rowIndex: number | string } & Record<string, string | number | undefined>;
@@ -69,7 +70,7 @@ type TableConfig = {
   table: string;
   keyColumn: string;
   toDb: (data: Record<string, SheetValue>) => Record<string, unknown>;
-  fromDb: () => Promise<SheetLikeRecord[]>;
+  fromDb: (projectId?: string | null) => Promise<SheetLikeRecord[]>;
   includeCreatedAt?: boolean;
   includeUpdatedAt?: boolean;
 };
@@ -160,6 +161,7 @@ function toProjectDb(data: Record<string, SheetValue>) {
     "site_link",
     "pm_name",
     "se_name",
+    "architect_name",
     "cover_file_id",
     "cover_url",
     "site_sheet_id",
@@ -1024,151 +1026,151 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "tasks",
     keyColumn: "task_id",
     toDb: toTaskDb,
-    fromDb: () => getSupabaseTasks(),
+    fromDb: (projectId) => getSupabaseTasks(projectId),
   },
   Milestones: {
     table: "milestones",
     keyColumn: "milestone_id",
     toDb: toMilestoneDb,
-    fromDb: () => getSupabaseMilestones(),
+    fromDb: (projectId) => getSupabaseMilestones(projectId),
   },
   Budget: {
     table: "budget",
     keyColumn: "budget_id",
     toDb: toBudgetDb,
-    fromDb: () => getSupabaseBudget(),
+    fromDb: (projectId) => getSupabaseBudget(projectId),
   },
   Materials: {
     table: "materials",
     keyColumn: "material_id",
     toDb: toMaterialDb,
-    fromDb: () => getSupabaseMaterials(),
+    fromDb: (projectId) => getSupabaseMaterials(projectId),
   },
   Issues: {
     table: "issues",
     keyColumn: "issue_id",
     toDb: toIssueDb,
-    fromDb: () => getSupabaseIssues(),
+    fromDb: (projectId) => getSupabaseIssues(projectId),
   },
   Daily_Reports: {
     table: "daily_reports",
     keyColumn: "report_id",
     toDb: toDailyReportDb,
-    fromDb: () => getSupabaseDailyReports(),
+    fromDb: (projectId) => getSupabaseDailyReports(projectId),
   },
   Weekly_Reports: {
     table: "weekly_reports",
     keyColumn: "report_id",
     toDb: toWeeklyReportDb,
-    fromDb: () => getSupabaseWeeklyReports(),
+    fromDb: (projectId) => getSupabaseWeeklyReports(projectId),
   },
   Monthly_Reports: {
     table: "monthly_reports",
     keyColumn: "report_id",
     toDb: toMonthlyReportDb,
-    fromDb: () => getSupabaseMonthlyReports(),
+    fromDb: (projectId) => getSupabaseMonthlyReports(projectId),
   },
   Project_Documents: {
     table: "project_documents",
     keyColumn: "document_id",
     toDb: toProjectDocumentDb,
-    fromDb: () => getSupabaseProjectDocuments(),
+    fromDb: (projectId) => getSupabaseProjectDocuments(projectId),
   },
   Project_Lifecycle: {
     table: "project_lifecycle",
     keyColumn: "lifecycle_id",
     toDb: toProjectLifecycleDb,
-    fromDb: () => getSupabaseProjectLifecycle(),
+    fromDb: (projectId) => getSupabaseProjectLifecycle(projectId),
   },
   Project_Warranty: {
     table: "project_warranty",
     keyColumn: "warranty_id",
     toDb: toProjectWarrantyDb,
-    fromDb: () => getSupabaseProjectWarranty(),
+    fromDb: (projectId) => getSupabaseProjectWarranty(projectId),
   },
   Customer_Decisions: {
     table: "customer_decisions",
     keyColumn: "decision_id",
     toDb: toCustomerDecisionDb,
-    fromDb: () => getSupabaseCustomerDecisions(),
+    fromDb: (projectId) => getSupabaseCustomerDecisions(projectId),
   },
   Defect_Rounds: {
     table: "defect_rounds",
     keyColumn: "round_id",
     toDb: toDefectRoundDb,
-    fromDb: () => getSupabaseDefectRounds(),
+    fromDb: (projectId) => getSupabaseDefectRounds(projectId),
   },
   Defect_Items: {
     table: "defect_items",
     keyColumn: "item_id",
     toDb: toDefectItemDb,
-    fromDb: () => getSupabaseDefectItems(),
+    fromDb: (projectId) => getSupabaseDefectItems(projectId),
   },
   Defect_Evidence: {
     table: "defect_evidence",
     keyColumn: "evidence_id",
     toDb: toDefectEvidenceDb,
-    fromDb: () => getSupabaseDefectEvidence(),
+    fromDb: (projectId) => getSupabaseDefectEvidence(projectId),
   },
   QC_Checklists: {
     table: "qc_checklists",
     keyColumn: "qc_id",
     toDb: toQcChecklistDb,
-    fromDb: () => getSupabaseQcChecklists(),
+    fromDb: (projectId) => getSupabaseQcChecklists(projectId),
   },
   Site_Memos: {
     table: "site_memos",
     keyColumn: "memo_id",
     toDb: toSiteMemoDb,
-    fromDb: () => getSupabaseSiteMemos(),
+    fromDb: (projectId) => getSupabaseSiteMemos(projectId),
   },
   Site_Memo_Evidence: {
     table: "site_memo_evidence",
     keyColumn: "evidence_id",
     toDb: toSiteMemoEvidenceDb,
-    fromDb: () => getSupabaseSiteMemoEvidence(),
+    fromDb: (projectId) => getSupabaseSiteMemoEvidence(projectId),
   },
   Variation_Orders: {
     table: "variation_orders",
     keyColumn: "vo_id",
     toDb: toVariationOrderDb,
-    fromDb: () => getSupabaseVariationOrders(),
+    fromDb: (projectId) => getSupabaseVariationOrders(projectId),
   },
   VO_Items: {
     table: "vo_items",
     keyColumn: "item_id",
     toDb: toVoItemDb,
-    fromDb: () => getSupabaseVoItems(),
+    fromDb: (projectId) => getSupabaseVoItems(projectId),
   },
   VO_Documents: {
     table: "vo_documents",
     keyColumn: "document_id",
     toDb: toVoDocumentDb,
-    fromDb: () => getSupabaseVoDocuments(),
+    fromDb: (projectId) => getSupabaseVoDocuments(projectId),
   },
   VO_Payments: {
     table: "vo_payments",
     keyColumn: "payment_id",
     toDb: toVoPaymentDb,
-    fromDb: () => getSupabaseVoPayments(),
+    fromDb: (projectId) => getSupabaseVoPayments(projectId),
   },
   VO_Task_Links: {
     table: "vo_task_links",
     keyColumn: "link_id",
     toDb: toVoTaskLinkDb,
-    fromDb: () => getSupabaseVoTaskLinks(),
+    fromDb: (projectId) => getSupabaseVoTaskLinks(projectId),
   },
   VO_Finance_Ledger: {
     table: "vo_finance_ledger",
     keyColumn: "ledger_id",
     toDb: toVoFinanceLedgerDb,
-    fromDb: () => getSupabaseVoFinanceLedger(),
+    fromDb: (projectId) => getSupabaseVoFinanceLedger(projectId),
   },
   Site_Notes: {
     table: "site_notes",
     keyColumn: "note_id",
     toDb: toSiteNoteDb,
-    fromDb: () => getSupabaseSiteNotes(),
+    fromDb: (projectId) => getSupabaseSiteNotes(projectId),
   },
 };
 
@@ -1188,6 +1190,15 @@ function withTimestamps(config: TableConfig, payload: Record<string, unknown>, o
   return next;
 }
 
+function isMasterConfig(config: TableConfig) {
+  return Object.values(MASTER_TABLES).includes(config);
+}
+
+async function getSchemaForConfig(config: TableConfig, projectId?: string | null) {
+  if (isMasterConfig(config)) return getSupabaseMasterSchema();
+  return await getSupabaseSiteSchema(projectId);
+}
+
 export function getSupabaseMasterConfig(tableName: string) {
   return MASTER_TABLES[tableName as MasterTable] || null;
 }
@@ -1196,31 +1207,44 @@ export function getSupabaseSiteConfig(tableName: string) {
   return SITE_TABLES[tableName as SiteTable] || null;
 }
 
-export async function findAllSupabase(config: TableConfig) {
-  return await config.fromDb() as SheetRow[];
+export async function findAllSupabase(config: TableConfig, projectId?: string | null) {
+  return await config.fromDb(projectId) as SheetRow[];
 }
 
-export async function insertSupabase(config: TableConfig, data: Record<string, SheetValue>): Promise<CrudResult> {
-  const rows = await supabaseInsert<unknown>(config.table, withTimestamps(config, config.toDb(data), "insert"));
+export async function insertSupabase(
+  config: TableConfig,
+  data: Record<string, SheetValue>,
+  projectId?: string | null
+): Promise<CrudResult> {
+  const resolvedProjectId = text(projectId || data.project_id);
+  const schema = await getSchemaForConfig(config, resolvedProjectId);
+  const rows = await supabaseInsert<unknown>(config.table, withTimestamps(config, config.toDb(data), "insert"), { schema });
   const keyValue = getKeyValue(config, data);
-  const inserted = (await config.fromDb()).find((row) => text(row[config.keyColumn]) === keyValue) || rows[0] as SheetLikeRecord | undefined;
+  const inserted = (await config.fromDb(resolvedProjectId)).find((row) => text(row[config.keyColumn]) === keyValue) || rows[0] as SheetLikeRecord | undefined;
   return { success: true, inserted };
 }
 
 export async function updateSupabase(
   config: TableConfig,
   rowKey: string | number,
-  patch: Record<string, SheetValue>
+  patch: Record<string, SheetValue>,
+  projectId?: string | null
 ): Promise<CrudResult> {
   const keyValue = getKeyValue(config, patch, rowKey);
   if (!keyValue) throw new Error(`Missing ${config.keyColumn} for Supabase update`);
-  await supabasePatch<unknown>(config.table, config.keyColumn, keyValue, withTimestamps(config, config.toDb(patch), "update"));
+  const schema = await getSchemaForConfig(config, text(projectId || patch.project_id));
+  await supabasePatch<unknown>(config.table, config.keyColumn, keyValue, withTimestamps(config, config.toDb(patch), "update"), { schema });
   return { success: true };
 }
 
-export async function deleteSupabase(config: TableConfig, rowKey: string | number): Promise<CrudResult> {
+export async function deleteSupabase(
+  config: TableConfig,
+  rowKey: string | number,
+  projectId?: string | null
+): Promise<CrudResult> {
   const keyValue = text(rowKey);
   if (!keyValue) throw new Error(`Missing ${config.keyColumn} for Supabase delete`);
-  await supabaseDelete<unknown>(config.table, config.keyColumn, keyValue);
+  const schema = await getSchemaForConfig(config, projectId);
+  await supabaseDelete<unknown>(config.table, config.keyColumn, keyValue, { schema });
   return { success: true };
 }

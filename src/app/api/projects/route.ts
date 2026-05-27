@@ -7,6 +7,7 @@ import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
+import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
@@ -26,6 +27,17 @@ type ProjectHealth = {
 };
 
 const DAILY_REPORT_STALE_DAYS = 7;
+
+function withSiteStorageMetadata(project: SheetRecord) {
+  const projectId = String(project.project_id || "").trim();
+  const usesSupabaseSchema = isSupabaseBackend() && isSupabaseSiteSchemaMode() && Boolean(projectId);
+
+  return {
+    ...project,
+    site_storage_mode: usesSupabaseSchema ? "supabase_schema" : "google_sheet",
+    site_schema_name: usesSupabaseSchema ? getSupabaseSiteSchemaName(projectId) : "",
+  };
+}
 
 function getErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal server error";
@@ -275,11 +287,11 @@ export async function GET(req: Request) {
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
     if (mode === "basic") {
-      return NextResponse.json({ success: true, data: accessibleProjects });
+      return NextResponse.json({ success: true, data: accessibleProjects.map(withSiteStorageMetadata) });
     }
 
     const projectsWithHealth = await Promise.all(accessibleProjects.map(enrichProjectWithHealth));
-    return NextResponse.json({ success: true, data: projectsWithHealth });
+    return NextResponse.json({ success: true, data: projectsWithHealth.map(withSiteStorageMetadata) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -309,6 +321,7 @@ export async function POST(req: Request) {
       site_link,
       pm_name,
       se_name,
+      architect_name,
       site_sheet_id,
       drive_folder_id,
       sales_customer_id,
@@ -347,7 +360,16 @@ export async function POST(req: Request) {
     }
 
     let siteSheetId = typeof site_sheet_id === "string" ? site_sheet_id.trim() : "";
-    if (!siteSheetId) {
+    if (isSupabaseBackend() && isSupabaseSiteSchemaMode()) {
+      siteSheetId = getSupabaseSiteSchemaName(project_id);
+      try {
+        await createSupabaseSiteSchema(project_id);
+      } catch (error: unknown) {
+        return NextResponse.json({
+          error: `ไม่สามารถสร้าง Supabase schema ของไซต์ได้: ${getErrorMessage(error)}`,
+        }, { status: 500 });
+      }
+    } else if (!siteSheetId) {
       try {
         siteSheetId = await createSiteSpreadsheet(`${project_id} - ${name} Data`, driveFolderId || undefined);
       } catch (error: unknown) {
@@ -397,6 +419,7 @@ export async function POST(req: Request) {
       site_link,
       pm_name,
       se_name,
+      architect_name,
       cover_file_id: coverFileId,
       cover_url: coverUrl,
       status: body.status || "Planning",
@@ -464,7 +487,11 @@ export async function PUT(req: Request) {
     };
 
     let driveFolderId = value("drive_folder_id", current.drive_folder_id || "").trim();
-    const siteSheetId = value("site_sheet_id", current.site_sheet_id || "").trim();
+    const requestedSiteSheetId = value("site_sheet_id", current.site_sheet_id || "").trim();
+    const usesSupabaseSchema = isSupabaseBackend() && isSupabaseSiteSchemaMode();
+    const siteSheetId = usesSupabaseSchema
+      ? String(current.site_sheet_id || getSupabaseSiteSchemaName(projectId)).trim()
+      : requestedSiteSheetId;
     let warning = "";
 
     if (!driveFolderId && coverFile) {
@@ -481,7 +508,7 @@ export async function PUT(req: Request) {
       }
     }
 
-    if (siteSheetId && siteSheetId !== current.site_sheet_id) {
+    if (!usesSupabaseSchema && siteSheetId && siteSheetId !== current.site_sheet_id) {
       if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
     }
 
@@ -538,6 +565,7 @@ export async function PUT(req: Request) {
       site_link: value("site_link", current.site_link || ""),
       pm_name: value("pm_name", current.pm_name || ""),
       se_name: value("se_name", current.se_name || ""),
+      architect_name: value("architect_name", current.architect_name || ""),
       cover_file_id: coverFileId,
       cover_url: coverUrl,
       sales_customer_id: value("sales_customer_id", current.sales_customer_id || ""),
@@ -552,7 +580,7 @@ export async function PUT(req: Request) {
 
     return NextResponse.json({
       success: true,
-      data: { ...current, ...patch },
+      data: withSiteStorageMetadata({ ...current, ...patch }),
       warning: warning || undefined,
     });
   } catch (error: unknown) {

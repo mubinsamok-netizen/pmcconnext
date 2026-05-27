@@ -34,6 +34,12 @@ import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
 import { getSiteWeather } from "@/lib/siteWeather";
+import {
+  getAlertState,
+  getLifecycleReminderTargets,
+  getWarrantyReminderTargets,
+  type SheetRecord as LifecycleSheetRecord,
+} from "@/lib/projectLifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -128,6 +134,7 @@ type DashboardData = {
   memos: MemoSummary;
   files: FilesSummary;
   reports: ReportsSummary;
+  lifecycleAlerts: DashboardAction[];
   actions: DashboardAction[];
   recent: RecentItem[];
   error: string;
@@ -192,6 +199,7 @@ const emptyData: DashboardData = {
     latestDailyDate: "",
     latestDailyTitle: "",
   },
+  lifecycleAlerts: [],
   actions: [],
   recent: [],
   error: "",
@@ -328,6 +336,8 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       "Variation_Orders",
       "Site_Notes",
       "Site_Memos",
+      "Project_Lifecycle",
+      "Project_Warranty",
     ], sheetId) as Record<string, SiteRecord[]>;
 
     const tasks = rows.Tasks || [];
@@ -342,6 +352,8 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const variationOrders = rows.Variation_Orders || [];
     const siteNotes = rows.Site_Notes || [];
     const siteMemos = rows.Site_Memos || [];
+    const lifecycles = rows.Project_Lifecycle || [];
+    const warranties = rows.Project_Warranty || [];
 
     const belongsToProject = isProjectRow(project.project_id);
     const projectTasks = tasks.filter((task) => belongsToProject(task) && stringValue(task.task_type) !== "heading");
@@ -356,6 +368,8 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const projectVariationOrders = variationOrders.filter(belongsToProject);
     const projectNotes = siteNotes.filter((note) => belongsToProject(note) && !isTruthyText(note.archived));
     const projectMemos = siteMemos.filter(belongsToProject);
+    const projectLifecycle = lifecycles.find(belongsToProject);
+    const projectWarranty = warranties.find(belongsToProject);
 
     const plannedTasks = projectTasks.filter((task) => parseDate(task.planned_start || task.start) && parseDate(task.planned_end || task.end));
     const completedTasks = projectTasks.filter(isTaskDone);
@@ -480,6 +494,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       latestDailyDate: stringValue(latestDailyReport?.date),
       latestDailyTitle: latestDailyReport ? itemTitle(latestDailyReport, "รายงานประจำวัน") : "",
     };
+    const lifecycleAlerts = buildLifecycleAlerts(project.project_id, projectLifecycle, projectWarranty);
 
     const actions = buildActions(project.project_id, {
       planning,
@@ -488,6 +503,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       notes,
       memos,
       reports,
+      lifecycleAlerts,
     });
     const recent = buildRecent(project.project_id, {
       latestNote,
@@ -506,6 +522,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       memos,
       files,
       reports,
+      lifecycleAlerts,
       actions,
       recent,
       error: "",
@@ -530,9 +547,10 @@ function buildActions(
     notes: NotesSummary;
     memos: MemoSummary;
     reports: ReportsSummary;
+    lifecycleAlerts: DashboardAction[];
   },
 ) {
-  const actions: DashboardAction[] = [];
+  const actions: DashboardAction[] = [...summaries.lifecycleAlerts];
 
   if (summaries.planning.overdueTasks.length > 0) {
     actions.push({
@@ -605,6 +623,50 @@ function buildActions(
   }
 
   return actions.slice(0, 6);
+}
+
+function buildLifecycleAlerts(projectId: string, lifecycle?: SiteRecord, warranty?: SiteRecord): DashboardAction[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const targets = [
+    ...getLifecycleReminderTargets(projectId, lifecycle as LifecycleSheetRecord | undefined),
+    ...getWarrantyReminderTargets(projectId, warranty as LifecycleSheetRecord | undefined),
+  ];
+
+  const alerts: Array<DashboardAction & { sortKey: number }> = [];
+
+  targets.forEach((target) => {
+    const state = getAlertState(today, target);
+    if (!state) return;
+
+    const detail =
+      state.days < 0
+        ? `เลยกำหนด ${Math.abs(state.days)} วัน · ${formatDate(target.dueDate)}`
+        : state.days === 0
+          ? `ครบกำหนดวันนี้ · ${formatDate(target.dueDate)}`
+          : `เหลือ ${state.days} วัน · ${formatDate(target.dueDate)}`;
+    const tone: DashboardAction["tone"] = state.kind === "overdue" ? "red" : "orange";
+
+    alerts.push({
+      title: target.title,
+      detail,
+      href: target.link,
+      icon: AlertTriangle,
+      tone,
+      sortKey: state.days < 0 ? state.days : state.days + 1000,
+    });
+  });
+
+  return alerts
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .map((alert) => ({
+      title: alert.title,
+      detail: alert.detail,
+      href: alert.href,
+      icon: alert.icon,
+      tone: alert.tone,
+    }));
 }
 
 function buildRecent(
@@ -701,10 +763,10 @@ export default async function SiteDashboardPage({
         ];
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5">
+    <div className="mx-auto w-full max-w-[1680px] space-y-4">
       <section className="overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm">
-        <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="min-w-0 p-5 lg:p-6">
+        <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="min-w-0 p-4 lg:p-5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">
                 <LayoutDashboard size={14} />
@@ -718,7 +780,7 @@ export default async function SiteDashboardPage({
                 <h2 className="truncate text-3xl font-extrabold tracking-tight text-gray-950">{project.name}</h2>
                 <p className="mt-1 text-sm font-semibold text-gray-500">{project.client || "ไม่ระบุลูกค้า"}</p>
               </div>
-              <div className="grid grid-cols-3 gap-2 lg:min-w-[420px]">
+              <div className="grid grid-cols-3 gap-2 lg:min-w-[410px]">
                 <InfoCard label="เริ่ม" value={formatDate(project.start_date) || "-"} />
                 <InfoCard label="สิ้นสุด" value={formatDate(project.end_date) || "-"} />
                 <InfoCard
@@ -728,7 +790,7 @@ export default async function SiteDashboardPage({
                 />
               </div>
             </div>
-            <div className="mt-5">
+            <div className="mt-4">
               <div className="mb-2 flex items-center justify-between text-xs font-bold text-gray-500">
                 <span>ความคืบหน้าจากแผนงาน</span>
                 <span>{progressPercent}%</span>
@@ -738,7 +800,7 @@ export default async function SiteDashboardPage({
               </div>
             </div>
           </div>
-          <div className="border-t border-gray-100 bg-gray-50 p-5 xl:border-l xl:border-t-0">
+          <div className="border-t border-gray-100 bg-gray-50 p-4 xl:border-l xl:border-t-0">
             <SiteWeatherCard weather={weather} />
           </div>
         </div>
@@ -760,7 +822,15 @@ export default async function SiteDashboardPage({
         </Link>
       )}
 
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <KpiCard
+          icon={CalendarDays}
+          label="แจ้งเตือนเอกสาร"
+          value={String(dashboard.lifecycleAlerts.length)}
+          detail="ใกล้ครบกำหนดจาก Lifecycle"
+          tone={dashboard.lifecycleAlerts.some((alert) => alert.tone === "red") ? "red" : dashboard.lifecycleAlerts.length ? "orange" : "green"}
+          href={`/dashboard/sites/${project.project_id}/lifecycle`}
+        />
         <KpiCard icon={ListChecks} label="แผนงานครบถ้วน" value={`${dashboard.planning.planCoverage}%`} detail={`${dashboard.planning.plannedTaskCount}/${dashboard.planning.workTaskCount} งาน`} />
         <KpiCard icon={Clock3} label="งานที่ต้องจับตา" value={String(dashboard.planning.overdueTasks.length + dashboard.planning.dueSoonTasks.length)} detail="เลยกำหนด / ครบใน 7 วัน" tone={dashboard.planning.overdueTasks.length ? "red" : "orange"} />
         <KpiCard icon={FileSignature} label="Memo รอรับทราบ" value={String(dashboard.memos.waitingAckCount)} detail={`${dashboard.memos.extensionDays} วันเพิ่มที่ขอ`} tone={dashboard.memos.waitingAckCount ? "orange" : "green"} />
@@ -909,7 +979,7 @@ function InfoCard({
 }) {
   const toneClass = tone === "red" ? "border-red-100 bg-red-50 text-red-700" : "border-gray-100 bg-gray-50 text-gray-950";
   return (
-    <div className={`min-w-0 rounded-2xl border p-3 ${toneClass}`}>
+    <div className={`min-w-0 rounded-2xl border p-2.5 ${toneClass}`}>
       <p className="truncate text-[11px] font-extrabold uppercase tracking-wide opacity-60">{label}</p>
       <p className="mt-1 truncate text-sm font-extrabold sm:text-base">{value}</p>
     </div>
@@ -922,12 +992,14 @@ function KpiCard({
   value,
   detail,
   tone = "gray",
+  href,
 }: {
   icon: IconType;
   label: string;
   value: string;
   detail: string;
   tone?: "gray" | "orange" | "green" | "red" | "blue";
+  href?: string;
 }) {
   const toneClass = {
     gray: "bg-white text-gray-950 border-gray-200",
@@ -936,15 +1008,28 @@ function KpiCard({
     red: "bg-red-50 text-red-800 border-red-100",
     blue: "bg-blue-50 text-blue-800 border-blue-100",
   }[tone];
-
-  return (
-    <div className={`rounded-2xl border p-4 shadow-sm ${toneClass}`}>
+  const content = (
+    <>
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-extrabold text-current opacity-65">{label}</p>
         <Icon size={18} className="shrink-0 opacity-70" />
       </div>
-      <p className="mt-3 text-2xl font-extrabold tracking-tight">{value}</p>
+      <p className="mt-2 text-2xl font-extrabold tracking-tight">{value}</p>
       <p className="mt-1 truncate text-xs font-semibold opacity-65">{detail}</p>
+    </>
+  );
+
+  if (href) {
+    return (
+      <Link href={href} className={`block rounded-2xl border p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${toneClass}`}>
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className={`rounded-2xl border p-3 shadow-sm ${toneClass}`}>
+      {content}
     </div>
   );
 }
@@ -963,7 +1048,7 @@ function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section className="rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-orange-50 text-orange-700">

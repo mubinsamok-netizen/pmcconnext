@@ -23,6 +23,7 @@ export const MASTER_SCHEMA = {
     "site_link",
     "pm_name",
     "se_name",
+    "architect_name",
     "cover_file_id",
     "cover_url",
     "sales_customer_id",

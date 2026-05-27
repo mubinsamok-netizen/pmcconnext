@@ -12,6 +12,8 @@ import {
 import Image from "next/image";
 import type { ComponentType } from "react";
 import { getMasterProject } from "@/lib/masterProjects";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 import { SiteShell } from "../SiteShell";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +33,9 @@ export default async function SiteDetailsPage({ params }: { params: Promise<{ pr
   const { projectId } = await params;
   const project = await getMasterProject(projectId);
   const coverSrc = getCoverSrc(project);
+  const usesSupabaseSchema = isSupabaseBackend() && isSupabaseSiteSchemaMode();
+  const siteWorkspaceLabel = usesSupabaseSchema ? "Supabase Site Schema" : "Google Sheet ID";
+  const siteWorkspaceValue = usesSupabaseSchema ? getSupabaseSiteSchemaName(project.project_id) : project.site_sheet_id || "-";
 
   return (
     <SiteShell
@@ -81,13 +86,14 @@ export default async function SiteDetailsPage({ params }: { params: Promise<{ pr
             <div className="space-y-3">
               <PersonRow label="ผู้จัดการโครงการ (PM)" value={project.pm_name || "-"} />
               <PersonRow label="วิศวกรสนาม (SE)" value={project.se_name || "-"} />
+              <PersonRow label="สถาปนิก (Architect)" value={project.architect_name || "-"} />
             </div>
           </section>
 
           <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
             <h4 className="font-bold text-gray-900 mb-4">ระบบข้อมูลของไซต์</h4>
             <div className="space-y-3">
-              <SystemRow icon={Server} label="Google Sheet ID" value={project.site_sheet_id || "-"} />
+              <SystemRow icon={Server} label={siteWorkspaceLabel} value={siteWorkspaceValue || "-"} />
               <SystemRow icon={FolderOpen} label="Google Drive Folder ID" value={project.drive_folder_id || "-"} />
               <SystemRow icon={Info} label="Sales Stage" value={project.sales_stage || "deposited"} />
               <SystemRow icon={Info} label="Deposit Status" value={project.deposit_status || "deposit_paid"} />

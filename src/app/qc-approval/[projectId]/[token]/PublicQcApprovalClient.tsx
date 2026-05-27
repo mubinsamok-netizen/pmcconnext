@@ -21,6 +21,7 @@ type ApprovalData = {
     approval_status?: string;
     inspection_date?: string;
     inspected_by_name?: string;
+    notes?: string;
     customer_approved_at?: string;
     customer_approved_by?: string;
     customer_approval_note?: string;
@@ -177,9 +178,10 @@ export default function PublicQcApprovalClient({ projectId, token }: { projectId
           </div>
         </section>
 
-        <section className="grid gap-4 px-5 py-5 sm:px-8 md:grid-cols-3">
+        <section className="grid gap-4 px-5 py-5 sm:px-8 md:grid-cols-4">
           <Info label="วันที่ตรวจ" value={checklist?.inspection_date || "-"} />
           <Info label="ผู้ตรวจ" value={checklist?.inspected_by_name || "-"} />
+          <Info label="โซน/รายละเอียด" value={checklist?.notes || "-"} />
           <Info label="หลักฐานแนบ" value={`${checklist?.evidence_count || 0} ไฟล์`} />
         </section>
 

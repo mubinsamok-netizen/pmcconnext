@@ -101,9 +101,11 @@ export default function Sidebar({
   const isSiteMode = Boolean(siteId);
   const isAdmin = getAppRole(user?.role) === "Admin";
   const isForeman = isForemanRole(user?.role);
-  const visibleWorkspaceNavItems = isForeman
-    ? workspaceNavItems.filter((item) => item.href === "/dashboard/projects")
-    : workspaceNavItems;
+  const visibleWorkspaceNavItems = workspaceNavItems.filter((item) => {
+    if (item.href === "/dashboard/sales-crm") return isAdmin;
+    if (isForeman) return item.href === "/dashboard/projects";
+    return true;
+  });
   const visibleSiteNavItems = siteNavItems.filter((item) => canAccessSiteSegment(user?.role, item.segment));
 
   const toggleCollapse = () => {

@@ -22,6 +22,7 @@ export type MasterProject = {
   site_link?: string;
   pm_name?: string;
   se_name?: string;
+  architect_name?: string;
   cover_file_id?: string;
   cover_url?: string;
   site_sheet_id?: string;
