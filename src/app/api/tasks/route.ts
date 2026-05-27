@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
@@ -23,6 +23,22 @@ function filterProjectTasks<T extends Record<string, string | number | undefined
   return tasks.filter((task) => String(task.project_id || "") === projectId);
 }
 
+function mergeTaskRows<T extends Record<string, string | number | undefined>>(primary: T[], fallback: T[]) {
+  const merged = new Map<string, T>();
+
+  fallback.forEach((task, index) => {
+    const key = String(task.task_id || task._rowIndex || `fallback-${index}`);
+    merged.set(key, task);
+  });
+
+  primary.forEach((task, index) => {
+    const key = String(task.task_id || task._rowIndex || `primary-${index}`);
+    merged.set(key, task);
+  });
+
+  return Array.from(merged.values());
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -36,7 +52,13 @@ export async function GET(req: Request) {
     };
 
     if (isSupabaseReadEnabled("site")) {
-      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
+      const tasks = await readWithSheetsFallback("tasks", async () => {
+        const supabaseTasks = await getSupabaseTasks(projectId);
+        if (!shouldFallbackToSheets()) return supabaseTasks;
+
+        const sheetTasks = await readSheetsTasks();
+        return mergeTaskRows(supabaseTasks, sheetTasks);
+      }, readSheetsTasks);
       return NextResponse.json({ success: true, data: tasks });
     }
 
@@ -76,11 +98,16 @@ export async function POST(req: Request) {
     const { sheetId } = await getProjectContext(project_id);
     if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
+    const readSheetsTasks = async () => filterProjectTasks(await findAllRaw("Tasks", sheetId), project_id);
     const existingTasks = order_index
       ? []
       : isSupabaseReadEnabled("site")
-        ? await getSupabaseTasks(project_id)
-        : filterProjectTasks(await findAllRaw("Tasks", sheetId), project_id);
+        ? await readWithSheetsFallback("tasks", async () => {
+          const supabaseTasks = await getSupabaseTasks(project_id);
+          if (!shouldFallbackToSheets()) return supabaseTasks;
+          return mergeTaskRows(supabaseTasks, await readSheetsTasks());
+        }, readSheetsTasks)
+        : await readSheetsTasks();
     const nextOrder = existingTasks.length + 1;
 
     const taskData = {
