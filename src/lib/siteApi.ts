@@ -2,7 +2,9 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { findAllMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
+import { ensureSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 
 export type SiteApiProject = Record<string, string | number | undefined> & {
   project_id: string;
@@ -12,8 +14,6 @@ export type SiteApiProject = Record<string, string | number | undefined> & {
 };
 
 export async function getSiteApiContext(projectId: string, requireAdmin = false) {
-  await ensureMasterSchema();
-
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return { error: "Unauthorized", status: 401 as const };
@@ -23,11 +23,12 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Admin only", status: 403 as const };
   }
 
-  if (!(await canAccessProject(projectId, session.user))) {
-    return { error: "Forbidden", status: 403 as const };
-  }
+  const [canAccess, projects] = await Promise.all([
+    canAccessProject(projectId, session.user),
+    findAllMaster("Projects") as unknown as Promise<SiteApiProject[]>,
+  ]);
+  if (!canAccess) return { error: "Forbidden", status: 403 as const };
 
-  const projects = await findAllMaster("Projects") as unknown as SiteApiProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
   if (!project) {
     return { error: "Project not found", status: 404 as const };
@@ -35,10 +36,13 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
 
   const siteSheetId = String(project.site_sheet_id || "").trim();
   if (!siteSheetId) {
+    if (isSupabaseSiteSchemaMode()) {
+      return { session, project, siteSheetId: getSupabaseSiteSchemaName(projectId) };
+    }
     return { error: "Project has no site sheet", status: 400 as const };
   }
 
-  await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
 
   return { session, project, siteSheetId };
 }

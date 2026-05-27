@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-05-05 - Data Architecture Direction
+
+### Session 14: Demo Sheets Now, Supabase Later
+- **Accomplished**:
+    - Documented the near-term demo strategy: keep using Google Sheets as the working data layer so the team can demo and validate workflows quickly.
+    - Documented the future production direction: migrate core structured data to Supabase/Postgres when the workflow stabilizes and concurrency becomes more important.
+    - Kept Google Drive as the long-term home for files, photos, attachments, generated PDFs, and project folders.
+
+### Notes
+- Google Sheets is treated as a demo/prototyping data source, not the final production database.
+- Future Supabase tables should become the source of truth for searchable/editable records, while rows can continue to store Google Drive file and folder IDs for attachments.
+- This keeps the team's familiar Drive-based file workflow while reducing reliability issues from using Sheets/Drive as the full application database under multi-user load.
+
 ## 2026-05-03 - Remove Schedule Weight Field
 
 ### Session 13: Planning Form Simplification
@@ -148,7 +161,7 @@
     - Added Master/Site data separation: site modules now resolve `project_id` to the site's `site_sheet_id` and `drive_folder_id`, with legacy sheet fallback while a site sheet is not created yet.
     - Split navigation into Workspace/Master mode and Site mode.
     - Workspace sidebar now includes Dashboard, Sites, Sales CRM placeholder, and Team management for Admin users only.
-    - Site sidebar now includes Project Overview, Project Details, Daily Reports, Schedule, Payment Requests, RFA, RFI, Defect, and Files.
+    - Site sidebar now includes Project Overview, Project Details, Daily Reports, Schedule, RFA, RFI, Defect, and Files.
     - Added placeholder pages for the new Site modules so the user can enter a site and see the intended structure.
     - Added Team edit actions and `/dashboard/team/[memberId]/edit` so Admin can update member details, role, and allowed site access.
     - Enhanced the Schedule planner with task ordering controls, H1/main-task structure, subtasks, quick date edit mode, and print order alignment.
@@ -164,7 +177,7 @@
 - **Accomplished**:
     - Finalized Netlify Deployment and fixed all production build issues (TypeScript, AuthOptions, Webpack for Thai folder names).
     - Discussed and documented the "1 Site = 1 System" architecture strategy.
-    - Designed the advanced features for Phase 6: Gantt Charts with Milestones, VO (Variation Order) with PDF generation, Payment Requests via Gmail, and Client-facing Defect management with floor plans.
+    - Designed the advanced features for Phase 6: Gantt Charts with Milestones, VO (Variation Order) with PDF generation, and Client-facing Defect management with floor plans.
     - Collected full company branding details: Pichayamongkol Construction Co., Ltd.
 
 ## 2026-05-02 - Phase 4: Operations Modules & UX Optimization

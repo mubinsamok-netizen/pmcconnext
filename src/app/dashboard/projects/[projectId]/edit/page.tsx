@@ -27,9 +27,12 @@ type Project = {
   site_link?: string;
   pm_name?: string;
   se_name?: string;
+  architect_name?: string;
   cover_file_id?: string;
   cover_url?: string;
   site_sheet_id?: string;
+  site_storage_mode?: "google_sheet" | "supabase_schema" | string;
+  site_schema_name?: string;
   drive_folder_id?: string;
   sales_customer_id?: string;
   sales_stage?: string;
@@ -45,7 +48,7 @@ type ProjectsResponse = {
   data: Project[];
 };
 
-type ProjectForm = Required<Omit<Project, "cover_file_id" | "cover_url">> & {
+type ProjectForm = Required<Omit<Project, "cover_file_id" | "cover_url" | "site_storage_mode" | "site_schema_name">> & {
   cover_file_id: string;
   cover_url: string;
 };
@@ -67,6 +70,7 @@ const emptyForm: ProjectForm = {
   site_link: "",
   pm_name: "",
   se_name: "",
+  architect_name: "",
   cover_file_id: "",
   cover_url: "",
   site_sheet_id: "",
@@ -157,6 +161,7 @@ function toForm(project: Project): ProjectForm {
     site_link: project.site_link || "",
     pm_name: project.pm_name || "",
     se_name: project.se_name || "",
+    architect_name: project.architect_name || "",
     cover_file_id: project.cover_file_id || "",
     cover_url: project.cover_url || "",
     site_sheet_id: project.site_sheet_id || "",
@@ -189,7 +194,7 @@ export default function EditProjectPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const { data: session } = useSession();
-  const { data, isLoading } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const { data, isLoading } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
   const [form, setForm] = useState<ProjectForm>(emptyForm);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState("");
@@ -302,6 +307,10 @@ export default function EditProjectPage() {
     );
   }
 
+  const usesSupabaseSchema = project.site_storage_mode === "supabase_schema";
+  const siteWorkspaceLabel = usesSupabaseSchema ? "Supabase Site Schema" : "Google Sheet ID";
+  const siteWorkspaceValue = usesSupabaseSchema ? project.site_schema_name || form.site_sheet_id : form.site_sheet_id;
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center gap-4">
@@ -310,7 +319,7 @@ export default function EditProjectPage() {
         </Link>
         <div>
           <h2 className="text-2xl font-bold text-gray-900">แก้ไขไซต์งาน</h2>
-          <p className="text-gray-500">อัปเดตข้อมูลโครงการใน Master Sheet และผูก Google Sheet / Drive ของไซต์</p>
+          <p className="text-gray-500">อัปเดตข้อมูลโครงการใน Master Sheet และผูกแหล่งข้อมูล/Drive ของไซต์</p>
         </div>
       </div>
 
@@ -412,7 +421,7 @@ export default function EditProjectPage() {
             <input value={form.end_date} onChange={(event) => update("end_date", event.target.value)} type="date" className="form-input" />
           </Field>
           <Field label="มูลค่าสัญญา (บาท)">
-            <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" className="form-input" />
+            <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" min="0" step="any" inputMode="decimal" className="form-input" />
           </Field>
           <Field label="เลขที่สัญญา">
             <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" />
@@ -425,6 +434,9 @@ export default function EditProjectPage() {
           </Field>
           <Field label="วิศวกรสนาม (SE)">
             <input value={form.se_name} onChange={(event) => update("se_name", event.target.value)} className="form-input" />
+          </Field>
+          <Field label="สถาปนิก (Architect)">
+            <input value={form.architect_name} onChange={(event) => update("architect_name", event.target.value)} className="form-input" />
           </Field>
           <Field label="สถานะโครงการ">
             <select value={form.status} onChange={(event) => update("status", event.target.value)} className="form-input bg-white">
@@ -445,15 +457,25 @@ export default function EditProjectPage() {
         </div>
 
         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-5">
-          <div className="mb-4 font-bold text-gray-900">Google Sheet & Drive ของไซต์</div>
+          <div className="mb-4 font-bold text-gray-900">แหล่งข้อมูลและไฟล์ของไซต์</div>
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            <Field label="Google Sheet ID">
-              <input value={form.site_sheet_id} onChange={(event) => update("site_sheet_id", event.target.value)} className="form-input bg-white" />
+            <Field label={siteWorkspaceLabel}>
+              <input
+                value={siteWorkspaceValue}
+                readOnly={usesSupabaseSchema}
+                onChange={(event) => update("site_sheet_id", event.target.value)}
+                className={`form-input ${usesSupabaseSchema ? "bg-gray-100 text-gray-500" : "bg-white"}`}
+              />
             </Field>
             <Field label="Google Drive Folder ID">
               <input value={form.drive_folder_id} onChange={(event) => update("drive_folder_id", event.target.value)} className="form-input bg-white" />
             </Field>
           </div>
+          <p className="mt-3 text-xs text-gray-500">
+            {usesSupabaseSchema
+              ? "ข้อมูลไซต์อ่าน/เขียนจาก Supabase schema นี้ ส่วน Google Drive ยังใช้เก็บไฟล์ของไซต์ และระบบยังเก็บ Google Sheet ID เดิมไว้เผื่อย้อนกลับ"
+              : "ข้อมูลไซต์อ่าน/เขียนจาก Google Sheet ID นี้ ส่วน Google Drive ใช้เก็บไฟล์ของไซต์"}
+          </p>
         </div>
 
         <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-5">

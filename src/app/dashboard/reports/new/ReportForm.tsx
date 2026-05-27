@@ -121,6 +121,8 @@ export default function ReportForm({ projects }: { projects: ProjectOption[] }) 
               type="number"
               required
               min="0"
+              step="any"
+              inputMode="decimal"
               className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none transition"
               placeholder="จำนวนคน"
             />

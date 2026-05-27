@@ -56,6 +56,20 @@ function nl2br(value?: string | number | null) {
   return escapeHtml(value).replaceAll("\n", "<br>");
 }
 
+function formatThaiDateTime(value?: string | number | null) {
+  if (!value) return "-";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Bangkok",
+  }).format(date);
+}
+
 function numberCell(value?: string | number) {
   return `<td class="num">${formatMoney(value)}</td>`;
 }
@@ -109,6 +123,7 @@ function documentShell(title: string, subtitle: string, body: string) {
     .sig { text-align: center; color: #111827; }
     .sig .line { border-top: 1px solid #111827; margin: 16mm 0 1.5mm; }
     .sig .role { color: #64748b; font-size: 8.2px; }
+    .sig .stamp { margin-top: 0.8mm; color: #111827; font-size: 8px; font-weight: 700; }
     .badge { display: inline-block; border-radius: 999px; padding: 1mm 2.5mm; background: #fff7ed; color: #c2410c; font-weight: 800; font-size: 8px; }
     .paid-stamp { border: 2px solid #16a34a; color: #15803d; display: inline-block; padding: 2mm 5mm; font-size: 15px; font-weight: 800; transform: rotate(-3deg); }
     .page-break { page-break-before: always; }
@@ -145,7 +160,6 @@ function renderCommonInfo({ vo, project }: DocumentInput) {
         <table class="info">
           <tr><th>โครงการ</th><td>${escapeHtml(project?.name || vo.project_id)}</td></tr>
           <tr><th>ลูกค้า</th><td>${escapeHtml(vo.client_name || project?.client || "-")}</td></tr>
-          <tr><th>เลขสัญญา</th><td>${escapeHtml(project?.contract_no || "-")}</td></tr>
           <tr><th>สถานที่</th><td>${escapeHtml(location || "-")}</td></tr>
         </table>
       </div>
@@ -216,10 +230,6 @@ export function buildVoSheetHtml(input: DocumentInput) {
     <div class="note"><strong>รายละเอียด:</strong><br>${nl2br(vo.description || "-")}</div>
     ${renderItems(items)}
     ${renderSummary(vo)}
-    <div class="note">
-      มูลค่าสัญญาเดิม ${formatMoney(vo.contract_before)} บาท →
-      มูลค่าสัญญาใหม่ ${formatMoney(vo.contract_after)} บาท
-    </div>
     <section class="signatures">
       <div class="sig"><div class="line"></div><strong>ผู้จัดทำ</strong><div class="role">${escapeHtml(vo.created_by_name || "-")}</div></div>
       <div class="sig"><div class="line"></div><strong>ผู้ตรวจสอบ</strong><div class="role">Project Manager</div></div>
@@ -232,6 +242,9 @@ export function buildVoSheetHtml(input: DocumentInput) {
 export function buildApprovalCertificateHtml(input: DocumentInput) {
   const { vo, items } = input;
   const evidence = safeJsonParse<Record<string, string>>(vo.evidence_json, {});
+  const customerApprovedBy = evidence.client_approved_by || String(vo.customer_approved_by || "") || vo.client_name || "-";
+  const customerApprovedAt = evidence.approved_at || String(vo.customer_approved_at || "") || evidence.client_approved_date || "";
+  const customerApprovalStamp = customerApprovedAt !== "" ? formatThaiDateTime(customerApprovedAt) : "-";
   const body = `
     <section class="title">
       <div class="eyebrow">Approval Certificate</div>
@@ -245,7 +258,7 @@ export function buildApprovalCertificateHtml(input: DocumentInput) {
       <h2>หลักฐานการอนุมัติแทนลูกค้า</h2>
       <table class="info">
         <tr><th>ผู้ยืนยันฝั่งลูกค้า</th><td>${escapeHtml(evidence.client_approved_by || "-")}</td></tr>
-        <tr><th>วันที่ลูกค้าแจ้ง</th><td>${escapeHtml(formatThaiDate(evidence.client_approved_date))}</td></tr>
+        <tr><th>วันที่ลูกค้ายืนยัน</th><td>${escapeHtml(customerApprovalStamp)}</td></tr>
         <tr><th>ช่องทาง</th><td>${escapeHtml(evidence.channel || "-")}</td></tr>
         <tr><th>หลักฐาน</th><td>${escapeHtml(evidence.evidence_type || "-")} / ${escapeHtml(evidence.evidence_filename || "-")}</td></tr>
         <tr><th>คำอธิบาย</th><td>${nl2br(evidence.evidence_description || "-")}</td></tr>
@@ -253,12 +266,12 @@ export function buildApprovalCertificateHtml(input: DocumentInput) {
     </div>
     <div class="note">
       บันทึกตามความยินยอมของลูกค้าผ่าน ${escapeHtml(evidence.channel || "-")}
-      วันที่ ${escapeHtml(formatThaiDate(evidence.client_approved_date))}
+      วันที่ ${escapeHtml(customerApprovalStamp)}
     </div>
     <section class="signatures">
       <div class="sig"><div class="line"></div><strong>ออฟฟิศผู้บันทึก</strong><div class="role">${escapeHtml(evidence.confirmed_by_office || vo.created_by_name || "-")}</div></div>
       <div class="sig"><div class="line"></div><strong>Project Manager</strong><div class="role">${escapeHtml(input.project?.pm_name || "-")}</div></div>
-      <div class="sig"><div class="line"></div><strong>ลูกค้า/ผู้ยืนยัน</strong><div class="role">${escapeHtml(evidence.client_approved_by || vo.client_name || "-")}</div></div>
+      <div class="sig"><div class="line"></div><strong>ลูกค้า/ผู้ยืนยัน</strong><div class="role">${escapeHtml(customerApprovedBy)}</div><div class="stamp">ยืนยันเมื่อ ${escapeHtml(customerApprovalStamp)}</div></div>
     </section>
   `;
   return documentShell(`${vo.vo_id}-APP`, "Approval Certificate", body);
@@ -402,7 +415,6 @@ export function buildVoMonthlyReportHtml({
         <table class="info">
           <tr><th>โครงการ</th><td>${escapeHtml(project?.name || project?.project_id || "-")}</td></tr>
           <tr><th>ลูกค้า</th><td>${escapeHtml(project?.client || "-")}</td></tr>
-          <tr><th>เลขสัญญา</th><td>${escapeHtml(project?.contract_no || "-")}</td></tr>
           <tr><th>จัดทำโดย</th><td>${escapeHtml(preparedBy || "-")}</td></tr>
         </table>
       </div>

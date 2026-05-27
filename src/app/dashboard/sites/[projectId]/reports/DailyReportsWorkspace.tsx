@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, CalendarDays, CheckCircle2, CloudSun, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Trash2, UploadCloud, Users } from "lucide-react";
+import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
@@ -11,8 +11,27 @@ import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
 type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
+type NarrativeField = "work_done" | "issues" | "solutions";
+type AiMode = "formal" | "concise" | "detailed" | "spelling";
+type AiReview = {
+  field: NarrativeField;
+  original: string;
+  suggestion: string;
+  mode: AiMode;
+};
 
-const MAX_PHOTO_UPLOAD_BYTES = 5 * 1024 * 1024;
+const narrativeLabels: Record<NarrativeField, string> = {
+  work_done: "รายการงานที่ปฏิบัติ",
+  issues: "ปัญหา/อุปสรรค",
+  solutions: "แนวทางการแก้ไข",
+};
+
+const aiModeOptions: Array<{ value: AiMode; label: string }> = [
+  { value: "formal", label: "ปรับให้เป็นทางการ" },
+  { value: "concise", label: "สรุปให้กระชับ" },
+  { value: "detailed", label: "ขยายให้ละเอียดขึ้น" },
+  { value: "spelling", label: "แก้คำผิด" },
+];
 
 const weatherOptions = ["แจ่มใส", "มีเมฆบางส่วน", "มีเมฆมาก", "ฝนตกปรอย ๆ", "ฝนตกหนัก", "หยุดงานเนื่องจากสภาพอากาศ"];
 
@@ -67,9 +86,16 @@ function sumRows(rows: Row[], key: string) {
   }, 0);
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function formatNumberInputValue(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+}
+
+function getColumnWidthClass(column: RowConfig) {
+  if (column.type === "number") return "w-32";
+  if (column.key === "unit") return "w-32";
+  if (column.key === "note") return "w-[28%]";
+  return "w-[40%]";
 }
 
 function lineStatusText(status?: string | number) {
@@ -78,6 +104,15 @@ function lineStatusText(status?: string | number) {
   if (status === "disabled") return "ปิดการส่ง LINE";
   if (status === "pending") return "รอส่ง LINE";
   return "ยังไม่มีสถานะ";
+}
+
+function driveFolderUrl(folderId?: string | number) {
+  const id = String(folderId || "").trim();
+  return id ? `https://drive.google.com/drive/folders/${encodeURIComponent(id)}` : "";
+}
+
+function reportPhotosUrl(report?: ReportRecord) {
+  return driveFolderUrl(report?.photos_month_folder_id || report?.photos_folder_id);
 }
 
 export function DailyReportsWorkspace({
@@ -91,10 +126,16 @@ export function DailyReportsWorkspace({
   const [personnel, setPersonnel] = useState<Row[]>([createEmptyRow(personnelColumns)]);
   const [machinery, setMachinery] = useState<Row[]>([createEmptyRow(machineryColumns)]);
   const [materials, setMaterials] = useState<Row[]>([createEmptyRow(materialColumns)]);
-  const [files, setFiles] = useState<File[]>([]);
+  const [reportDate, setReportDate] = useState(todayValue());
+  const [aiMode, setAiMode] = useState<AiMode>("formal");
+  const [aiLoadingField, setAiLoadingField] = useState<NarrativeField | null>(null);
+  const [aiError, setAiError] = useState("");
+  const [aiReview, setAiReview] = useState<AiReview | null>(null);
   const [loading, setLoading] = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lineWarning, setLineWarning] = useState("");
 
   const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}`;
   const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetcher);
@@ -102,16 +143,86 @@ export function DailyReportsWorkspace({
   const latestReport = reports[0];
   const sentCount = reports.filter((report) => report.line_status === "sent").length;
   const failedCount = reports.filter((report) => report.line_status === "failed").length;
-  const photoCount = reports.filter((report) => report.photos_folder_id).length;
+  const photoCount = reports.filter((report) => report.photos_month_folder_id || report.photos_folder_id).length;
   const totalWorkers = latestReport?.workers || sumRows(personnel, "qty");
+  const latestPhotosUrl = reportPhotosUrl(latestReport);
 
-  const addFiles = (selectedFiles: FileList | null) => {
-    if (!selectedFiles) return;
-    setFiles((current) => [...current, ...Array.from(selectedFiles)].slice(0, 10));
+  const startAiRewrite = async (field: NarrativeField) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>(`textarea[name="${field}"]`);
+    const text = textarea?.value.trim() || "";
+    setAiError("");
+    if (!text) {
+      setAiError(`กรุณากรอก${narrativeLabels[field]}ก่อนใช้ AI`);
+      return;
+    }
+
+    setAiLoadingField(field);
+    try {
+      const response = await fetch("/api/ai/rewrite-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, mode: aiMode, text }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result?.error === "string" ? result.error : "AI ปรับข้อความไม่สำเร็จ");
+      }
+
+      const suggestion = String(result?.data?.suggestion || "").trim();
+      if (!suggestion) throw new Error("AI ไม่ได้ส่งข้อความกลับมา");
+      setAiReview({ field, original: text, suggestion, mode: aiMode });
+    } catch (rewriteError) {
+      setAiError(rewriteError instanceof Error ? rewriteError.message : "AI ปรับข้อความไม่สำเร็จ");
+    } finally {
+      setAiLoadingField(null);
+    }
   };
 
-  const removeFile = (index: number) => {
-    setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  const applyAiSuggestion = () => {
+    if (!aiReview) return;
+    const textarea = document.querySelector<HTMLTextAreaElement>(`textarea[name="${aiReview.field}"]`);
+    if (textarea) {
+      textarea.value = aiReview.suggestion;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    setAiReview(null);
+    setAiError("");
+  };
+
+  const openPhotoDriveFolder = async () => {
+    setDriveLoading(true);
+    setError("");
+    const driveWindow = window.open("about:blank", "_blank");
+
+    try {
+      const response = await fetch("/api/reports/photos/folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: project.project_id,
+          date: reportDate,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result?.error === "string" ? result.error : "เปิดโฟลเดอร์รูปภาพไม่สำเร็จ");
+      }
+
+      const folderUrl = String(result?.data?.folder_url || "");
+      if (!folderUrl) throw new Error("ไม่พบลิงก์ Google Drive สำหรับรูปภาพ");
+
+      if (driveWindow) {
+        driveWindow.opener = null;
+        driveWindow.location.href = folderUrl;
+      } else {
+        window.location.href = folderUrl;
+      }
+    } catch (openError) {
+      driveWindow?.close();
+      setError(openError instanceof Error ? openError.message : "เปิดโฟลเดอร์รูปภาพไม่สำเร็จ");
+    } finally {
+      setDriveLoading(false);
+    }
   };
 
   const submitReport = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -119,20 +230,15 @@ export function DailyReportsWorkspace({
     setLoading(true);
     setError("");
     setSuccess("");
-
-    const totalPhotoBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (totalPhotoBytes > MAX_PHOTO_UPLOAD_BYTES) {
-      setError(`รูปภาพรวมใหญ่เกินไป (${formatBytes(totalPhotoBytes)}) กรุณาลดจำนวนรูปหรือบีบอัดให้ไม่เกิน ${formatBytes(MAX_PHOTO_UPLOAD_BYTES)} ต่อการส่งหนึ่งครั้ง`);
-      setLoading(false);
-      return;
-    }
+    setLineWarning("");
 
     const formData = new FormData(event.currentTarget);
+
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
     formData.set("materials_json", JSON.stringify(materials));
     formData.set("workers", String(sumRows(personnel, "qty") || formData.get("workers") || ""));
-    files.forEach((file) => formData.append("photos", file));
+    formData.set("uploaded_photos_json", "[]");
 
     try {
       const response = await fetch("/api/reports", {
@@ -146,17 +252,30 @@ export function DailyReportsWorkspace({
         throw new Error(serverError || `บันทึกรายงานไม่สำเร็จ (${response.status} ${response.statusText})`);
       }
 
-      setSuccess(`บันทึกรายงาน ${result.data?.document_no || ""} สำเร็จ`);
-      setFiles([]);
+      const documentNo = String(result.data?.document_no || "");
+      const lineStatus = result.data?.line_status;
+      const lineError = typeof result.data?.line_error === "string" ? result.data.line_error : "";
+
+      if (lineStatus === "failed") {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว`);
+        setLineWarning(`แต่ส่ง LINE ไม่สำเร็จ: ${lineError || "กรุณาตรวจสอบการตั้งค่า LINE หรือส่งใหม่ภายหลัง"}`);
+      } else if (lineStatus === "sent") {
+        setSuccess(`บันทึกรายงาน ${documentNo} และส่ง LINE สำเร็จแล้ว`);
+      } else if (lineStatus === "disabled") {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว (ไม่ได้ส่ง LINE เพราะปิดการแจ้งเตือน)`);
+      } else {
+        setSuccess(`บันทึกรายงาน ${documentNo} สำเร็จแล้ว`);
+      }
       setPersonnel([createEmptyRow(personnelColumns)]);
       setMachinery([createEmptyRow(machineryColumns)]);
       setMaterials([createEmptyRow(materialColumns)]);
+      setReportDate(todayValue());
       event.currentTarget.reset();
       await mutate();
       setActiveTab("dashboard");
     } catch (submitError) {
       if (submitError instanceof SyntaxError) {
-        setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจากไฟล์แนบใหญ่เกินไป, function timeout, หรือ deploy ยังไม่อัปเดต");
+        setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจาก function timeout หรือ deploy ยังไม่อัปเดต");
       } else {
         setError(submitError instanceof Error ? submitError.message : "บันทึกรายงานไม่สำเร็จ");
       }
@@ -184,6 +303,7 @@ export function DailyReportsWorkspace({
       </div>
 
       {success && <Alert tone="success">{success}</Alert>}
+      {lineWarning && <Alert tone="warning">{lineWarning}</Alert>}
       {(error || loadError) && <Alert tone="error">{error || loadError?.message || "โหลดข้อมูลรายงานไม่สำเร็จ"}</Alert>}
 
       {allowAdvancedReports && activeTab === "weekly" ? (
@@ -195,7 +315,7 @@ export function DailyReportsWorkspace({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <Metric icon={FileText} label="รายงานทั้งหมด" value={`${reports.length}`} />
             <Metric icon={Send} label="ส่ง LINE สำเร็จ" value={`${sentCount}`} />
-            <Metric icon={ImageIcon} label="รายงานที่มีรูป" value={`${photoCount}`} />
+            <Metric icon={ImageIcon} label="ลิงก์รูปพร้อมใช้" value={`${photoCount}`} />
             <Metric icon={Users} label="คนงานล่าสุด" value={`${totalWorkers || 0}`} />
           </div>
 
@@ -222,12 +342,20 @@ export function DailyReportsWorkspace({
                       LINE error: {String(latestReport.line_error)}
                     </div>
                   )}
-                  {latestReport.pdf_url && (
-                    <a href={String(latestReport.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700">
-                      <Printer size={16} />
-                      เปิด/พิมพ์ PDF
-                    </a>
-                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {latestReport.pdf_url && (
+                      <a href={String(latestReport.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700">
+                        <Printer size={16} />
+                        เปิด/พิมพ์ PDF
+                      </a>
+                    )}
+                    {latestPhotosUrl && (
+                      <a href={latestPhotosUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                        <ImageIcon size={16} />
+                        เปิดโฟลเดอร์รูปภาพ
+                      </a>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-gray-200 p-6 text-center text-sm text-gray-500">ยังไม่มีรายงานประจำวันของไซต์นี้</div>
@@ -251,24 +379,33 @@ export function DailyReportsWorkspace({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 bg-white">
-                    {reports.map((report) => (
-                      <tr key={String(report.report_id)} className="text-gray-700">
-                        <td className="px-4 py-3">{formatDate(report.date)}</td>
-                        <td className="px-4 py-3 font-semibold text-gray-950">{report.document_no || report.report_id}</td>
-                        <td className="px-4 py-3">{report.weather || "-"}</td>
-                        <td className="px-4 py-3">
-                          <div>{lineStatusText(report.line_status)}</div>
-                          {report.line_status === "failed" && report.line_error && (
-                            <div className="mt-1 max-w-xs text-xs text-red-600">{String(report.line_error)}</div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {report.pdf_url ? (
-                            <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>
-                          ) : "-"}
-                        </td>
-                      </tr>
-                    ))}
+                    {reports.map((report) => {
+                      const photosUrl = reportPhotosUrl(report);
+                      return (
+                        <tr key={String(report.report_id)} className="text-gray-700">
+                          <td className="px-4 py-3">{formatDate(report.date)}</td>
+                          <td className="px-4 py-3 font-semibold text-gray-950">{report.document_no || report.report_id}</td>
+                          <td className="px-4 py-3">{report.weather || "-"}</td>
+                          <td className="px-4 py-3">
+                            <div>{lineStatusText(report.line_status)}</div>
+                            {report.line_status === "failed" && report.line_error && (
+                              <div className="mt-1 max-w-xs text-xs text-red-600">{String(report.line_error)}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex justify-end gap-3">
+                              {report.pdf_url ? (
+                                <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>
+                              ) : null}
+                              {photosUrl ? (
+                                <a href={photosUrl} target="_blank" rel="noreferrer" className="font-semibold text-gray-600 hover:underline">รูป</a>
+                              ) : null}
+                              {!report.pdf_url && !photosUrl ? "-" : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {reports.length === 0 && !isLoading && (
                       <tr>
                         <td colSpan={5} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายงาน</td>
@@ -286,7 +423,7 @@ export function DailyReportsWorkspace({
           </div>
         </div>
       ) : (
-        <form onSubmit={submitReport} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <form onSubmit={submitReport} className="space-y-5">
           <input type="hidden" name="project_id" value={project.project_id} />
           <input type="hidden" name="project_drive_folder_id" value={project.drive_folder_id || ""} />
           <input type="hidden" name="project_name" value={project.name || project.project_id} />
@@ -298,7 +435,7 @@ export function DailyReportsWorkspace({
           <FormSection title="ข้อมูลรายงาน" icon={CalendarDays}>
             <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
               <Field label="วันที่รายงาน">
-                <input name="date" type="date" required defaultValue={todayValue()} className="form-input" />
+                <input name="date" type="date" required value={reportDate} onChange={(event) => setReportDate(event.target.value)} className="form-input" />
               </Field>
               <Field label="สภาพอากาศ">
                 <select name="weather" className="form-input bg-white" defaultValue={weatherOptions[0]}>
@@ -306,7 +443,7 @@ export function DailyReportsWorkspace({
                 </select>
               </Field>
               <Field label="จำนวนคนงานรวม">
-                <input name="workers" type="number" min="0" value={sumRows(personnel, "qty") || ""} readOnly className="form-input bg-gray-50 text-gray-500" />
+                <input name="workers" type="number" min="0" step="any" inputMode="decimal" value={formatNumberInputValue(sumRows(personnel, "qty"))} readOnly className="form-input bg-gray-50 text-gray-500" />
               </Field>
             </div>
             <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
@@ -336,41 +473,68 @@ export function DailyReportsWorkspace({
           </FormSection>
 
           <FormSection title="รูปภาพประกอบรายงาน" icon={ImageIcon}>
-            <label className="relative flex min-h-36 cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 text-center transition hover:border-orange-300 hover:bg-orange-50/40">
-              <input type="file" multiple accept="image/*" className="sr-only" onChange={(event) => addFiles(event.target.files)} />
-              <div className="space-y-2 text-gray-500">
-                <span className="attach-file-button mx-auto">
-                  <UploadCloud />
-                  แนบรูป
-                </span>
-                <div>สูงสุด 10 รูปต่อรายงาน</div>
-                <div className="text-xs">ระบบจะแนบเฉพาะรูปของรายงานครั้งนี้ และแยกโฟลเดอร์ใน Google Drive</div>
+            <div className="flex flex-col gap-3 rounded-xl border border-dashed border-orange-200 bg-orange-50/50 p-4 text-sm text-gray-700 md:flex-row md:items-center md:justify-between">
+              <div>
+                บันทึกรายงานก่อน แล้วอัปโหลดรูปภาพโดยตรงใน Google Drive จากปุ่ม “ดูรูปภาพประกอบ” ใน LINE หรือปุ่มนี้
               </div>
-            </label>
-            {files.length > 0 && (
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                {files.map((file, index) => (
-                  <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm">
-                    <span className="truncate text-gray-700">{index + 1}. {file.name}</span>
-                    <button type="button" onClick={() => removeFile(index)} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600" aria-label="ลบรูป" title="ลบรูป">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+              <button type="button" onClick={openPhotoDriveFolder} disabled={driveLoading} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 font-semibold text-gray-800 ring-1 ring-orange-200 transition hover:bg-orange-50 disabled:cursor-wait disabled:opacity-70">
+                {driveLoading ? <Loader2 size={16} className="animate-spin" /> : <ExternalLink size={16} />}
+                เปิด Google Drive
+              </button>
+            </div>
           </FormSection>
 
-          <div className="flex flex-wrap justify-end gap-3 border-t border-gray-100 pt-6">
+          <div className="rounded-2xl border border-orange-100 bg-orange-50/70 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="flex items-center gap-2 font-extrabold text-orange-900">
+                  <Sparkles size={18} />
+                  AI ช่วยปรับปรุงการเขียน
+                </div>
+                <p className="mt-1 text-sm font-medium text-orange-800/80">ปรับภาษาเฉพาะจากข้อความที่กรอกไว้ และต้องกดยืนยันก่อนแทนที่ข้อความเดิม</p>
+              </div>
+              <select
+                value={aiMode}
+                onChange={(event) => setAiMode(event.target.value as AiMode)}
+                className="h-10 rounded-xl border border-orange-200 bg-white px-3 text-sm font-bold text-gray-800 outline-none focus:border-orange-400 focus:ring-4 focus:ring-orange-100"
+              >
+                {aiModeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            {aiError && (
+              <div className="mt-3 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+                {aiError}
+              </div>
+            )}
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {(["work_done", "issues", "solutions"] as NarrativeField[]).map((field) => (
+                <AiRewriteButton
+                  key={field}
+                  label={narrativeLabels[field]}
+                  loading={aiLoadingField === field}
+                  disabled={Boolean(aiLoadingField)}
+                  onClick={() => startAiRewrite(field)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <button type="button" onClick={() => setActiveTab("dashboard")} className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-semibold text-gray-700 hover:bg-gray-50">
               ยกเลิก
             </button>
             <button disabled={loading} type="submit" className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-6 py-2 font-semibold text-white transition hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
               {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-              {loading ? "กำลังสร้าง PDF และส่ง LINE..." : "บันทึกและส่ง LINE"}
+              {loading ? "กำลังบันทึกและส่ง LINE..." : "บันทึกและส่ง LINE"}
             </button>
           </div>
         </form>
+      )}
+
+      {aiReview && (
+        <AiReviewDialog review={aiReview} onApply={applyAiSuggestion} onClose={() => setAiReview(null)} />
       )}
     </div>
   );
@@ -397,10 +561,95 @@ function Metric({ icon: Icon, label, value }: { icon: React.ElementType; label: 
   );
 }
 
-function Alert({ tone, children }: { tone: "success" | "error"; children: React.ReactNode }) {
+function Alert({ tone, children }: { tone: "success" | "warning" | "error"; children: React.ReactNode }) {
+  const toneClass = {
+    success: "border-green-100 bg-green-50 text-green-700",
+    warning: "border-amber-100 bg-amber-50 text-amber-800",
+    error: "border-red-100 bg-red-50 text-red-700",
+  }[tone];
+
   return (
-    <div className={`rounded-xl border p-4 text-sm font-medium ${tone === "success" ? "border-green-100 bg-green-50 text-green-700" : "border-red-100 bg-red-50 text-red-700"}`}>
+    <div className={`rounded-xl border p-4 text-sm font-medium ${toneClass}`}>
       {children}
+    </div>
+  );
+}
+
+function AiRewriteButton({
+  label,
+  loading,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  loading: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex items-center justify-center gap-2 rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm font-extrabold text-orange-700 transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+      AI ปรับ {label}
+    </button>
+  );
+}
+
+function AiReviewDialog({
+  review,
+  onApply,
+  onClose,
+}: {
+  review: AiReview;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  const modeLabel = aiModeOptions.find((option) => option.value === review.mode)?.label || "AI";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-gray-100 p-5">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">
+              <Sparkles size={14} />
+              {modeLabel}
+            </div>
+            <h3 className="mt-3 text-xl font-extrabold text-gray-950">ตรวจข้อความที่ AI แนะนำ</h3>
+            <p className="mt-1 text-sm font-medium text-gray-500">ช่อง: {narrativeLabels[review.field]} กรุณาตรวจสอบความถูกต้องก่อนใช้ข้อความนี้</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-900" aria-label="ปิด">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-2">
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-gray-700">ข้อความเดิม</div>
+            <div className="min-h-48 whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-7 text-gray-700">
+              {review.original}
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-orange-700">ข้อความที่ AI แนะนำ</div>
+            <div className="min-h-48 whitespace-pre-wrap rounded-xl border border-orange-200 bg-orange-50/50 p-4 text-sm leading-7 text-gray-900">
+              {review.suggestion}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-3 border-t border-gray-100 p-5">
+          <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-bold text-gray-700 transition hover:bg-gray-50">
+            ยกเลิก
+          </button>
+          <button type="button" onClick={onApply} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2 font-extrabold text-white transition hover:bg-orange-700">
+            <CheckCircle2 size={18} />
+            ใช้ข้อความนี้
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -416,8 +665,8 @@ function Info({ label, value }: { label: string; value: string }) {
 
 function FormSection({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-gray-200 p-5">
-      <div className="mb-5 flex items-center gap-2 font-bold text-gray-900">
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-base font-extrabold text-gray-950">
         <Icon size={20} className="text-orange-600" />
         {title}
       </div>
@@ -429,7 +678,7 @@ function FormSection({ title, icon: Icon, children }: { title: string; icon: Rea
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block space-y-2">
-      <span className="text-sm font-semibold text-gray-700">{label}</span>
+      <span className="text-sm font-bold text-gray-800">{label}</span>
       {children}
     </label>
   );
@@ -453,27 +702,29 @@ function EditableTable({
   return (
     <FormSection title={title} icon={Users}>
       <div className="overflow-x-auto rounded-xl border border-gray-200">
-        <table className="w-full min-w-[680px] text-left text-sm">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <thead className="bg-gray-50 text-xs font-bold uppercase text-gray-500">
             <tr>
               <th className="w-14 px-3 py-3">ลำดับ</th>
-              {columns.map((column) => <th key={column.key} className="px-3 py-3">{column.label}</th>)}
+              {columns.map((column) => <th key={column.key} className={`px-4 py-3 ${getColumnWidthClass(column)}`}>{column.label}</th>)}
               <th className="w-12 px-3 py-3"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rows.map((row, index) => (
-              <tr key={index}>
-                <td className="px-3 py-3 text-gray-500">{index + 1}</td>
+              <tr key={index} className="bg-white align-middle">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-500">{index + 1}</td>
                 {columns.map((column) => (
-                  <td key={column.key} className="px-3 py-3">
+                  <td key={column.key} className={`px-4 py-3 ${getColumnWidthClass(column)}`}>
                     <input
                       value={row[column.key] || ""}
                       onChange={(event) => updateRow(index, column.key, event.target.value)}
                       type={column.type || "text"}
                       min={column.type === "number" ? "0" : undefined}
-                      placeholder={column.placeholder}
-                      className="form-input min-w-0 bg-white py-2"
+                      step={column.type === "number" ? "any" : undefined}
+                      inputMode={column.type === "number" ? "decimal" : undefined}
+                      placeholder={column.placeholder || (column.type === "number" ? "0.00" : undefined)}
+                      className={`form-input min-w-0 bg-white px-3 py-2.5 text-sm ${column.type === "number" ? "text-right tabular-nums" : ""}`}
                     />
                   </td>
                 ))}
@@ -487,7 +738,7 @@ function EditableTable({
           </tbody>
         </table>
       </div>
-      <button type="button" onClick={() => setRows((current) => [...current, createEmptyRow(columns)])} className="mt-4 inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+      <button type="button" onClick={() => setRows((current) => [...current, createEmptyRow(columns)])} className="mt-4 inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50">
         <Plus size={16} />
         เพิ่มแถว
       </button>

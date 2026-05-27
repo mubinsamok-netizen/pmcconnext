@@ -7,16 +7,26 @@ import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 
+type Project = {
+  project_id: string;
+  name?: string;
+};
+
+type TeamMember = {
+  member_id: string;
+  name?: string;
+};
+
 export default function NewIssuePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: projectsData } = useSWR("/api/projects", fetcher);
+  const { data: projectsData } = useSWR("/api/projects?mode=basic", fetcher);
   const { data: teamData } = useSWR("/api/team", fetcher);
   
-  const projects = projectsData?.data || [];
-  const team = teamData?.data || [];
+  const projects = (projectsData?.data || []) as Project[];
+  const team = (teamData?.data || []) as TeamMember[];
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -47,8 +57,8 @@ export default function NewIssuePage() {
       }
 
       router.push("/dashboard/issues");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create issue");
       setLoading(false);
     }
   };
@@ -99,7 +109,7 @@ export default function NewIssuePage() {
                 className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-200 focus:border-red-400 outline-none transition"
               >
                 <option value="">-- เลือกโครงการ --</option>
-                {projects.map((p: any) => (
+                {projects.map((p) => (
                   <option key={p.project_id} value={p.project_id}>{p.project_id} - {p.name}</option>
                 ))}
               </select>
@@ -148,7 +158,7 @@ export default function NewIssuePage() {
                 className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-red-200 focus:border-red-400 outline-none transition"
               >
                 <option value="">-- ไม่ระบุ --</option>
-                {team.map((t: any) => (
+                {team.map((t) => (
                   <option key={t.member_id} value={t.name}>{t.name}</option>
                 ))}
               </select>

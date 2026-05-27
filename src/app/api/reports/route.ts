@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPhoto, type DailyReportPayload } from "@/lib/dailyReports";
-import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPayload } from "@/lib/dailyReports";
+import { findOrCreateFolder } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { createPdfReportFile } from "@/lib/reportPdf";
 import { findAll, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type ReportRecord = Record<string, string | number | undefined>;
 type ProjectWithLine = MasterProject & {
@@ -74,50 +75,6 @@ async function getProject(projectId: string) {
   }
 }
 
-async function readPhotos(formData: FormData): Promise<{ files: File[]; pdfPhotos: DailyReportPhoto[] }> {
-  const files = formData
-    .getAll("photos")
-    .filter((item): item is File => item instanceof File && item.size > 0)
-    .slice(0, 10);
-
-  const pdfPhotos = await Promise.all(files.map(async (file) => {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    return {
-      name: file.name,
-      mimeType: file.type || "application/octet-stream",
-      dataUrl: `data:${file.type || "application/octet-stream"};base64,${buffer.toString("base64")}`,
-      buffer,
-    };
-  }));
-
-  return {
-    files,
-    pdfPhotos: pdfPhotos.map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl })),
-  };
-}
-
-function createReportPhotoFileName(documentNo: string, index: number, originalName: string) {
-  const safeName = originalName.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_");
-  return `${documentNo}_${String(index + 1).padStart(2, "0")}_${safeName}`;
-}
-
-async function uploadPhotos(files: File[], photosFolderId: string, documentNo: string) {
-  const uploadedPhotoUrls: string[] = [];
-
-  for (const [index, file] of files.entries()) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const uploadedFile = await uploadFile(
-      createReportPhotoFileName(documentNo, index, file.name),
-      file.type || "application/octet-stream",
-      buffer,
-      photosFolderId
-    );
-    uploadedPhotoUrls.push(uploadedFile.webViewLink || uploadedFile.webContentLink || "");
-  }
-
-  return uploadedPhotoUrls.filter(Boolean);
-}
-
 async function createPdf({
   html,
   documentNo,
@@ -135,7 +92,7 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
     const { sheetId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     let reports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
     if (projectId) {
@@ -171,9 +128,9 @@ export async function POST(req: Request) {
     const project = await getProject(project_id);
     const { sheetId, driveFolderId } = await getProjectContext(project_id);
     step = "ตรวจสอบ schema ของ Google Sheets";
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
-    const targetDriveFolderId = getText(formData, "project_drive_folder_id") || project?.drive_folder_id || driveFolderId;
+    const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) {
       return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
     }
@@ -188,7 +145,6 @@ export async function POST(req: Request) {
     const machinery = parseJsonRows(formData.get("machinery_json"));
     const materials = parseJsonRows(formData.get("materials_json"));
     const workers = getText(formData, "workers") || sumPersonnel(personnel);
-    const { files, pdfPhotos } = await readPhotos(formData);
 
     step = "สร้าง/ค้นหาโฟลเดอร์ Daily Reports ใน Google Drive";
     const dailyReportsFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
@@ -202,9 +158,6 @@ export async function POST(req: Request) {
     const pdfFolder = await findOrCreateFolder("PDF", monthFolder.id);
     const photosMonthFolder = await findOrCreateFolder("Photos", monthFolder.id);
     if (!pdfFolder.id || !photosMonthFolder.id) throw new Error("Failed to create report subfolders");
-
-    step = "อัปโหลดรูปภาพประกอบไป Google Drive";
-    const uploadedPhotoUrls = files.length > 0 ? await uploadPhotos(files, photosMonthFolder.id, document_no) : [];
 
     const reportPayload: DailyReportPayload = {
       report_id,
@@ -231,7 +184,7 @@ export async function POST(req: Request) {
     };
 
     step = "สร้างไฟล์ PDF รายงาน";
-    const html = buildDailyReportHtml(reportPayload, pdfPhotos);
+    const html = buildDailyReportHtml(reportPayload, [], 0);
     const pdfFile = await createPdf({ html, documentNo: document_no, pdfFolderId: pdfFolder.id });
     const pdfUrl = pdfFile.webViewLink || pdfFile.webContentLink || "";
     const photosFolderUrl = photosMonthFolder.webViewLink || `https://drive.google.com/drive/folders/${photosMonthFolder.id}`;
@@ -261,7 +214,7 @@ export async function POST(req: Request) {
       prepared_by_position: reportPayload.prepared_by_position,
       prepared_by_email: reportPayload.prepared_by_email,
       prepared_at: preparedAt,
-      photos_json: JSON.stringify(uploadedPhotoUrls),
+      photos_json: JSON.stringify([]),
       pdf_folder_id: pdfFolder.id,
       pdf_file_id: pdfFile.id || "",
       pdf_url: pdfUrl,
@@ -281,7 +234,7 @@ export async function POST(req: Request) {
     if (lineEnabled) {
       try {
         if (!lineGroupId) throw new Error("LINE group ID is not configured");
-        const flexMessage = buildDailyReportLineFlex({ report: reportPayload, pdfUrl, photosFolderUrl, photoCount: files.length });
+        const flexMessage = buildDailyReportLineFlex({ report: reportPayload, pdfUrl, photosFolderUrl, photoCount: 0 });
         await sendLineMessages([flexMessage], lineGroupId);
         linePatch = {
           line_status: "sent",
@@ -299,7 +252,7 @@ export async function POST(req: Request) {
 
       if (inserted?._rowIndex) {
         step = "อัปเดตสถานะ LINE ใน Google Sheets";
-        await update("Daily_Reports", Number(inserted._rowIndex), linePatch, sheetId);
+        await update("Daily_Reports", report_id, linePatch, sheetId, inserted._rowIndex);
       }
     }
 

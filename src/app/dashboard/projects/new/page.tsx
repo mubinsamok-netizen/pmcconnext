@@ -36,6 +36,7 @@ type ProjectForm = {
   site_link: string;
   pm_name: string;
   se_name: string;
+  architect_name: string;
   status: string;
   site_sheet_id: string;
   drive_folder_id: string;
@@ -60,6 +61,7 @@ const emptyForm: ProjectForm = {
   site_link: "",
   pm_name: "",
   se_name: "",
+  architect_name: "",
   status: "Planning",
   site_sheet_id: "",
   drive_folder_id: "",
@@ -192,7 +194,7 @@ export default function CreateProjectPage() {
         </Link>
         <div>
           <h2 className="text-2xl font-bold text-gray-900">สร้างโครงการใหม่</h2>
-          <p className="text-gray-500">บันทึกรายละเอียดลง Master Sheet และผูก Google Sheet / Drive ของไซต์</p>
+          <p className="text-gray-500">บันทึกรายละเอียดลง Master Sheet และผูกแหล่งข้อมูล/Drive ของไซต์</p>
         </div>
       </div>
 
@@ -292,7 +294,7 @@ export default function CreateProjectPage() {
                     </select>
                   </Field>
                   <Field label="รหัสโครงการ *">
-                    <input value={form.project_id} onChange={(event) => update("project_id", event.target.value)} required className="form-input" placeholder="เช่น PCM-2026-001" />
+                    <input value={form.project_id} onChange={(event) => update("project_id", event.target.value)} required className="form-input" placeholder="เช่น PMC-2026-001" />
                   </Field>
                 </div>
 
@@ -326,10 +328,10 @@ export default function CreateProjectPage() {
                     <input value={form.end_date} onChange={(event) => update("end_date", event.target.value)} type="date" className="form-input" />
                   </Field>
                   <Field label="มูลค่าสัญญา (บาท)">
-                    <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" className="form-input" placeholder="0" />
+                    <input value={form.budget} onChange={(event) => update("budget", event.target.value)} type="number" min="0" step="any" inputMode="decimal" className="form-input" placeholder="0.00" />
                   </Field>
                   <Field label="เลขที่สัญญา">
-                    <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" placeholder="เช่น PCM-HW-2026" />
+                    <input value={form.contract_no} onChange={(event) => update("contract_no", event.target.value)} className="form-input" placeholder="เช่น PMC-HW-2026" />
                   </Field>
                 </div>
               </div>
@@ -344,15 +346,16 @@ export default function CreateProjectPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   <TeamField iconTone="orange" label="ผู้จัดการโครงการ (PM)" value={form.pm_name} onChange={(value) => update("pm_name", value)} />
                   <TeamField iconTone="blue" label="วิศวกรสนาม (SE)" value={form.se_name} onChange={(value) => update("se_name", value)} />
+                  <TeamField iconTone="green" label="สถาปนิก (Architect)" value={form.architect_name} onChange={(value) => update("architect_name", value)} />
                 </div>
 
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-5 space-y-4">
                   <div className="flex items-center gap-2 font-bold text-gray-900">
                     <Server size={18} className="text-orange-600" />
-                    Google Sheet & Drive ของไซต์
+                    แหล่งข้อมูลและไฟล์ของไซต์
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <Field label="Google Sheet ID">
+                    <Field label="Google Sheet ID / Supabase Schema">
                       <input value={form.site_sheet_id} onChange={(event) => update("site_sheet_id", event.target.value)} className="form-input bg-white" placeholder="เว้นว่างเพื่อให้ระบบสร้างให้" />
                     </Field>
                     <Field label="Google Drive Folder ID">
@@ -360,7 +363,7 @@ export default function CreateProjectPage() {
                     </Field>
                   </div>
                   <p className="text-xs text-gray-500">
-                    ถ้าเจอข้อความพื้นที่ Drive เต็ม ให้สร้าง Google Sheet/Drive folder เองในบัญชี Admin แล้วนำ ID มาใส่ตรงนี้ก่อนบันทึก
+                    ถ้าใช้ Supabase ระบบจะสร้าง schema ของไซต์ให้อัตโนมัติ ถ้ากลับไปใช้ Google Sheet สามารถใส่ Sheet ID/Drive folder ID ได้เหมือนเดิม
                   </p>
                 </div>
 
@@ -452,11 +455,17 @@ function TeamField({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  iconTone: "orange" | "blue";
+  iconTone: "orange" | "blue" | "green";
 }) {
+  const toneClass = {
+    orange: "bg-orange-100 text-orange-600",
+    blue: "bg-blue-100 text-blue-600",
+    green: "bg-emerald-100 text-emerald-600",
+  }[iconTone];
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 flex items-center gap-3">
-      <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${iconTone === "orange" ? "bg-orange-100 text-orange-600" : "bg-blue-100 text-blue-600"}`}>
+      <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${toneClass}`}>
         <Users size={20} />
       </div>
       <label className="flex-1 space-y-1">

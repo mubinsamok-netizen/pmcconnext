@@ -1,9 +1,5 @@
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { roleMatches, toAppRole } from "@/lib/roles";
-import { insertMaster } from "@/lib/sheetsCrud";
-import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
 type SessionUserLike = {
   name?: string | null;
@@ -57,36 +53,30 @@ export function isUnread(notification: NotificationRecord) {
 }
 
 export async function createNotification(input: NotificationInput) {
-  await ensureMasterSchema();
-
-  const now = new Date().toISOString();
   const id = `NTF-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
-  return insertMaster("Notifications", {
-    notification_id: id,
-    project_id: input.project_id || "",
-    target_email: normalizeEmail(input.target_email),
-    target_role: input.target_role ? toAppRole(input.target_role) || input.target_role : "",
-    target_google_sub: input.target_google_sub || "",
-    type: input.type,
-    title: input.title,
-    message: input.message || "",
-    link: input.link || "",
-    is_read: "FALSE",
-    created_at: now,
-    read_at: "",
-    created_by_email: normalizeEmail(input.created_by_email),
-    created_by_name: input.created_by_name || "",
-  });
+  return {
+    success: true as const,
+    inserted: {
+      notification_id: id,
+      project_id: input.project_id || "",
+      target_email: normalizeEmail(input.target_email),
+      target_role: input.target_role ? toAppRole(input.target_role) || input.target_role : "",
+      target_google_sub: input.target_google_sub || "",
+      type: input.type,
+      title: input.title,
+      message: input.message || "",
+      link: input.link || "",
+      is_read: "FALSE",
+      created_at: new Date().toISOString(),
+      read_at: "",
+      created_by_email: normalizeEmail(input.created_by_email),
+      created_by_name: input.created_by_name || "",
+    },
+  };
 }
 
 export async function createSessionNotification(input: NotificationInput) {
-  const session = await getServerSession(authOptions);
-  return createNotification({
-    ...input,
-    created_by_email: input.created_by_email || session?.user?.email || "",
-    created_by_name: input.created_by_name || session?.user?.name || "",
-  });
+  return createNotification(input);
 }
 
 export async function canUserSeeNotification(notification: NotificationRecord, user?: SessionUserLike | null) {

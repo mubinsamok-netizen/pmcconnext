@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
-import { createNotification } from "@/lib/notifications";
+import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAll, findAllMaster, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
-import { toAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
+import { getPublicAppOrigin } from "@/lib/publicUrl";
 import {
   VO_TYPE_LABELS,
   addCalendarDays,
@@ -14,7 +14,10 @@ import {
   asVoStatus,
   asVoType,
   calculateVoTotals,
+  buildVoApprovalLineFlex,
+  buildVoApprovalLineMessage,
   createNextVoId,
+  createVoApprovalToken,
   formatMoney,
   numberValue,
   safeJsonStringify,
@@ -27,10 +30,10 @@ import {
 import {
   buildApprovalCertificateHtml,
   buildInvoiceHtml,
+  buildVoSheetHtml,
   buildVoMonthlyReportHtml,
   buildReceiptHtml,
   buildVoClearanceReportHtml,
-  buildVoSheetHtml,
 } from "@/lib/variationOrderDocuments";
 
 type RouteContext = {
@@ -57,6 +60,26 @@ type UploadedVoFile = {
   file_url: string;
   mime_type: string;
 };
+type SheetPatch = Record<string, string | number | boolean | null | undefined>;
+
+const VO_LINE_TEST_GROUP_ID = process.env.VO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
+
+function text(value: unknown) {
+  return String(value || "").trim();
+}
+
+function isVoLineTestMode() {
+  return process.env.VO_LINE_TEST_MODE !== "false";
+}
+
+function lineTargetFor(context: RouteContext) {
+  if (isVoLineTestMode()) return VO_LINE_TEST_GROUP_ID;
+  return text(context.project.line_group_id);
+}
+
+function approvalOriginFrom(req: Request, body: Record<string, unknown>) {
+  return getPublicAppOrigin({ request: req, origin: body.origin });
+}
 
 function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
@@ -85,6 +108,56 @@ function getDateValue(value?: unknown) {
 
 function parseRows<T>(rows: unknown) {
   return (Array.isArray(rows) ? rows : []) as T[];
+}
+
+async function fallbackRowIndex(context: RouteContext, tableName: string, keyColumn: string, keyValue: string, currentRowIndex?: string | number) {
+  const numericRowIndex = Number(currentRowIndex);
+  if (Number.isFinite(numericRowIndex)) return numericRowIndex;
+
+  const rawRows = await findAllRaw(tableName, context.siteSheetId);
+  return rawRows.find((row) => row[keyColumn] === keyValue)?._rowIndex;
+}
+
+async function updateVo(context: RouteContext, vo: VoRecord, patch: SheetPatch) {
+  const voId = text(vo.vo_id);
+  await update(
+    "Variation_Orders",
+    voId || vo._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    voId ? await fallbackRowIndex(context, "Variation_Orders", "vo_id", voId, vo._rowIndex) : vo._rowIndex
+  );
+}
+
+async function updateVoItem(context: RouteContext, item: VoItemRecord, patch: SheetPatch) {
+  const itemId = text(item.item_id);
+  await update(
+    "VO_Items",
+    itemId || item._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    itemId ? await fallbackRowIndex(context, "VO_Items", "item_id", itemId, item._rowIndex) : item._rowIndex
+  );
+}
+
+function parseJsonArray(value: unknown) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function updateTaskFromVo(context: RouteContext, task: SheetRecord, patch: SheetPatch) {
+  const taskId = text(task.task_id);
+  await update(
+    "Tasks",
+    taskId || task._rowIndex || "",
+    patch,
+    context.siteSheetId,
+    taskId ? await fallbackRowIndex(context, "Tasks", "task_id", taskId, task._rowIndex) : task._rowIndex
+  );
 }
 
 function decodeDataUrl(dataUrl?: string) {
@@ -178,15 +251,22 @@ async function uploadSupportingDocumentFiles(context: RouteContext, voId: string
 }
 
 async function getVoData(context: RouteContext) {
-  const [vos, items, documents, payments, taskLinks, tasks, ledger] = await Promise.all([
-    findAll("Variation_Orders", context.siteSheetId) as unknown as Promise<VoRecord[]>,
-    findAll("VO_Items", context.siteSheetId) as unknown as Promise<VoItemRecord[]>,
-    findAll("VO_Documents", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Payments", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Task_Links", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("Tasks", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-    findAll("VO_Finance_Ledger", context.siteSheetId) as unknown as Promise<SheetRecord[]>,
-  ]);
+  const rows = await findAllBatch([
+    "Variation_Orders",
+    "VO_Items",
+    "VO_Documents",
+    "VO_Payments",
+    "VO_Task_Links",
+    "Tasks",
+    "VO_Finance_Ledger",
+  ], context.siteSheetId) as unknown as Record<string, SheetRecord[]>;
+  const vos = parseRows<VoRecord>(rows.Variation_Orders);
+  const items = parseRows<VoItemRecord>(rows.VO_Items);
+  const documents = rows.VO_Documents || [];
+  const payments = rows.VO_Payments || [];
+  const taskLinks = rows.VO_Task_Links || [];
+  const tasks = rows.Tasks || [];
+  const ledger = rows.VO_Finance_Ledger || [];
 
   const projectId = context.project.project_id;
   return {
@@ -264,17 +344,53 @@ async function insertVoDocument({
   return { documentNo, itemCount: items.length, pdfFileId, pdfUrl };
 }
 
-async function notifyRole(context: RouteContext, targetRole: string, type: string, title: string, message: string, link?: string) {
-  await createNotification({
-    project_id: context.project.project_id,
-    target_role: toAppRole(targetRole) || targetRole,
-    type,
-    title,
-    message,
-    link: link || `/dashboard/sites/${encodeURIComponent(context.project.project_id)}/variation-orders`,
-    created_by_email: context.session.user.email || "",
-    created_by_name: context.session.user.name || "",
+async function ensureVoSheetPdf({
+  context,
+  vo,
+  items,
+  documents,
+}: {
+  context: RouteContext;
+  vo: VoRecord;
+  items: VoItemRecord[];
+  documents: SheetRecord[];
+}) {
+  const existing = documents
+    .filter((document) => document.vo_id === vo.vo_id && document.document_type === "vo-sheet")
+    .reverse()
+    .find((document) => text(document.pdf_url));
+  if (existing) {
+    return {
+      documentNo: text(existing.document_no) || `${vo.vo_id}-VO-SHEET`,
+      pdfUrl: text(existing.pdf_url),
+      pdfFileId: text(existing.pdf_file_id),
+    };
+  }
+
+  const html = buildVoSheetHtml({ vo, items, project: context.project });
+  const issued = await insertVoDocument({
+    context,
+    vo,
+    items,
+    documentType: "vo-sheet",
+    title: "ใบงานเพิ่ม-ลด",
+    html,
   });
+
+  return {
+    documentNo: issued.documentNo,
+    pdfUrl: issued.pdfUrl,
+    pdfFileId: issued.pdfFileId,
+  };
+}
+
+async function notifyRole(context: RouteContext, targetRole: string, type: string, title: string, message: string, link?: string) {
+  void context;
+  void targetRole;
+  void type;
+  void title;
+  void message;
+  void link;
 }
 
 async function handleCreateVo(body: Record<string, unknown>, context: RouteContext) {
@@ -309,8 +425,6 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
       withholding_tax: String(body.withholding_tax || "0"),
       vat_rate: 7,
     },
-    contractBefore: String(body.contract_before || context.project.budget || 0),
-    voType,
   });
   if (calculation.items.length === 0) {
     return NextResponse.json({ error: "ต้องมีรายการอย่างน้อย 1 รายการ" }, { status: 400 });
@@ -322,8 +436,21 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
   const supportingFiles = await uploadSupportingDocumentFiles(context, voId, supportingUploads);
   const supportingDocsText = String(body.supporting_docs || "").trim();
   const supportingDocs = supportingFiles.length > 0
-    ? [supportingDocsText, ...supportingFiles.map((file) => `แนบรูปแชท: ${file.file_name}`)].filter(Boolean).join("\n")
+    ? [supportingDocsText, ...supportingFiles.map((file) => `แนบไฟล์หลักฐาน: ${file.file_name}`)].filter(Boolean).join("\n")
     : supportingDocsText;
+  const requestedStatus = String(body.status || "pending_approval").trim();
+  const initialStatus = ["draft", "pending_approval", "approved", "rejected"].includes(requestedStatus) ? requestedStatus : "pending_approval";
+  const extensionDays = Math.max(0, numberValue(String(body.extension_days || 0)));
+  const evidencePayload = supportingFiles.length > 0
+    ? {
+        method: "engineer_uploaded_evidence",
+        confirmed_by_office: context.session.user.name || "",
+        confirm_date: todayBangkok(),
+        evidence_type: "external_documents",
+        evidence_description: supportingDocsText,
+        files: supportingFiles,
+      }
+    : null;
   const voPayload = {
     vo_id: voId,
     project_id: context.project.project_id,
@@ -346,17 +473,25 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     contract_before: calculation.contract_before,
     contract_after: calculation.contract_after,
     approval_deadline: approvalDeadline,
+    approval_token: "",
+    approval_url: "",
+    customer_approved_at: "",
+    customer_approved_by: "",
+    customer_approval_note: "",
+    sent_to_customer_at: "",
+    line_group_id: "",
+    line_message: "",
     created_by_name: context.session.user.name || "",
     created_by_email: context.session.user.email || "",
     created_by_role: context.session.user.role || "",
-    status: "draft",
+    status: initialStatus,
     client_name: String(body.client_name || context.project.client || ""),
     supporting_docs: supportingDocs,
     linked_tasks_json: safeJsonStringify(body.linked_tasks || []),
-    evidence_json: "",
+    evidence_json: evidencePayload && initialStatus === "approved" ? safeJsonStringify(evidencePayload) : "",
     rejection_json: "",
     revision_history_json: "[]",
-    task_plan_status: "not_planned",
+    task_plan_status: initialStatus === "approved" ? "pending_plan" : "not_planned",
     invoice_no: "",
     invoice_date: "",
     due_date: "",
@@ -367,6 +502,7 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     document_refs_json: safeJsonStringify(supportingFiles),
     notes: String(body.notes || ""),
     created_at: `${createdDate}T00:00:00+07:00`,
+    extension_days: extensionDays,
   };
 
   await insert("Variation_Orders", voPayload, context.siteSheetId);
@@ -374,9 +510,9 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     document_id: makeId("VOD"),
     vo_id: voId,
     project_id: context.project.project_id,
-    document_type: "supporting-chat-image",
+    document_type: "supporting-evidence",
     document_no: `${voId}-SUP-${String(index + 1).padStart(2, "0")}`,
-    title: `รูปแชทอ้างอิง ${index + 1}`,
+    title: file.file_name || `หลักฐานแนบ ${index + 1}`,
     html_snapshot: "",
     pdf_file_id: file.file_id,
     pdf_url: file.file_url,
@@ -402,8 +538,6 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     project_id: context.project.project_id,
     ...item,
   })) as VoItemRecord[];
-  const html = buildVoSheetHtml({ vo: insertedVo, items: insertedItems, project: context.project });
-  await insertVoDocument({ context, vo: insertedVo, items: insertedItems, documentType: "vo-sheet", title: "ใบงานเพิ่ม-ลด", html });
   await writeAuditLog({
     actor: userActor(context),
     projectId: context.project.project_id,
@@ -414,7 +548,155 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     after: voPayload,
   });
 
-  return NextResponse.json({ success: true, data: insertedVo, items: insertedItems, document_html: html });
+  return NextResponse.json({ success: true, data: insertedVo, items: insertedItems });
+}
+
+async function handleUpdateVo(body: Record<string, unknown>, context: RouteContext) {
+  const forbidden = requirePermission(context, "vo.create");
+  if (forbidden) return forbidden;
+
+  const voId = text(body.vo_id);
+  if (!voId) return NextResponse.json({ error: "ไม่พบ VO ที่ต้องการแก้ไข" }, { status: 400 });
+
+  const data = await getVoData(context);
+  const vo = findVo(data.vos, voId);
+  if (!vo?._rowIndex && !vo?.vo_id) return NextResponse.json({ error: "ไม่พบ VO ที่ต้องการแก้ไข" }, { status: 404 });
+
+  const currentStatus = asVoStatus(String(vo.status || ""));
+  if (!["draft", "pending_approval", "rejected", "expired"].includes(currentStatus)) {
+    return NextResponse.json({ error: "แก้ไขได้เฉพาะรายการที่ยังไม่อนุมัติหรือยังไม่วางบิล" }, { status: 400 });
+  }
+
+  const itemInputs = parseRows<VoItemInput>(body.items);
+  const required = validateRequired({
+    vo_type: body.vo_type,
+    title: body.title,
+    description: body.description,
+    client_name: body.client_name || context.project.client,
+    items: itemInputs,
+  }, {
+    vo_type: "ประเภทงานเพิ่ม-ลด",
+    title: "ชื่องาน",
+    description: "รายละเอียด",
+    client_name: "ชื่อลูกค้า",
+    items: "รายการค่าใช้จ่าย",
+  });
+  if (required.length > 0) {
+    return NextResponse.json({ error: "ข้อมูลไม่ครบ", missing: required }, { status: 400 });
+  }
+
+  const voType = asVoType(String(body.vo_type || vo.vo_type || "VO+"));
+  const requestedStatus = text(body.status) || currentStatus;
+  const nextStatus = ["draft", "pending_approval", "rejected"].includes(requestedStatus) ? requestedStatus : currentStatus;
+  const calculation = calculateVoTotals({
+    items: itemInputs,
+    tax: {
+      vat_exempt: Boolean(body.vat_exempt),
+      withholding_tax: String(body.withholding_tax || vo.withholding_tax || "0"),
+      vat_rate: 7,
+    },
+  });
+  if (calculation.items.length === 0) {
+    return NextResponse.json({ error: "ต้องมีรายการอย่างน้อย 1 รายการ" }, { status: 400 });
+  }
+
+  const approvalDeadline = addCalendarDays(todayBangkok(), numberValue(String(body.approval_deadline_days || 14)));
+  const supportingUploads = parseRows<UploadPayload>(body.supporting_doc_uploads);
+  const supportingFiles = await uploadSupportingDocumentFiles(context, voId, supportingUploads);
+  const supportingDocsText = text(body.supporting_docs);
+  const existingSupportingDocs = text(vo.supporting_docs);
+  const nextSupportingDocs = [
+    supportingDocsText || existingSupportingDocs,
+    ...supportingFiles.map((file) => `แนบไฟล์หลักฐานเพิ่ม: ${file.file_name}`),
+  ].filter(Boolean).join("\n");
+  const existingDocumentRefs = parseJsonArray(vo.document_refs_json);
+  const nextDocumentRefs = safeJsonStringify([...existingDocumentRefs, ...supportingFiles]);
+
+  const patch: SheetPatch = {
+    revision_no: String(numberValue(vo.revision_no) + 1),
+    vo_type: voType,
+    title: text(body.title),
+    description: text(body.description),
+    source_type: text(body.source_type) || text(vo.source_type) || "client_request",
+    source_ref_id: text(body.source_ref_id),
+    source_description: text(body.source_description),
+    subtotal: calculation.subtotal,
+    vat_rate: calculation.vat_rate,
+    vat_exempt: String(calculation.vat_exempt),
+    withholding_tax: calculation.withholding_tax,
+    vat_amount: calculation.vat_amount,
+    wht_amount: calculation.wht_amount,
+    grand_total: calculation.grand_total,
+    net_payable: calculation.net_payable,
+    contract_before: calculation.contract_before,
+    contract_after: calculation.contract_after,
+    approval_deadline: approvalDeadline,
+    status: nextStatus,
+    client_name: text(body.client_name) || text(vo.client_name) || text(context.project.client),
+    supporting_docs: nextSupportingDocs,
+    document_refs_json: nextDocumentRefs,
+    notes: text(body.notes || vo.notes),
+    extension_days: Math.max(0, numberValue(String(body.extension_days || 0))),
+    amount_due: calculation.grand_total,
+    balance: calculation.grand_total,
+    updated_at: new Date().toISOString(),
+  };
+
+  await updateVo(context, vo, patch);
+  const existingItems = getVoItems(data.items, voId);
+  const firstItem = calculation.items[0];
+  if (firstItem) {
+    if (existingItems[0]) {
+      await updateVoItem(context, existingItems[0], {
+        item_no: firstItem.item_no,
+        description: firstItem.description,
+        unit: firstItem.unit,
+        quantity: firstItem.quantity,
+        unit_price: firstItem.unit_price,
+        amount: firstItem.amount,
+      });
+    } else {
+      await insert("VO_Items", {
+        item_id: makeId("VOI"),
+        vo_id: voId,
+        project_id: context.project.project_id,
+        item_no: firstItem.item_no,
+        description: firstItem.description,
+        unit: firstItem.unit,
+        quantity: firstItem.quantity,
+        unit_price: firstItem.unit_price,
+        amount: firstItem.amount,
+      }, context.siteSheetId);
+    }
+  }
+
+  await Promise.all(supportingFiles.map((file, index) => insert("VO_Documents", {
+    document_id: makeId("VOD"),
+    vo_id: voId,
+    project_id: context.project.project_id,
+    document_type: "supporting-evidence",
+    document_no: `${voId}-SUP-EDIT-${String(index + 1).padStart(2, "0")}`,
+    title: file.file_name || `หลักฐานแนบเพิ่ม ${index + 1}`,
+    html_snapshot: "",
+    pdf_file_id: file.file_id,
+    pdf_url: file.file_url,
+    created_by_name: context.session.user.name || "",
+    created_by_email: context.session.user.email || "",
+  }, context.siteSheetId)));
+
+  const nextVo = { ...vo, ...patch } as VoRecord;
+  await writeAuditLog({
+    actor: userActor(context),
+    projectId: context.project.project_id,
+    module: "variation_orders",
+    action: "edited",
+    targetId: voId,
+    summary: `แก้ไข ${voId} มูลค่าใหม่ ${formatMoney(calculation.grand_total)} บาท`,
+    before: vo,
+    after: nextVo,
+  });
+
+  return NextResponse.json({ success: true, data: nextVo });
 }
 
 async function handleSubmitVo(body: Record<string, unknown>, context: RouteContext) {
@@ -437,10 +719,10 @@ async function handleSubmitVo(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "ส่งอนุมัติได้เฉพาะสถานะร่าง" }, { status: 400 });
   }
 
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: "pending_approval",
     notes: String(checklist.pm_remarks || vo.notes || ""),
-  }, context.siteSheetId);
+  });
   await notifyRole(context, "client", "vo_pending_approval", `รออนุมัติ ${voId}`, `${vo.title || "งานเพิ่ม-ลด"} มูลค่า ${formatMoney(vo.grand_total)} บาท`);
   await writeAuditLog({
     actor: userActor(context),
@@ -454,6 +736,95 @@ async function handleSubmitVo(body: Record<string, unknown>, context: RouteConte
   });
 
   return NextResponse.json({ success: true, data: { ...vo, status: "pending_approval" } });
+}
+
+async function handleSendApproval(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const forbidden = requirePermission(context, "vo.submitToClient");
+  if (forbidden) return forbidden;
+
+  const voId = String(body.vo_id || "");
+  if (!voId) return NextResponse.json({ error: "ไม่พบเลขที่ VO" }, { status: 400 });
+
+  const { vos, items, documents } = await getVoData(context);
+  const vo = findVo(vos, voId);
+  if (!vo?._rowIndex) return NextResponse.json({ error: "ไม่พบ VO" }, { status: 404 });
+
+  const status = asVoStatus(String(vo.status || ""));
+  if (!["draft", "pending_approval"].includes(status)) {
+    return NextResponse.json({ error: "ส่งให้ลูกค้าอนุมัติได้เฉพาะ VO สถานะร่างหรือรออนุมัติเท่านั้น" }, { status: 400 });
+  }
+
+  const voItems = getVoItems(items, voId);
+  if (voItems.length === 0) {
+    return NextResponse.json({ error: "ต้องมีรายการค่าใช้จ่ายอย่างน้อย 1 รายการก่อนส่งอนุมัติ" }, { status: 400 });
+  }
+
+  const voSheet = await ensureVoSheetPdf({ context, vo, items: voItems, documents });
+  if (!voSheet.pdfUrl) {
+    return NextResponse.json({ error: "สร้าง PDF VO ไม่สำเร็จ กรุณาตรวจสอบ Google Drive folder ของโครงการ" }, { status: 400 });
+  }
+
+  const approvalToken = text(vo.approval_token) || createVoApprovalToken();
+  const approvalOrigin = approvalOriginFrom(req, body);
+  if (!approvalOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์อนุมัติ" }, { status: 400 });
+
+  const approvalUrl = `${approvalOrigin}/variation-order-approval/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(approvalToken)}`;
+  const targetLineGroupId = lineTargetFor(context);
+  const lineMessage = buildVoApprovalLineMessage({
+    projectName: text(context.project.name),
+    projectId: context.project.project_id,
+    voId: vo.vo_id,
+    title: text(vo.title),
+    total: vo.grand_total,
+    extensionDays: vo.extension_days,
+  });
+  const flexMessage = buildVoApprovalLineFlex({
+    projectName: text(context.project.name),
+    projectId: context.project.project_id,
+    voId: vo.vo_id,
+    voType: text(vo.vo_type),
+    title: text(vo.title),
+    total: vo.grand_total,
+    extensionDays: vo.extension_days,
+    deadline: vo.approval_deadline,
+    pdfUrl: voSheet.pdfUrl,
+    approvalUrl,
+  });
+
+  await sendLineMessages([flexMessage], targetLineGroupId);
+
+  const patch = {
+    status: "pending_approval",
+    approval_token: approvalToken,
+    approval_url: approvalUrl,
+    sent_to_customer_at: new Date().toISOString(),
+    line_group_id: targetLineGroupId,
+    line_message: lineMessage,
+  };
+  await updateVo(context, vo, patch);
+  const nextVo = { ...vo, ...patch } as VoRecord;
+  await notifyRole(context, "client", "vo_pending_approval", `รออนุมัติ ${voId}`, `${vo.title || "งานเพิ่ม-ลด"} มูลค่า ${formatMoney(vo.grand_total)} บาท`);
+  await writeAuditLog({
+    actor: userActor(context),
+    projectId: context.project.project_id,
+    module: "variation_orders",
+    action: "line_approval_sent",
+    targetId: voId,
+    summary: `ส่ง LINE ให้ลูกค้าอนุมัติ VO: ${voId}`,
+    before: vo,
+    after: { ...patch, test_mode: isVoLineTestMode(), pdf_url: voSheet.pdfUrl },
+  });
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      ...nextVo,
+      test_mode: isVoLineTestMode(),
+      line_group_id: targetLineGroupId,
+      pdf_url: voSheet.pdfUrl,
+      approval_url: approvalUrl,
+    },
+  });
 }
 
 async function handleApproveOnBehalf(body: Record<string, unknown>, context: RouteContext) {
@@ -497,7 +868,7 @@ async function handleApproveOnBehalf(body: Record<string, unknown>, context: Rou
     evidence_json: safeJsonStringify(evidencePayload),
     task_plan_status: "pending_plan",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
 
   const nextVo = { ...vo, ...patch } as VoRecord;
   const voItems = getVoItems(items, voId);
@@ -554,10 +925,10 @@ async function handleClientDecision(body: Record<string, unknown>, context: Rout
       status: "rejected",
       rejection_json: safeJsonStringify(rejectionPayload),
     } as VoRecord;
-    await update("Variation_Orders", Number(vo._rowIndex), {
+    await updateVo(context, vo, {
       status: "rejected",
       rejection_json: nextVo.rejection_json,
-    }, context.siteSheetId);
+    });
     await notifyRole(context, "Project Manager", "vo_rejected", `ลูกค้าปฏิเสธ ${voId}`, rejectionPayload.reason);
     await writeAuditLog({
       actor: userActor(context),
@@ -589,7 +960,7 @@ async function handleClientDecision(body: Record<string, unknown>, context: Rout
     evidence_json: safeJsonStringify(evidencePayload),
     task_plan_status: "pending_plan",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
 
   const nextVo = { ...vo, ...patch } as VoRecord;
   const voItems = getVoItems(items, voId);
@@ -673,12 +1044,12 @@ async function handleAddToPlan(body: Record<string, unknown>, context: RouteCont
     const label = voType === "VO-" ? "ลดตาม" : "สับเปลี่ยนตาม";
     const existingNotes = String(task.notes || "").trim();
     const nextNote = [existingNotes, `${label} ${vo.vo_id}: ${vo.title || ""}`].filter(Boolean).join("\n");
-    await update("Tasks", Number(task._rowIndex), {
+    await updateTaskFromVo(context, task, {
       notes: nextNote,
       linked_vo_id: vo.vo_id,
       vo_badge: voType === "VO-" ? "งานลด" : "สับเปลี่ยน",
       payment_note: `อ้างอิง ${vo.vo_id}`,
-    }, context.siteSheetId);
+    });
   }
 
   await insert("VO_Task_Links", {
@@ -692,10 +1063,10 @@ async function handleAddToPlan(body: Record<string, unknown>, context: RouteCont
     created_by_name: context.session.user.name || "",
     created_by_email: context.session.user.email || "",
   }, context.siteSheetId);
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     task_plan_status: "planned",
     linked_tasks_json: safeJsonStringify([linkedTaskId]),
-  }, context.siteSheetId);
+  });
   await notifyRole(context, "Engineer", "vo_task_planned", `งานจาก ${vo.vo_id} เข้าแผนแล้ว`, `${vo.title || "งานเพิ่ม-ลด"} อยู่ในแผนงานแล้ว`);
   await writeAuditLog({
     actor: userActor(context),
@@ -737,7 +1108,7 @@ async function handleCreateInvoice(body: Record<string, unknown>, context: Route
     balance: numberValue(vo.grand_total) - numberValue(vo.amount_paid),
     payment_status: "waiting_payment",
   };
-  await update("Variation_Orders", Number(vo._rowIndex), patch, context.siteSheetId);
+  await updateVo(context, vo, patch);
   await insert("VO_Finance_Ledger", {
     ledger_id: makeId("VFL"),
     vo_id: vo.vo_id,
@@ -809,12 +1180,12 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     recorded_by_name: context.session.user.name || "",
     recorded_by_email: context.session.user.email || "",
   }, context.siteSheetId);
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: nextStatus,
     amount_paid: cumulativePaid,
     balance,
     payment_status: balance <= 0 ? "paid" : "partial_payment",
-  }, context.siteSheetId);
+  });
   await insert("VO_Finance_Ledger", {
     ledger_id: makeId("VFL"),
     vo_id: vo.vo_id,
@@ -860,10 +1231,10 @@ async function handleRecordPayment(body: Record<string, unknown>, context: Route
     const linkedIds = new Set(taskLinks.filter((link) => link.vo_id === vo.vo_id).map((link) => String(link.task_id || "")));
     await Promise.all(tasks
       .filter((task) => task._rowIndex && linkedIds.has(String(task.task_id || "")))
-      .map((task) => update("Tasks", Number(task._rowIndex), {
+      .map((task) => updateTaskFromVo(context, task, {
         vo_badge: "ชำระแล้ว",
         payment_note: `ชำระครบตาม ${vo.vo_id}`,
-      }, context.siteSheetId)));
+      })));
     clearanceHtml = buildVoClearanceReportHtml({ vo: nextVo, items: voItems, project: context.project, taskCount: linkedIds.size });
     await insertVoDocument({
       context,
@@ -908,10 +1279,10 @@ async function handleCancelVo(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "VO นี้วางบิล/ชำระเงินแล้ว ต้อง void invoice ก่อนยกเลิก" }, { status: 400 });
   }
 
-  await update("Variation_Orders", Number(vo._rowIndex), {
+  await updateVo(context, vo, {
     status: "cancelled",
     notes: [vo.notes, `ยกเลิก: ${reason}`].filter(Boolean).join("\n"),
-  }, context.siteSheetId);
+  });
   await writeAuditLog({
     actor: userActor(context),
     projectId: context.project.project_id,
@@ -943,7 +1314,7 @@ async function handleExpiryCheck(_body: Record<string, unknown>, context: RouteC
     const daysUntilDeadline = daysBetweenDates(today, deadline);
 
     if (daysPastDeadline > 0) {
-      await update("Variation_Orders", Number(vo._rowIndex), { status: "expired" }, context.siteSheetId);
+      await updateVo(context, vo, { status: "expired" });
       expired.push({ vo_id: vo.vo_id, days_expired: daysPastDeadline, title: String(vo.title || "") });
       await writeAuditLog({
         actor: userActor(context),
@@ -993,10 +1364,10 @@ async function handleOverdueCheck(_body: Record<string, unknown>, context: Route
     if (dayDiff < 0 && balance > 0) {
       const daysOverdue = Math.abs(dayDiff);
       if (status !== "overdue") {
-        await update("Variation_Orders", Number(vo._rowIndex), {
+        await updateVo(context, vo, {
           status: "overdue",
           payment_status: "overdue",
-        }, context.siteSheetId);
+        });
         await writeAuditLog({
           actor: userActor(context),
           projectId: context.project.project_id,
@@ -1107,6 +1478,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       task_links: data.taskLinks,
       tasks: data.tasks,
       ledger: data.ledger,
+      line: {
+        test_mode: isVoLineTestMode(),
+        target_group_id: lineTargetFor(routeContext),
+        target_group_name: isVoLineTestMode() ? "VO LINE Test Group" : text(routeContext.project.line_group_name),
+      },
       audit_logs: auditLogs
         .filter((log) => log.project_id === routeContext.project.project_id && log.module === "variation_orders")
         .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
@@ -1128,7 +1504,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const action = String(body.action || "");
 
     if (action === "create_vo") return handleCreateVo(body, routeContext);
+    if (action === "update_vo") return handleUpdateVo(body, routeContext);
     if (action === "submit_to_client") return handleSubmitVo(body, routeContext);
+    if (action === "send_approval") return handleSendApproval(req, body, routeContext);
     if (action === "approve_on_behalf") return handleApproveOnBehalf(body, routeContext);
     if (action === "client_decision") return handleClientDecision(body, routeContext);
     if (action === "add_to_plan") return handleAddToPlan(body, routeContext);

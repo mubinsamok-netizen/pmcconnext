@@ -1,6 +1,9 @@
 "use client";
 
-import { Edit3, Plus, Users, Mail, Phone, ShieldCheck, MapPin } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { Edit3, Plus, Users, Mail, Phone, ShieldCheck, MapPin, Filter } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
@@ -27,11 +30,41 @@ type ApiResponse<T> = {
 };
 
 export default function TeamPage() {
-  const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
-  const { data: projectsData } = useSWR<ApiResponse<Project>>("/api/projects", fetcher);
-  const team = data?.data || [];
-  const projects = projectsData?.data || [];
-  const projectMap = new Map(projects.map((project) => [project.project_id, project.name]));
+  const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
+  const [roleFilter, setRoleFilter] = useState("all");
+  const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
+  const { data: projectsData } = useSWR<ApiResponse<Project>>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
+  const team = useMemo(() => data?.data || [], [data?.data]);
+  const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
+  const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);
+  const roleCounts = useMemo(() => {
+    return team.reduce<Record<string, number>>((counts, member) => {
+      const role = getAppRole(member.role);
+      counts[role] = (counts[role] || 0) + 1;
+      return counts;
+    }, {});
+  }, [team]);
+  const roleOptions = useMemo(() => Object.keys(roleCounts).sort(), [roleCounts]);
+  const filteredTeam = useMemo(() => {
+    if (roleFilter === "all") return team;
+    return team.filter((member) => getAppRole(member.role) === roleFilter);
+  }, [roleFilter, team]);
+
+  useEffect(() => {
+    if (sessionStatus !== "loading" && !isAdmin) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isAdmin, router, sessionStatus]);
+
+  if (sessionStatus === "loading" || !isAdmin) {
+    return (
+      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
+        กำลังตรวจสอบสิทธิ์...
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -47,6 +80,34 @@ export default function TeamPage() {
           <Plus size={20} />
           เพิ่มพนักงาน
         </Link>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-orange-50 text-orange-600">
+              <Filter size={18} />
+            </span>
+            <div>
+              <h3 className="font-bold text-gray-900">กรองตาม Role</h3>
+              <p className="text-sm text-gray-500">
+                แสดง {filteredTeam.length} จาก {team.length} คน
+              </p>
+            </div>
+          </div>
+          <select
+            value={roleFilter}
+            onChange={(event) => setRoleFilter(event.target.value)}
+            className="h-11 min-w-56 rounded-xl border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 outline-none transition focus:border-orange-400 focus:ring-4 focus:ring-orange-100"
+          >
+            <option value="all">ทุก Role ({team.length})</option>
+            {roleOptions.map((role) => (
+              <option key={role} value={role}>
+                {role} ({roleCounts[role] || 0})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {error && (
@@ -69,7 +130,7 @@ export default function TeamPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
-              {team.map((member) => {
+              {filteredTeam.map((member) => {
                 const memberProjects = (member.project_ids || "").split(",").filter(Boolean);
                 const isAdmin = getAppRole(member.role) === "Admin";
 
@@ -143,10 +204,10 @@ export default function TeamPage() {
                   </td>
                 </tr>
               )}
-              {team.length === 0 && !isLoading && !error && (
+              {filteredTeam.length === 0 && !isLoading && !error && (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-gray-500">
-                    ยังไม่มีข้อมูลพนักงานใน Master Sheet
+                    {team.length === 0 ? "ยังไม่มีข้อมูลพนักงานใน Master Sheet" : "ไม่มีพนักงานใน Role ที่เลือก"}
                   </td>
                 </tr>
               )}

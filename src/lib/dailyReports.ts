@@ -168,7 +168,7 @@ function renderPhotoGrid(photos: DailyReportPhoto[]) {
   `;
 }
 
-export function buildDailyReportHtml(report: DailyReportPayload, photos: DailyReportPhoto[]) {
+export function buildDailyReportHtml(report: DailyReportPayload, photos: DailyReportPhoto[], photoCount = photos.length) {
   const logoDataUrl = getLogoDataUrl();
   const projectPeriod = `${formatThaiDate(report.project_start_date)} - ${formatThaiDate(report.project_end_date)}`;
   const machineryCount = report.machinery.length;
@@ -440,7 +440,7 @@ export function buildDailyReportHtml(report: DailyReportPayload, photos: DailyRe
       ${renderMetaCard("วันที่รายงาน", formatThaiDate(report.date))}
       ${renderMetaCard("สภาพอากาศ", report.weather || "-")}
       ${renderMetaCard("บุคลากรรวม", `${report.workers || "0"} คน`)}
-      ${renderMetaCard("เครื่องจักร/วัสดุ/รูป", `${machineryCount}/${materialCount}/${photos.length}`)}
+      ${renderMetaCard("เครื่องจักร/วัสดุ/รูป", `${machineryCount}/${materialCount}/${photoCount}`)}
     </tr>
   </table>
 
@@ -529,10 +529,10 @@ export function buildDailyReportHtml(report: DailyReportPayload, photos: DailyRe
     </tr>
   </table>
 
-  <div class="section photo-section">
+  ${photos.length > 0 ? `<div class="section photo-section">
     <h2>รูปภาพประกอบรายงาน</h2>
     ${renderPhotoGrid(photos)}
-  </div>
+  </div>` : ""}
 </body>
 </html>`;
 }

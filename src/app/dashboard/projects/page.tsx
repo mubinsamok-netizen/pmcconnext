@@ -1,10 +1,10 @@
 "use client";
 
-import { Building2, Calendar, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Building2, Calendar, Filter, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
 import { useSession } from "next-auth/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
@@ -26,11 +26,16 @@ type Project = {
   site_sheet_id?: string;
   drive_folder_id?: string;
   deposit_status?: string;
+  architect_name?: string;
   tasks_count?: string;
   completed_tasks?: string;
   overdue_tasks?: string;
   delay_days?: string;
   progress_source?: string;
+  daily_reports_count?: string;
+  last_daily_report_date?: string;
+  daily_report_missing_days?: string;
+  daily_report_alert?: string;
 };
 
 type ProjectsResponse = {
@@ -39,6 +44,11 @@ type ProjectsResponse = {
 };
 
 const validStatuses = new Set(["Planning", "In Progress", "On Hold", "Completed", "Cancelled"]);
+const ALL_ENGINEERS = "__all__";
+const UNASSIGNED_ENGINEER = "__unassigned__";
+const FILTER_SITE_ENGINEER = "site_engineer";
+const FILTER_ARCHITECT = "architect";
+type ResponsibilityFilter = typeof FILTER_SITE_ENGINEER | typeof FILTER_ARCHITECT;
 const statusStyles = {
   Planning: {
     badge: "border-sky-100 bg-sky-50 text-sky-700",
@@ -158,6 +168,38 @@ function getCount(value?: string) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.floor(numeric));
+}
+
+function getDailyReportWarning(project: Project) {
+  if (project.daily_report_alert !== "TRUE") return "";
+
+  const missingDays = getCount(project.daily_report_missing_days);
+  const latestDate = toIsoDate(project.last_daily_report_date);
+  if (latestDate) {
+    return `ไม่ได้รายงานประจำวันมา ${missingDays} วัน (ล่าสุด ${latestDate})`;
+  }
+
+  return `ยังไม่มีรายงานประจำวันมา ${missingDays} วัน`;
+}
+
+function normalizeEngineerName(value?: string) {
+  return String(value || "").trim();
+}
+
+function getResponsibleName(project: Project, filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? normalizeEngineerName(project.architect_name) : normalizeEngineerName(project.se_name);
+}
+
+function getUnassignedLabel(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "ยังไม่ระบุ Architect" : "ยังไม่ระบุ Site Engineer";
+}
+
+function getAllLabel(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "ทุก Architect" : "ทุก Site Engineer";
+}
+
+function getFilterTitle(filter: ResponsibilityFilter) {
+  return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
 }
 
 function extractDriveFileId(url?: string) {
@@ -288,8 +330,39 @@ export default function ProjectsPage() {
   const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
-  const projects = data?.data || [];
+  const [responsibilityFilter, setResponsibilityFilter] = useState<ResponsibilityFilter>(FILTER_SITE_ENGINEER);
+  const [engineerFilter, setEngineerFilter] = useState(ALL_ENGINEERS);
+  const projects = useMemo(() => data?.data || [], [data?.data]);
   const isForeman = isForemanRole(session?.user?.role);
+  const engineerOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    projects.forEach((project) => {
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
+      counts.set(engineer, (counts.get(engineer) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .map(([value, count]) => ({
+        value,
+        count,
+        label: value === UNASSIGNED_ENGINEER ? getUnassignedLabel(responsibilityFilter) : value,
+      }))
+      .sort((a, b) => {
+        if (a.value === UNASSIGNED_ENGINEER) return 1;
+        if (b.value === UNASSIGNED_ENGINEER) return -1;
+        return a.label.localeCompare(b.label, "th");
+      });
+  }, [projects, responsibilityFilter]);
+  const filteredProjects = useMemo(() => {
+    if (engineerFilter === ALL_ENGINEERS) return projects;
+    return projects.filter((project) => {
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
+      return engineer === engineerFilter;
+    });
+  }, [engineerFilter, projects, responsibilityFilter]);
+  const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
+    ? getAllLabel(responsibilityFilter)
+    : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
 
   const handleDelete = async (project: Project) => {
     setDeletingId(project.project_id);
@@ -336,8 +409,60 @@ export default function ProjectsPage() {
         </div>
       )}
 
+      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-orange-50 text-orange-600">
+              <Filter size={18} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-slate-900">{getFilterTitle(responsibilityFilter)}</div>
+              <div className="mt-0.5 text-xs font-medium text-slate-500">
+                แสดง {filteredProjects.length} จาก {projects.length} ไซต์ · {activeEngineerLabel}
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <select
+              value={responsibilityFilter}
+              onChange={(event) => {
+                setResponsibilityFilter(event.target.value as ResponsibilityFilter);
+                setEngineerFilter(ALL_ENGINEERS);
+              }}
+              className="h-10 min-w-[190px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
+              aria-label="เลือกประเภทผู้รับผิดชอบ"
+            >
+              <option value={FILTER_SITE_ENGINEER}>Site Engineer</option>
+              <option value={FILTER_ARCHITECT}>Architect</option>
+            </select>
+            <select
+              value={engineerFilter}
+              onChange={(event) => setEngineerFilter(event.target.value)}
+              className="h-10 min-w-[260px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
+              aria-label={getFilterTitle(responsibilityFilter)}
+            >
+              <option value={ALL_ENGINEERS}>{getAllLabel(responsibilityFilter)} ({projects.length})</option>
+              {engineerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({option.count})
+                </option>
+              ))}
+            </select>
+            {engineerFilter !== ALL_ENGINEERS && (
+              <button
+                type="button"
+                onClick={() => setEngineerFilter(ALL_ENGINEERS)}
+                className="h-10 rounded-xl border border-slate-200 px-3 text-sm font-bold text-slate-600 transition hover:bg-slate-50 hover:text-orange-600"
+              >
+                ล้างฟิลเตอร์
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-3">
-        {projects.map((project) => {
+        {filteredProjects.map((project) => {
           const status = getStatus(project.status);
           const statusStyle = getStatusStyle(status);
           const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
@@ -347,6 +472,7 @@ export default function ProjectsPage() {
           const completedTasks = getCount(project.completed_tasks);
           const overdueTasks = getCount(project.overdue_tasks);
           const delayDays = getCount(project.delay_days);
+          const dailyReportWarning = getDailyReportWarning(project);
 
           return (
             <div
@@ -383,7 +509,15 @@ export default function ProjectsPage() {
 
                   <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[15px] font-medium text-slate-600">
                     <span>Site Engineer: {project.se_name || "-"}</span>
+                    <span>Architect: {project.architect_name || "-"}</span>
                   </div>
+
+                  {dailyReportWarning && (
+                    <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm font-bold text-amber-800">
+                      <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                      <span className="leading-6">{dailyReportWarning}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex min-w-0 flex-col justify-between gap-4 border-t border-slate-100 bg-slate-50/60 p-5 xl:border-l xl:border-t-0 xl:p-6">
@@ -443,6 +577,12 @@ export default function ProjectsPage() {
         {projects.length === 0 && !isLoading && !error && (
           <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
             ยังไม่มีไซต์งานใน Master Sheet
+          </div>
+        )}
+
+        {projects.length > 0 && filteredProjects.length === 0 && !isLoading && !error && (
+          <div className="col-span-full rounded-2xl border border-dashed border-orange-200 bg-orange-50/40 py-12 text-center text-orange-700">
+            ไม่มีไซต์งานของ {activeEngineerLabel}
           </div>
         )}
       </div>

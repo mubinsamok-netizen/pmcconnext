@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { isForemanRole } from "@/lib/siteAccess";
+import { isAdminRole } from "@/lib/authz";
 import { findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type ContactLog = {
   round: number;
@@ -40,8 +41,8 @@ async function requireSalesCrmAccess() {
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (isForemanRole(session.user.role)) {
-    return NextResponse.json({ error: "ไม่มีสิทธิ์เข้า Sales CRM" }, { status: 403 });
+  if (!isAdminRole(session.user.role)) {
+    return NextResponse.json({ error: "Sales CRM ใช้ได้เฉพาะ Admin เท่านั้น" }, { status: 403 });
   }
   return null;
 }
@@ -51,7 +52,7 @@ export async function GET(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const url = new URL(req.url);
     const includeClosed = url.searchParams.get("include_closed") === "true";
     const customers = await findAllMaster("Customers");
@@ -59,7 +60,7 @@ export async function GET(req: Request) {
       .filter((customer) => includeClosed || customer.active !== "FALSE")
       .map((customer) => ({
         ...customer,
-        contact_logs: parseContactLogs(customer.contact_logs_json),
+        contact_logs: parseContactLogs(String(customer.contact_logs_json || "")),
       }));
 
     return NextResponse.json({ success: true, data });
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const body = await req.json();
     const fullName = String(body.full_name || "").trim();
     const phone = String(body.phone || "").trim();
@@ -95,6 +96,7 @@ export async function POST(req: Request) {
       status: body.status || "new",
       contact_logs_json: JSON.stringify([]),
       last_contacted_at: "",
+      next_follow_up_date: body.next_follow_up_date || new Date().toISOString().slice(0, 10),
       project_id: "",
       notes: body.notes || "",
       freebies: body.freebies || "",
@@ -116,7 +118,7 @@ export async function PUT(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    await ensureMasterSchema();
+    if (!isSupabaseBackend()) await ensureMasterSchema();
     const body = await req.json();
     const id = String(body.id || "").trim();
 
@@ -140,7 +142,7 @@ export async function PUT(req: Request) {
         return NextResponse.json({ error: "กรุณาใส่บันทึกการติดต่อ" }, { status: 400 });
       }
 
-      const logs = parseContactLogs(current.contact_logs_json);
+      const logs = parseContactLogs(String(current.contact_logs_json || ""));
       const date = body.date || new Date().toISOString().slice(0, 10);
       logs.push({
         round: logs.length + 1,
@@ -153,6 +155,7 @@ export async function PUT(req: Request) {
       patch = {
         contact_logs_json: JSON.stringify(logs),
         last_contacted_at: date,
+        next_follow_up_date: body.next_follow_up_date || "",
         status: body.status || current.status || "waiting",
       };
     } else if (action === "mark_deposited") {
@@ -175,6 +178,7 @@ export async function PUT(req: Request) {
         "interest_level",
         "status",
         "last_contacted_at",
+        "next_follow_up_date",
         "project_id",
         "notes",
         "freebies",
@@ -186,7 +190,8 @@ export async function PUT(req: Request) {
       });
     }
 
-    await updateMaster("Customers", Number(current._rowIndex), patch);
+    const rowKey = isSupabaseBackend() ? id : current._rowIndex;
+    await updateMaster("Customers", rowKey, { ...patch, id }, current._rowIndex);
     return NextResponse.json({ success: true, data: { ...current, ...patch } });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

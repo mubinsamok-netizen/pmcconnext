@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { Clock3, LogOut, Maximize, Menu, Minimize, Search } from "lucide-react";
+import { Clock3, LogOut, Maximize, Menu, Minimize } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -35,7 +35,6 @@ export default function DashboardTopBar({
   const pathname = usePathname();
   const [time, setTime] = useState<Date | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [query, setQuery] = useState("");
   const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -77,21 +76,8 @@ export default function DashboardTopBar({
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-extrabold tracking-tight text-gray-950">{pageTitle}</h1>
-            <p className="hidden text-xs font-medium text-gray-400 sm:block">PCM CONNEXT construction workspace</p>
+            <p className="hidden text-xs font-medium text-gray-400 sm:block">PMC CONNEXT construction workspace</p>
           </div>
-        </div>
-
-        <div className="hidden flex-1 justify-center lg:flex">
-          <label className="relative w-full max-w-xl">
-            <Search size={17} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="h-10 w-full rounded-2xl border border-gray-200 bg-gray-50 pl-10 pr-4 text-sm font-medium text-gray-700 outline-none transition placeholder:text-gray-400 focus:border-orange-200 focus:bg-white focus:ring-4 focus:ring-orange-50"
-              placeholder="ค้นหาโครงการ เมนู รายงาน หรือไฟล์..."
-              type="search"
-            />
-          </label>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
@@ -147,7 +133,7 @@ export default function DashboardTopBar({
       <ConfirmDialog
         open={logoutDialogOpen}
         title="ออกจากระบบ?"
-        message="คุณต้องการออกจากระบบ PCM CONNEXT ใช่ไหม"
+        message="คุณต้องการออกจากระบบ PMC CONNEXT ใช่ไหม"
         confirmLabel="ออกจากระบบ"
         cancelLabel="ยกเลิก"
         onConfirm={() => {

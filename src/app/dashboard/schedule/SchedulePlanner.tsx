@@ -8,25 +8,32 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
+  Bell,
   CalendarClock,
   CalendarDays,
   ChevronDown,
   ChevronRight,
   CheckSquare,
   CheckCircle2,
+  ClipboardCheck,
   CircleDot,
   Edit3,
+  ExternalLink,
   FileSpreadsheet,
+  FileText,
   Flag,
   GripVertical,
   Loader2,
   Plus,
   Printer,
   Search,
+  Send,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { CUSTOMER_DECISION_PHASES, CUSTOMER_DECISION_STATUSES } from "@/lib/customerDecisions";
 import { fetcher } from "@/lib/fetcher";
 
 type Project = {
@@ -39,7 +46,7 @@ type Project = {
 };
 
 type Task = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
   task_id: string;
   project_id: string;
   name: string;
@@ -68,7 +75,7 @@ type Task = {
 };
 
 type Milestone = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
   milestone_id: string;
   project_id: string;
   title: string;
@@ -78,8 +85,46 @@ type Milestone = {
   notes?: string;
 };
 
-type TaskForm = {
+type CustomerDecision = {
   _rowIndex?: number;
+  decision_id: string;
+  project_id: string;
+  document_no?: string;
+  phase: string;
+  title: string;
+  decision_before: string;
+  decision_status?: string;
+  impact_if_changed: string;
+  result_note?: string;
+  evidence_note?: string;
+  evidence_files_json?: string;
+  notified_at?: string;
+  notified_by_name?: string;
+  line_group_id?: string;
+  decided_at?: string;
+  decided_by?: string;
+  pdf_file_id?: string;
+  pdf_url?: string;
+  issued_at?: string;
+  order_index?: string;
+};
+
+type DecisionEvidenceFile = {
+  file_id?: string;
+  file_name?: string;
+  file_url?: string;
+  mime_type?: string;
+};
+
+type UploadPayload = {
+  name: string;
+  type: string;
+  dataUrl: string;
+};
+
+type TaskForm = {
+  _rowIndex?: number | string;
+  task_id?: string;
   name: string;
   category: string;
   assignee: string;
@@ -97,7 +142,8 @@ type TaskForm = {
 };
 
 type MilestoneForm = {
-  _rowIndex?: number;
+  _rowIndex?: number | string;
+  milestone_id?: string;
   title: string;
   date: string;
   type: string;
@@ -105,13 +151,35 @@ type MilestoneForm = {
   notes: string;
 };
 
+type CustomerDecisionForm = {
+  decision_id?: string;
+  phase: string;
+  title: string;
+  decision_before: string;
+  decision_status: string;
+  impact_if_changed: string;
+  result_note: string;
+  evidence_note: string;
+  decided_at: string;
+  decided_by: string;
+  order_index: string;
+};
+
 type ApiListResponse<T> = {
   success: boolean;
   data: T[];
 };
 
+type CustomerDecisionResponse = ApiListResponse<CustomerDecision> & {
+  line?: {
+    test_mode?: boolean;
+    target_group_id?: string;
+    target_group_name?: string;
+  };
+};
+
 type PrintTarget = "plan" | "gantt" | null;
-type ActiveTab = "tracker" | "plan" | "gantt";
+type ActiveTab = "tracker" | "plan" | "gantt" | "decisions";
 type Timeline = {
   start: Date;
   end: Date;
@@ -169,9 +237,9 @@ const CATEGORY_COLORS: Record<string, string> = {
   "งานทั่วไป": "#607d8b",
 };
 
-const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "เบิกเงิน", "อื่น ๆ"];
+const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "อื่น ๆ"];
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
-const COLLAPSED_STORAGE_KEY = "pcm.schedule.collapsedHeadings.v1";
+const COLLAPSED_STORAGE_KEY = "pmc.schedule.collapsedHeadings.v1";
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -196,6 +264,19 @@ const emptyMilestoneForm: MilestoneForm = {
   type: "งวดงาน",
   color: "#f97316",
   notes: "",
+};
+
+const emptyDecisionForm: CustomerDecisionForm = {
+  phase: CUSTOMER_DECISION_PHASES[0],
+  title: "",
+  decision_before: "",
+  decision_status: "ยังไม่ถึงเวลา",
+  impact_if_changed: "",
+  result_note: "",
+  evidence_note: "",
+  decided_at: "",
+  decided_by: "",
+  order_index: "",
 };
 
 function parseDate(value?: string) {
@@ -233,7 +314,7 @@ function getTaskDuration(task: Pick<Task, "duration_days" | "start" | "end">) {
 }
 
 function getInitialTab(tab?: string | null): ActiveTab {
-  return tab === "plan" || tab === "gantt" ? tab : "plan";
+  return tab === "tracker" || tab === "plan" || tab === "gantt" || tab === "decisions" ? tab : "plan";
 }
 
 function formatDate(value?: string, options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short", year: "numeric" }) {
@@ -422,6 +503,47 @@ function getTrackerColumnStyle(status: string) {
   return TRACKER_COLUMN_STYLES[status] || TRACKER_COLUMN_STYLES["To Do"];
 }
 
+function getDecisionStatusClass(status?: string) {
+  const value = status || "";
+  if (value === "ยืนยันแล้ว") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (value === "รอลูกค้า" || value === "ส่งแจ้งเตือนแล้ว") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (value === "ต้องยืนยัน") return "border-orange-200 bg-orange-50 text-orange-700";
+  if (value === "เลยจุดตัดสินใจ") return "border-red-200 bg-red-50 text-red-700";
+  return "border-gray-200 bg-gray-50 text-gray-600";
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function parseDecisionEvidence(value?: string | number) {
+  if (!value) return [] as DecisionEvidenceFile[];
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed.filter(Boolean) as DecisionEvidenceFile[] : [];
+  } catch {
+    return [];
+  }
+}
+
+async function fileToUploadPayload(file: File) {
+  return new Promise<UploadPayload>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
+    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => getInitialTab(searchParams.get("tab")));
@@ -430,8 +552,12 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const [statusFilter, setStatusFilter] = useState("ทั้งหมด");
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showMilestoneForm, setShowMilestoneForm] = useState(false);
+  const [showDecisionForm, setShowDecisionForm] = useState(false);
   const [taskForm, setTaskForm] = useState<TaskForm>(emptyTaskForm);
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(emptyMilestoneForm);
+  const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
+  const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
+  const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null);
@@ -451,12 +577,15 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const selectedProjectData = projects.find((project) => project.project_id === selectedProject);
   const taskKey = selectedProject ? `/api/tasks?project_id=${selectedProject}` : null;
   const milestoneKey = selectedProject ? `/api/milestones?project_id=${selectedProject}` : null;
+  const decisionKey = selectedProject && activeTab === "decisions" ? `/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions` : null;
 
   const { data: taskRes, isLoading: tasksLoading, mutate: mutateTasks } = useSWR<ApiListResponse<Task>>(taskKey, fetcher);
   const { data: milestoneRes, isLoading: milestonesLoading, mutate: mutateMilestones } = useSWR<ApiListResponse<Milestone>>(milestoneKey, fetcher);
+  const { data: decisionRes, isLoading: decisionsLoading, mutate: mutateDecisions } = useSWR<CustomerDecisionResponse>(decisionKey, fetcher);
 
   const tasks = useMemo(() => (taskRes?.data ?? []).map(normalizeTask), [taskRes?.data]);
   const milestones = useMemo(() => milestoneRes?.data ?? [], [milestoneRes?.data]);
+  const decisions = useMemo(() => decisionRes?.data ?? [], [decisionRes?.data]);
   const collapsedHeadings = useMemo(() => collapsedByProject[selectedProject] || {}, [collapsedByProject, selectedProject]);
 
   const sortedTasks = useMemo(() => sortTaskList(tasks), [tasks]);
@@ -480,6 +609,14 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const sortedMilestones = useMemo(() => {
     return [...milestones].sort((a, b) => (parseDate(a.date)?.getTime() || 0) - (parseDate(b.date)?.getTime() || 0));
   }, [milestones]);
+
+  const highlightedDecisions = useMemo(() => {
+    return decisions.filter((decision) => decision.phase === currentDecisionPhase);
+  }, [currentDecisionPhase, decisions]);
+
+  const waitingDecisionCount = useMemo(() => {
+    return decisions.filter((decision) => ["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"].includes(decision.decision_status || "")).length;
+  }, [decisions]);
 
   const timeline = useMemo(() => {
     const dates: Date[] = [];
@@ -612,6 +749,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
     setTaskForm({
       _rowIndex: task._rowIndex,
+      task_id: task.task_id,
       name: task.name,
       category: task.category || (isHeadingTask(task) ? task.name : ""),
       assignee: task.assignee || "",
@@ -631,7 +769,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const openDateEditTask = (task: Task) => {
-    if (!task._rowIndex || isHeadingTask(task)) return;
+    if ((!task.task_id && !task._rowIndex) || isHeadingTask(task)) return;
     setMessage("");
     setDateEditTask(task);
     setDateEditForm({
@@ -641,7 +779,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const saveTaskPatch = async (task: Task, patch: TaskPatch, successMessage: string) => {
-    if (!task._rowIndex) return false;
+    if (!task.task_id && !task._rowIndex) return false;
 
     setSaving(true);
     setMessage("");
@@ -650,7 +788,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       const res = await fetch("/api/tasks", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _rowIndex: task._rowIndex, project_id: task.project_id, ...patch }),
+        body: JSON.stringify({ task_id: task.task_id, _rowIndex: task._rowIndex, project_id: task.project_id, ...patch }),
       });
 
       if (!res.ok) {
@@ -658,7 +796,15 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to update task");
       }
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: current.data.map((item) => (
+          (task.task_id && item.task_id === task.task_id) || item._rowIndex === task._rowIndex
+            ? { ...item, ...patch }
+            : item
+        )),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setMessage(successMessage);
       return true;
     } catch (error: unknown) {
@@ -699,11 +845,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       await Promise.all(nextTasks.map((item, index) => {
-        if (!item._rowIndex || item.order_index === String(index + 1)) return Promise.resolve();
+        if ((!item.task_id && !item._rowIndex) || item.order_index === String(index + 1)) return Promise.resolve();
         return fetch("/api/tasks", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ _rowIndex: item._rowIndex, project_id: item.project_id, order_index: String(index + 1) }),
+          body: JSON.stringify({ task_id: item.task_id, _rowIndex: item._rowIndex, project_id: item.project_id, order_index: String(index + 1) }),
         }).then(async (res) => {
           if (!res.ok) {
             const json = await res.json();
@@ -712,7 +858,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         });
       }));
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: nextTasks.map((item, index) => ({ ...item, order_index: String(index + 1) })),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setMessage("อัปเดตลำดับงานเรียบร้อยแล้ว ลำดับนี้จะถูกใช้ตอนพิมพ์ด้วย");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
@@ -757,7 +907,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       const res = await fetch("/api/tasks", {
-        method: taskForm._rowIndex ? "PUT" : "POST",
+        method: taskForm.task_id || taskForm._rowIndex ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -767,7 +917,26 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to save task");
       }
 
-      await mutateTasks();
+      const json = await res.json() as { data?: Task };
+      const savedTask = (json.data || payload) as Task;
+      void mutateTasks((current) => {
+        if (!current) return current;
+        const taskId = savedTask.task_id || taskForm.task_id;
+        const exists = current.data.some((item) => (
+          (taskId && item.task_id === taskId) || item._rowIndex === savedTask._rowIndex
+        ));
+        return {
+          ...current,
+          data: exists
+            ? current.data.map((item) => (
+              (taskId && item.task_id === taskId) || item._rowIndex === savedTask._rowIndex
+                ? { ...item, ...savedTask }
+                : item
+            ))
+            : [...current.data, savedTask],
+        };
+      }, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setShowTaskForm(false);
       setMessage("บันทึกแผนงานเรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -778,13 +947,18 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const deleteTask = async (task: Task) => {
-    if (!task._rowIndex) return;
+    if (!task.task_id && !task._rowIndex) return;
 
     setSaving(true);
     setMessage("");
 
     try {
-      const res = await fetch(`/api/tasks?_rowIndex=${task._rowIndex}&project_id=${encodeURIComponent(task.project_id)}`, {
+      const params = new URLSearchParams({
+        project_id: task.project_id,
+      });
+      if (task.task_id) params.set("task_id", task.task_id);
+      if (task._rowIndex) params.set("_rowIndex", String(task._rowIndex));
+      const res = await fetch(`/api/tasks?${params.toString()}`, {
         method: "DELETE",
       });
 
@@ -793,7 +967,13 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to delete task");
       }
 
-      await mutateTasks();
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: current.data.filter((item) => !(
+          (task.task_id && item.task_id === task.task_id) || item._rowIndex === task._rowIndex
+        )),
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
       setPendingDeleteTask(null);
       setMessage("ลบแผนงานเรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -816,6 +996,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
     setMilestoneForm({
       _rowIndex: milestone._rowIndex,
+      milestone_id: milestone.milestone_id,
       title: milestone.title,
       date: milestone.date,
       type: milestone.type || "งวดงาน",
@@ -839,7 +1020,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
     try {
       const res = await fetch("/api/milestones", {
-        method: milestoneForm._rowIndex ? "PUT" : "POST",
+        method: milestoneForm.milestone_id || milestoneForm._rowIndex ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -849,7 +1030,26 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to save milestone");
       }
 
-      await mutateMilestones();
+      const json = await res.json() as { data?: Milestone };
+      const savedMilestone = (json.data || payload) as Milestone;
+      void mutateMilestones((current) => {
+        if (!current) return current;
+        const milestoneId = savedMilestone.milestone_id || milestoneForm.milestone_id;
+        const exists = current.data.some((item) => (
+          (milestoneId && item.milestone_id === milestoneId) || item._rowIndex === savedMilestone._rowIndex
+        ));
+        return {
+          ...current,
+          data: exists
+            ? current.data.map((item) => (
+              (milestoneId && item.milestone_id === milestoneId) || item._rowIndex === savedMilestone._rowIndex
+                ? { ...item, ...savedMilestone }
+                : item
+            ))
+            : [...current.data, savedMilestone],
+        };
+      }, { revalidate: false });
+      void mutateMilestones().catch(() => undefined);
       setShowMilestoneForm(false);
       setMessage("บันทึก Milestone เรียบร้อยแล้ว");
     } catch (error: unknown) {
@@ -860,13 +1060,18 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const deleteMilestone = async () => {
-    if (!milestoneForm._rowIndex) return;
+    if (!milestoneForm.milestone_id && !milestoneForm._rowIndex) return;
 
     setSaving(true);
     setMessage("");
 
     try {
-      const res = await fetch(`/api/milestones?_rowIndex=${milestoneForm._rowIndex}&project_id=${encodeURIComponent(selectedProject)}`, {
+      const params = new URLSearchParams({
+        project_id: selectedProject,
+      });
+      if (milestoneForm.milestone_id) params.set("milestone_id", milestoneForm.milestone_id);
+      if (milestoneForm._rowIndex) params.set("_rowIndex", String(milestoneForm._rowIndex));
+      const res = await fetch(`/api/milestones?${params.toString()}`, {
         method: "DELETE",
       });
 
@@ -875,10 +1080,162 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         throw new Error(json.error || "Failed to delete milestone");
       }
 
-      await mutateMilestones();
+      void mutateMilestones((current) => current ? {
+        ...current,
+        data: current.data.filter((item) => !(
+          (milestoneForm.milestone_id && item.milestone_id === milestoneForm.milestone_id) || item._rowIndex === milestoneForm._rowIndex
+        )),
+      } : current, { revalidate: false });
+      void mutateMilestones().catch(() => undefined);
       setShowMilestoneForm(false);
       setMilestoneDeleteOpen(false);
       setMessage("ลบ Milestone เรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openNewDecision = () => {
+    setMessage("");
+    setDecisionForm({
+      ...emptyDecisionForm,
+      phase: currentDecisionPhase || CUSTOMER_DECISION_PHASES[0],
+      order_index: String(decisions.length + 1),
+    });
+    setDecisionEvidenceFiles([]);
+    setShowDecisionForm(true);
+  };
+
+  const openEditDecision = (decision: CustomerDecision) => {
+    setMessage("");
+    setDecisionForm({
+      decision_id: decision.decision_id,
+      phase: decision.phase || CUSTOMER_DECISION_PHASES[0],
+      title: decision.title || "",
+      decision_before: decision.decision_before || "",
+      decision_status: decision.decision_status || "ยังไม่ถึงเวลา",
+      impact_if_changed: decision.impact_if_changed || "",
+      result_note: decision.result_note || "",
+      evidence_note: decision.evidence_note || "",
+      decided_at: decision.decided_at || "",
+      decided_by: decision.decided_by || "",
+      order_index: String(decision.order_index || ""),
+    });
+    setDecisionEvidenceFiles([]);
+    setShowDecisionForm(true);
+  };
+
+  const saveDecision = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedProject || !decisionForm.title) return;
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const evidenceUploads = await Promise.all(decisionEvidenceFiles.map(fileToUploadPayload));
+      const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save", ...decisionForm, evidence_uploads: evidenceUploads }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || "Failed to save customer decision");
+      }
+
+      await mutateDecisions();
+      setShowDecisionForm(false);
+      setDecisionEvidenceFiles([]);
+      setMessage("บันทึกรายการที่ลูกค้าต้องตัดสินใจเรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteDecision = async (decision: CustomerDecision) => {
+    if (!selectedProject || !window.confirm(`ลบรายการ "${decision.title}" ใช่ไหม?`)) return;
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", decision_id: decision.decision_id }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || "Failed to delete customer decision");
+      }
+
+      await mutateDecisions();
+      setMessage("ลบรายการที่ลูกค้าต้องตัดสินใจเรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const notifyDecisionLine = async (decision: CustomerDecision) => {
+    if (!selectedProject) return;
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "notify_line", decision_id: decision.decision_id }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || "Failed to send LINE notification");
+      }
+
+      await mutateDecisions();
+      setMessage(json.data?.test_mode
+        ? `ส่ง LINE ทดสอบไปยังกลุ่ม ${json.data.line_group_id} แล้ว`
+        : "ส่ง LINE แจ้งเตือนเข้ากลุ่มลูกค้าเรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const issueDecisionPdf = async (decision: CustomerDecision) => {
+    if (!selectedProject) return;
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "issue_pdf", decision_id: decision.decision_id }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || "Failed to issue PDF");
+      }
+
+      await mutateDecisions();
+      setMessage("ออก PDF รายการต้องตัดสินใจเรียบร้อยแล้ว");
+      const pdfUrl = json.data?.pdf_url;
+      if (pdfUrl) window.open(String(pdfUrl), "_blank", "noopener,noreferrer");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -907,6 +1264,13 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       detail: "Timeline + Milestone",
       icon: <BarChart3 size={16} />,
       count: milestones.length,
+    },
+    {
+      key: "decisions",
+      label: "รายการต้องตัดสินใจ",
+      detail: "ลูกค้า + วิศวกร",
+      icon: <ClipboardCheck size={16} />,
+      count: waitingDecisionCount,
     },
   ];
 
@@ -938,7 +1302,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
             </div>
           )}
 
-          <div className="grid w-full gap-2 rounded-2xl border border-gray-100 bg-gray-50 p-1.5 shadow-inner sm:w-auto sm:grid-cols-3">
+          <div className="grid w-full gap-2 rounded-2xl border border-gray-100 bg-gray-50 p-1.5 shadow-inner sm:w-auto sm:grid-cols-2 xl:grid-cols-4">
             {scheduleTabs.map((tab) => {
               const isActive = activeTab === tab.key;
 
@@ -1277,7 +1641,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
             </table>
           </div>
         </div>
-      ) : (
+      ) : activeTab === "gantt" ? (
         <div className="schedule-screen-only space-y-5">
           <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
             <div>
@@ -1333,6 +1697,21 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
             </aside>
           </div>
         </div>
+      ) : (
+        <CustomerDecisionPanel
+          decisions={decisions}
+          highlightedDecisions={highlightedDecisions}
+          currentPhase={currentDecisionPhase}
+          lineInfo={decisionRes?.line}
+          loading={decisionsLoading}
+          saving={saving}
+          onPhaseChange={setCurrentDecisionPhase}
+          onCreate={openNewDecision}
+          onEdit={openEditDecision}
+          onDelete={deleteDecision}
+          onNotifyLine={notifyDecisionLine}
+          onIssuePdf={issueDecisionPdf}
+        />
       )}
 
       <PlanPrintDocument
@@ -1356,8 +1735,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           form={taskForm}
           saving={saving}
           onClose={() => setShowTaskForm(false)}
-          onDelete={taskForm._rowIndex ? () => {
-            const task = tasks.find((item) => item._rowIndex === taskForm._rowIndex);
+          onDelete={taskForm.task_id || taskForm._rowIndex ? () => {
+            const task = tasks.find((item) => (
+              (taskForm.task_id && item.task_id === taskForm.task_id) ||
+              (taskForm._rowIndex && item._rowIndex === taskForm._rowIndex)
+            ));
             if (task) setPendingDeleteTask(task);
           } : undefined}
           onSubmit={saveTask}
@@ -1382,9 +1764,22 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           form={milestoneForm}
           saving={saving}
           onClose={() => setShowMilestoneForm(false)}
-          onDelete={milestoneForm._rowIndex ? () => setMilestoneDeleteOpen(true) : undefined}
+          onDelete={milestoneForm.milestone_id || milestoneForm._rowIndex ? () => setMilestoneDeleteOpen(true) : undefined}
           onSubmit={saveMilestone}
           onChange={setMilestoneForm}
+        />
+      )}
+
+      {showDecisionForm && (
+        <CustomerDecisionModal
+          form={decisionForm}
+          saving={saving}
+          onClose={() => setShowDecisionForm(false)}
+          onSubmit={saveDecision}
+          onChange={setDecisionForm}
+          evidenceFiles={decisionEvidenceFiles}
+          onEvidenceFilesChange={setDecisionEvidenceFiles}
+          existingEvidence={parseDecisionEvidence(decisions.find((decision) => decision.decision_id === decisionForm.decision_id)?.evidence_files_json)}
         />
       )}
 
@@ -1575,6 +1970,317 @@ function GanttPanel({
       </div>
 
       <GanttLegend />
+    </div>
+  );
+}
+
+function CustomerDecisionPanel({
+  decisions,
+  highlightedDecisions,
+  currentPhase,
+  lineInfo,
+  loading,
+  saving,
+  onPhaseChange,
+  onCreate,
+  onEdit,
+  onDelete,
+  onNotifyLine,
+  onIssuePdf,
+}: {
+  decisions: CustomerDecision[];
+  highlightedDecisions: CustomerDecision[];
+  currentPhase: string;
+  lineInfo?: CustomerDecisionResponse["line"];
+  loading: boolean;
+  saving: boolean;
+  onPhaseChange: (phase: string) => void;
+  onCreate: () => void;
+  onEdit: (decision: CustomerDecision) => void;
+  onDelete: (decision: CustomerDecision) => void;
+  onNotifyLine: (decision: CustomerDecision) => void;
+  onIssuePdf: (decision: CustomerDecision) => void;
+}) {
+  const confirmedCount = decisions.filter((decision) => decision.decision_status === "ยืนยันแล้ว").length;
+  const waitingCount = decisions.filter((decision) => ["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"].includes(decision.decision_status || "")).length;
+  const overdueCount = decisions.filter((decision) => decision.decision_status === "เลยจุดตัดสินใจ").length;
+
+  return (
+    <div className="schedule-screen-only space-y-5">
+      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="border-l-4 border-orange-600 p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 className="text-2xl font-bold text-gray-900">รายการต้องตัดสินใจ</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                รายการเตือนลูกค้าและวิศวกรก่อนงานเดินไปถึงจุดที่เปลี่ยนยาก
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <select
+                value={currentPhase}
+                onChange={(event) => onPhaseChange(event.target.value)}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-orange-200"
+              >
+                {CUSTOMER_DECISION_PHASES.map((phase) => (
+                  <option key={phase} value={phase}>{phase}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={onCreate}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-700"
+              >
+                <Plus size={16} />
+                เพิ่มรายการ
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 border-y border-gray-100 bg-gray-50 p-5 md:grid-cols-4">
+          <SummaryCard label="ทั้งหมด" value={decisions.length} />
+          <SummaryCard label="รอตัดสินใจ" value={waitingCount} tone="orange" />
+          <SummaryCard label="ยืนยันแล้ว" value={confirmedCount} tone="green" />
+          <SummaryCard label="เลยจุด" value={overdueCount} tone="red" />
+        </div>
+
+        <div className="p-5">
+          <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="flex items-center gap-2 font-extrabold text-orange-800">
+                  <Bell size={18} />
+                  ช่วงงานปัจจุบัน: {currentPhase}
+                </div>
+                <p className="mt-1 text-sm font-medium text-orange-700">
+                  รายการในช่วงนี้จะถูกดันขึ้นมาให้เห็นก่อน เพื่อกดแจ้งเตือนลูกค้าในกลุ่ม LINE ได้ทันที
+                </p>
+              </div>
+              <div className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-gray-500 shadow-sm">
+                LINE: {lineInfo?.test_mode ? "โหมดทดสอบ" : "กลุ่มโครงการ"} {lineInfo?.target_group_id ? `(${lineInfo.target_group_id})` : ""}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              {loading ? (
+                <div className="col-span-full rounded-xl border border-dashed border-orange-200 bg-white p-6 text-center text-sm text-orange-700">
+                  <Loader2 className="mr-2 inline animate-spin" size={16} />
+                  กำลังโหลดรายการ...
+                </div>
+              ) : highlightedDecisions.length === 0 ? (
+                <div className="col-span-full rounded-xl border border-dashed border-orange-200 bg-white p-6 text-center text-sm text-orange-700">
+                  ไม่มีรายการที่ผูกกับช่วงงานนี้
+                </div>
+              ) : highlightedDecisions.map((decision) => (
+                <DecisionCard
+                  key={decision.decision_id}
+                  decision={decision}
+                  saving={saving}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                  onNotifyLine={onNotifyLine}
+                  onIssuePdf={onIssuePdf}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <DecisionTable
+          decisions={decisions}
+          loading={loading}
+          saving={saving}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onNotifyLine={onNotifyLine}
+          onIssuePdf={onIssuePdf}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DecisionCard({
+  decision,
+  saving,
+  onEdit,
+  onDelete,
+  onNotifyLine,
+  onIssuePdf,
+}: {
+  decision: CustomerDecision;
+  saving: boolean;
+  onEdit: (decision: CustomerDecision) => void;
+  onDelete: (decision: CustomerDecision) => void;
+  onNotifyLine: (decision: CustomerDecision) => void;
+  onIssuePdf: (decision: CustomerDecision) => void;
+}) {
+  const evidenceCount = parseDecisionEvidence(decision.evidence_files_json).length;
+
+  return (
+    <article className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition hover:border-orange-200 hover:shadow-md">
+      <div className="border-b border-gray-100 bg-gradient-to-r from-orange-50 to-white px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex rounded-full border border-orange-200 bg-white px-2.5 py-1 text-xs font-extrabold text-orange-700">
+                {decision.phase || "-"}
+              </span>
+              <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-extrabold ${getDecisionStatusClass(decision.decision_status)}`}>
+                {decision.decision_status || "ยังไม่ถึงเวลา"}
+              </span>
+            </div>
+            <h4 className="mt-3 text-lg font-extrabold leading-snug text-gray-950">{decision.title}</h4>
+          </div>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => onNotifyLine(decision)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            <Send size={14} />
+            ส่ง LINE
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+            <div className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">ต้องตัดสินใจก่อน</div>
+            <div className="mt-1 text-sm font-bold text-gray-900">{decision.decision_before}</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+            <div className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">หลักฐาน / PDF</div>
+            <div className="mt-1 text-sm font-bold text-gray-900">
+              {evidenceCount} ไฟล์{decision.pdf_url ? ` / ${decision.document_no || "PDF ออกแล้ว"}` : ""}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-orange-100 bg-orange-50 px-3 py-3 text-sm text-orange-900">
+          <div className="text-[11px] font-extrabold uppercase tracking-wide text-orange-500">ผลถ้าเปลี่ยนหลังจากนี้</div>
+          <div className="mt-1 font-semibold leading-relaxed">{decision.impact_if_changed}</div>
+        </div>
+
+        {decision.result_note || decision.notified_at ? (
+          <div className="rounded-xl border border-gray-100 px-3 py-3 text-xs text-gray-500">
+            {decision.result_note ? <div><strong className="text-gray-700">ผลตัดสินใจ:</strong> {decision.result_note}</div> : null}
+            {decision.notified_at ? <div className="mt-1"><strong className="text-gray-700">แจ้งเตือนล่าสุด:</strong> {formatDateTime(decision.notified_at)}</div> : null}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button type="button" onClick={() => onEdit(decision)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50">
+            <Edit3 size={14} />
+            แก้ไข/บันทึกผล
+          </button>
+          <button type="button" onClick={() => onIssuePdf(decision)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50">
+            <FileText size={14} />
+            ออก PDF
+          </button>
+          {decision.pdf_url ? (
+            <a href={String(decision.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800">
+              <ExternalLink size={14} />
+              เปิด PDF
+            </a>
+          ) : null}
+          <button type="button" onClick={() => onDelete(decision)} className="inline-flex items-center gap-1.5 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100">
+            <Trash2 size={14} />
+            ลบ
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function DecisionTable({
+  decisions,
+  loading,
+  saving,
+  onEdit,
+  onDelete,
+  onNotifyLine,
+  onIssuePdf,
+}: {
+  decisions: CustomerDecision[];
+  loading: boolean;
+  saving: boolean;
+  onEdit: (decision: CustomerDecision) => void;
+  onDelete: (decision: CustomerDecision) => void;
+  onNotifyLine: (decision: CustomerDecision) => void;
+  onIssuePdf: (decision: CustomerDecision) => void;
+}) {
+  return (
+    <div className="overflow-x-auto border-t border-gray-100">
+      <table className="w-full min-w-[1080px] text-left text-sm">
+        <thead className="border-b border-gray-200 bg-gray-100 text-sm text-gray-700">
+          <tr>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ช่วงงาน / สถานะงาน</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">รายการที่ต้องให้ลูกค้าตัดสินใจ</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ต้องตัดสินใจก่อน</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">สถานะการตัดสินใจ</th>
+            <th className="px-5 py-4 text-[15px] font-black leading-snug">ผลถ้าเปลี่ยนหลังจากนี้</th>
+            <th className="px-5 py-4 text-center text-[15px] font-black leading-snug">จัดการ</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {loading ? (
+            <tr>
+              <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
+                <Loader2 className="mr-2 inline animate-spin" size={16} />
+                กำลังโหลดรายการ...
+              </td>
+            </tr>
+          ) : decisions.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
+                ยังไม่มีรายการที่ลูกค้าต้องตัดสินใจ
+              </td>
+            </tr>
+          ) : decisions.map((decision) => (
+            <tr key={decision.decision_id} className="align-top hover:bg-orange-50/30">
+              <td className="px-5 py-4 font-bold text-gray-900">{decision.phase}</td>
+              <td className="px-5 py-4">
+                <div className="font-extrabold text-gray-950">{decision.title}</div>
+                {decision.result_note ? <div className="mt-1 text-xs text-gray-500">ผลตัดสินใจ: {decision.result_note}</div> : null}
+                {decision.evidence_note ? <div className="mt-1 text-xs text-gray-500">หลักฐาน: {decision.evidence_note}</div> : null}
+                <div className="mt-1 text-xs text-gray-400">ไฟล์แนบ {parseDecisionEvidence(decision.evidence_files_json).length} ไฟล์</div>
+              </td>
+              <td className="px-5 py-4 text-gray-700">{decision.decision_before}</td>
+              <td className="px-5 py-4">
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-extrabold ${getDecisionStatusClass(decision.decision_status)}`}>
+                  {decision.decision_status || "ยังไม่ถึงเวลา"}
+                </span>
+              </td>
+              <td className="px-5 py-4 text-gray-700">{decision.impact_if_changed}</td>
+              <td className="px-5 py-4">
+                <div className="flex items-center justify-center gap-2">
+                  <button disabled={saving} onClick={() => onNotifyLine(decision)} className="rounded-lg bg-slate-950 p-2 text-white hover:bg-slate-800 disabled:opacity-60" title="ส่ง LINE">
+                    <Send size={15} />
+                  </button>
+                  <button onClick={() => onEdit(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600" title="แก้ไข">
+                    <Edit3 size={15} />
+                  </button>
+                  <button disabled={saving} onClick={() => onIssuePdf(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60" title="ออก PDF">
+                    <FileText size={15} />
+                  </button>
+                  {decision.pdf_url ? (
+                    <a href={String(decision.pdf_url)} target="_blank" rel="noreferrer" className="rounded-lg p-2 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600" title="เปิด PDF">
+                      <ExternalLink size={15} />
+                    </a>
+                  ) : null}
+                  <button onClick={() => onDelete(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600" title="ลบ">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1902,7 +2608,9 @@ function TaskModal({
   onChange: React.Dispatch<React.SetStateAction<TaskForm>>;
   parentOptions: Task[];
 }) {
-  const availableParents = parentOptions.filter((task) => task._rowIndex !== form._rowIndex);
+  const availableParents = parentOptions.filter((task) => (
+    task.task_id !== form.task_id && task._rowIndex !== form._rowIndex
+  ));
   const isHeadingForm = form.task_type === "heading";
   const headingSelectValue = isHeadingForm && TASK_CATEGORIES.includes(form.name) ? form.name : CUSTOM_HEADING_VALUE;
 
@@ -1910,7 +2618,7 @@ function TaskModal({
     <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl">
         <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-gray-900">{form._rowIndex ? "แก้ไขแผนงาน" : "เพิ่มแผนงาน"}</h3>
+          <h3 className="text-lg font-bold text-gray-900">{form.task_id || form._rowIndex ? "แก้ไขแผนงาน" : "เพิ่มแผนงาน"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>
@@ -2139,7 +2847,7 @@ function MilestoneModal({
     <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
         <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-gray-900">{form._rowIndex ? "แก้ไข Milestone" : "เพิ่ม Milestone"}</h3>
+          <h3 className="text-lg font-bold text-gray-900">{form.milestone_id || form._rowIndex ? "แก้ไข Milestone" : "เพิ่ม Milestone"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>
@@ -2197,6 +2905,152 @@ function MilestoneModal({
                 บันทึก
               </button>
             </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CustomerDecisionModal({
+  form,
+  saving,
+  onClose,
+  onSubmit,
+  onChange,
+  evidenceFiles,
+  onEvidenceFilesChange,
+  existingEvidence,
+}: {
+  form: CustomerDecisionForm;
+  saving: boolean;
+  onClose: () => void;
+  onSubmit: (event: React.FormEvent) => void;
+  onChange: React.Dispatch<React.SetStateAction<CustomerDecisionForm>>;
+  evidenceFiles: File[];
+  onEvidenceFilesChange: React.Dispatch<React.SetStateAction<File[]>>;
+  existingEvidence: DecisionEvidenceFile[];
+}) {
+  return (
+    <div className="schedule-screen-only fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+      <div className="max-h-[92vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-100 p-5">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">{form.decision_id ? "แก้ไขรายการต้องตัดสินใจ" : "เพิ่มรายการต้องตัดสินใจ"}</h3>
+            <p className="mt-1 text-sm text-gray-500">ใช้บันทึกว่าลูกค้าต้องยืนยันเรื่องใดก่อนผ่านช่วงงานนั้น</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
+          <div className="grid gap-4 md:grid-cols-3">
+            <Field label="ช่วงงาน / สถานะงาน">
+              <select value={form.phase} onChange={(event) => onChange((prev) => ({ ...prev, phase: event.target.value }))} className="schedule-input">
+                {CUSTOMER_DECISION_PHASES.map((phase) => <option key={phase} value={phase}>{phase}</option>)}
+              </select>
+            </Field>
+            <Field label="สถานะการตัดสินใจ">
+              <select value={form.decision_status} onChange={(event) => onChange((prev) => ({ ...prev, decision_status: event.target.value }))} className="schedule-input">
+                {CUSTOMER_DECISION_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </Field>
+            <Field label="ลำดับ">
+              <input value={form.order_index} onChange={(event) => onChange((prev) => ({ ...prev, order_index: event.target.value }))} className="schedule-input" />
+            </Field>
+          </div>
+
+          <Field label="รายการที่ต้องให้ลูกค้าตัดสินใจ">
+            <input required value={form.title} onChange={(event) => onChange((prev) => ({ ...prev, title: event.target.value }))} className="schedule-input" />
+          </Field>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="ต้องตัดสินใจก่อน">
+              <input required value={form.decision_before} onChange={(event) => onChange((prev) => ({ ...prev, decision_before: event.target.value }))} className="schedule-input" />
+            </Field>
+            <Field label="ผลถ้าเปลี่ยนหลังจากนี้">
+              <input required value={form.impact_if_changed} onChange={(event) => onChange((prev) => ({ ...prev, impact_if_changed: event.target.value }))} className="schedule-input" />
+            </Field>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="ผู้ยืนยัน">
+              <input value={form.decided_by} onChange={(event) => onChange((prev) => ({ ...prev, decided_by: event.target.value }))} className="schedule-input" placeholder="เช่น คุณกัน / คุณฝน" />
+            </Field>
+            <Field label="วันที่ยืนยัน">
+              <input type="date" value={form.decided_at} onChange={(event) => onChange((prev) => ({ ...prev, decided_at: event.target.value }))} className="schedule-input" />
+            </Field>
+          </div>
+
+          <Field label="ผลการตัดสินใจ / หมายเหตุ">
+            <textarea value={form.result_note} onChange={(event) => onChange((prev) => ({ ...prev, result_note: event.target.value }))} className="min-h-[86px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" />
+          </Field>
+
+          <Field label="หลักฐานอ้างอิง">
+            <textarea value={form.evidence_note} onChange={(event) => onChange((prev) => ({ ...prev, evidence_note: event.target.value }))} className="min-h-[76px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" placeholder="เช่น ลูกค้าตอบใน LINE วันที่..., แนบรูปตัวอย่าง, เลขเอกสาร..." />
+          </Field>
+
+          <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="font-bold text-gray-900">แนบหลักฐาน</div>
+                <p className="mt-1 text-xs font-medium text-gray-500">รองรับรูปภาพ แคปหน้าจอ LINE หรือไฟล์เอกสารประกอบ</p>
+              </div>
+              <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
+                <Upload size={16} />
+                เลือกไฟล์
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
+                  className="sr-only"
+                  onChange={(event) => {
+                    const nextFiles = Array.from(event.target.files || []);
+                    onEvidenceFilesChange((current) => [...current, ...nextFiles].slice(0, 10));
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+            </div>
+
+            {existingEvidence.length > 0 ? (
+              <div className="mt-4 rounded-lg bg-white p-3">
+                <div className="text-xs font-extrabold text-gray-500">ไฟล์ที่แนบแล้ว</div>
+                <div className="mt-2 grid gap-2">
+                  {existingEvidence.map((file, index) => (
+                    <a key={`${file.file_id || file.file_name}-${index}`} href={String(file.file_url || "#")} target="_blank" rel="noreferrer" className="flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm hover:bg-gray-50">
+                      <span className="truncate font-semibold text-gray-700">{file.file_name || "หลักฐานอ้างอิง"}</span>
+                      <ExternalLink size={14} className="shrink-0 text-gray-400" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {evidenceFiles.length > 0 ? (
+              <div className="mt-4 rounded-lg bg-white p-3">
+                <div className="text-xs font-extrabold text-gray-500">ไฟล์ใหม่ที่จะอัปโหลด</div>
+                <div className="mt-2 grid gap-2">
+                  {evidenceFiles.map((file, index) => (
+                    <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm">
+                      <span className="truncate font-semibold text-gray-700">{file.name}</span>
+                      <button type="button" onClick={() => onEvidenceFilesChange((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-md p-1 text-gray-400 hover:bg-red-50 hover:text-red-600">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100">ยกเลิก</button>
+            <button type="submit" disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700 disabled:opacity-70">
+              {saving && <Loader2 size={16} className="animate-spin" />}
+              บันทึก
+            </button>
           </div>
         </form>
       </div>

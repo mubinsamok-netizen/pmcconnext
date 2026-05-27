@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { findAll, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
@@ -10,6 +11,46 @@ function safeFolderName(value: string) {
 function isSheetsReadQuotaError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("Quota exceeded") && message.includes("Read requests");
+}
+
+function textValue(value: unknown) {
+  return String(value || "").trim();
+}
+
+function numberValue(value: unknown) {
+  const numeric = Number(String(value || "").replace(/,/g, "").trim());
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function isPdfFile(fileName: string, mimeType: string) {
+  return mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf");
+}
+
+async function getDocumentRows(siteSheetId: string) {
+  try {
+    return await findAll("Project_Documents", siteSheetId);
+  } catch (error: unknown) {
+    if (!isSheetsReadQuotaError(error)) throw error;
+    console.warn("Project document version lookup skipped because Sheets read quota is temporarily exceeded.");
+    return [];
+  }
+}
+
+function getNextVersion(
+  rows: Awaited<ReturnType<typeof findAll>>,
+  projectId: string,
+  category: string,
+  title: string
+) {
+  const currentVersions = rows
+    .filter((row) => (
+      row.project_id === projectId &&
+      String(row.category || "") === category &&
+      String(row.title || "") === title
+    ))
+    .map((row) => Number(row.version_number || 0))
+    .filter(Number.isFinite);
+  return Math.max(0, ...currentVersions) + 1;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
@@ -32,12 +73,118 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId), true);
+    const context = await getSiteApiContext(decodeURIComponent(projectId));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    if (!hasPermission(context.session.user?.role, "siteDocument.upload")) {
+      return NextResponse.json({ error: permissionDeniedMessage("siteDocument.upload") }, { status: 403 });
+    }
 
     const driveFolderId = String(context.project.drive_folder_id || "").trim();
     if (!driveFolderId) {
       return NextResponse.json({ error: "Project has no Google Drive folder" }, { status: 400 });
+    }
+
+    const contentType = req.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+      const action = textValue(body.action);
+      const category = textValue(body.category) || "other";
+      const fileName = safeFolderName(textValue(body.file_name) || "document.pdf");
+      const mimeType = textValue(body.mime_type) || "application/pdf";
+      const size = numberValue(body.file_size);
+      const title = textValue(body.title) || fileName;
+      const notes = textValue(body.notes);
+
+      if (action === "open_category_folder") {
+        const documentsFolder = await findOrCreateFolder("Project Documents", driveFolderId);
+        const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            folder_id: categoryFolder.id || driveFolderId,
+            folder_url: categoryFolder.webViewLink || `https://drive.google.com/drive/folders/${categoryFolder.id || driveFolderId}`,
+            category,
+          },
+        });
+      }
+
+      if (action === "create_upload_session") {
+        if (!isPdfFile(fileName, mimeType)) {
+          return NextResponse.json({ error: "รองรับเฉพาะไฟล์ PDF" }, { status: 400 });
+        }
+        if (!Number.isFinite(size) || size <= 0) {
+          return NextResponse.json({ error: "ขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
+        }
+
+        const [rows, documentsFolder] = await Promise.all([
+          getDocumentRows(context.siteSheetId),
+          findOrCreateFolder("Project Documents", driveFolderId),
+        ]);
+        const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);
+        const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
+        const storedName = `v${versionNumber}-${Date.now()}-${fileName}`;
+        const { uploadUrl } = await createResumableUploadSession({
+          fileName: storedName,
+          mimeType,
+          size,
+          parentId: categoryFolder.id || driveFolderId,
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            upload_url: uploadUrl,
+            folder_id: categoryFolder.id || driveFolderId,
+            folder_url: categoryFolder.webViewLink || `https://drive.google.com/drive/folders/${categoryFolder.id || driveFolderId}`,
+            category,
+            title,
+            notes,
+            version_number: String(versionNumber),
+            file_name: fileName,
+            stored_name: storedName,
+            mime_type: mimeType,
+            file_size: String(size),
+          },
+        });
+      }
+
+      if (action === "complete_upload") {
+        const driveFileId = textValue(body.drive_file_id);
+        const driveUrl = textValue(body.drive_url);
+        const versionNumber = textValue(body.version_number) || "1";
+
+        if (!driveFileId || !driveUrl) {
+          return NextResponse.json({ error: "ไม่พบข้อมูลไฟล์จาก Google Drive" }, { status: 400 });
+        }
+
+        const rows = await getDocumentRows(context.siteSheetId);
+        const existing = rows.find((row) => String(row.drive_file_id || "") === driveFileId);
+        if (existing) {
+          return NextResponse.json({ success: true, data: existing });
+        }
+
+        const data = {
+          document_id: makeId("DOC"),
+          project_id: context.project.project_id,
+          category,
+          title,
+          version_number: versionNumber,
+          file_name: fileName,
+          mime_type: mimeType,
+          file_size: String(size),
+          drive_file_id: driveFileId,
+          drive_url: driveUrl,
+          notes,
+          uploaded_by_email: context.session.user?.email || "",
+          uploaded_by_name: context.session.user?.name || "",
+        };
+        const result = await insert("Project_Documents", data, context.siteSheetId);
+
+        return NextResponse.json({ success: true, data: result.inserted });
+      }
+
+      return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });
     }
 
     const formData = await req.formData();
@@ -52,23 +199,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const category = String(formData.get("category") || "other");
     const title = String(formData.get("title") || file.name).trim() || file.name;
     const notes = String(formData.get("notes") || "");
-    let rows: Awaited<ReturnType<typeof findAll>> = [];
-    try {
-      rows = await findAll("Project_Documents", context.siteSheetId);
-    } catch (error: unknown) {
-      if (!isSheetsReadQuotaError(error)) throw error;
-      console.warn("Project document version lookup skipped because Sheets read quota is temporarily exceeded.");
-    }
-
-    const currentVersions = rows
-      .filter((row) => (
-        row.project_id === context.project.project_id &&
-        String(row.category || "") === category &&
-        String(row.title || "") === title
-      ))
-      .map((row) => Number(row.version_number || 0))
-      .filter(Number.isFinite);
-    const versionNumber = Math.max(0, ...currentVersions) + 1;
+    const rows = await getDocumentRows(context.siteSheetId);
+    const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
 
     const documentsFolder = await findOrCreateFolder("Project Documents", driveFolderId);
     const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);

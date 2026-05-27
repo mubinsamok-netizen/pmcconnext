@@ -205,6 +205,8 @@ export function MonthlyReportsPanel({ project }: { project: MasterProject }) {
           <PreviewTable title="เครื่องจักร" rows={summary.machinery} columns={["name", "qty", "hours", "note"]} />
           <PreviewTable title="วัสดุที่ใช้" rows={summary.materials} columns={["name", "qty", "unit", "note"]} />
           <PreviewTable title="สภาพอากาศ" rows={summary.weather} columns={["weather", "days"]} />
+          <PreviewTable title="VO / Payment / Documents" rows={summary.approvals} columns={["document_no", "type", "subject", "status", "note"]} />
+          <PreviewTable title="Defect / Inspection" rows={summary.inspections} columns={["date", "item", "result", "note"]} />
         </section>
       )}
 

@@ -3,10 +3,11 @@
 import { useMemo, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import Link from "next/link";
-import { ArrowRight, Bell, CheckCircle2, Database, FileUp, FolderOpen, Loader2, Save, ShieldCheck } from "lucide-react";
+import { ArrowRight, Bell, ExternalLink, FileUp, FolderOpen, Loader2, Save } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
+import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -302,8 +303,6 @@ export default function LifecycleWorkspace({
   const [loading, setLoading] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const {
-    error: lifecycleError,
-    isLoading: lifecycleLoading,
     mutate: mutateLifecycle,
   } = useSWR<ApiResponse<Record<string, string> | null>>(lifecycleKey, fetcher, {
     onSuccess(result) {
@@ -311,24 +310,18 @@ export default function LifecycleWorkspace({
     },
   });
   const {
-    error: warrantyError,
-    isLoading: warrantyLoading,
     mutate: mutateWarranty,
-  } = useSWR<ApiResponse<Record<string, string> | null>>(warrantyKey, fetcher, {
+  } = useSWR<ApiResponse<Record<string, string> | null>>(activeTab === "warranty" ? warrantyKey : null, fetcher, {
     onSuccess(result) {
       if (result.data) setWarrantyForm(normalizeDateFields({ ...emptyWarranty, ...result.data }, warrantyDateFields));
     },
   });
   const {
     data: documentsData,
-    error: documentsError,
-    isLoading: documentsLoading,
     mutate: mutateDocuments,
-  } = useSWR<ApiResponse<DocumentRecord[]>>(documentsKey, fetcher);
+  } = useSWR<ApiResponse<DocumentRecord[]>>(activeTab === "documents" ? documentsKey : null, fetcher);
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
-  const apiHasError = Boolean(lifecycleError || warrantyError || documentsError);
-  const apiIsLoading = lifecycleLoading || warrantyLoading || documentsLoading;
   const filledLifecycleDates = lifecycleDateFields.filter((field) => Boolean(lifecycleForm[field])).length;
   const filledWarrantyDates = warrantyDateFields.filter((field) => Boolean(warrantyForm[field as keyof typeof emptyWarranty])).length;
   const tabs: { id: WorkspaceTab; label: string; description: string; meta: string }[] = [
@@ -360,21 +353,44 @@ export default function LifecycleWorkspace({
     }
   };
 
+  const openSelectedDocumentFolder = async () => {
+    if (!projectMeta.driveFolderId) return;
+    setLoading("document_folder");
+    setMessage(null);
+    try {
+      const res = await fetch(documentsKey, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "open_category_folder",
+          category: documentForm.category,
+        }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || result.error) throw new Error(result.error || "เปิดโฟลเดอร์เอกสารไม่สำเร็จ");
+      const folderUrl = String(result.data?.folder_url || "");
+      if (!folderUrl) throw new Error("ไม่พบลิงก์โฟลเดอร์เอกสาร");
+      window.location.href = folderUrl;
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "เปิดโฟลเดอร์เอกสารไม่สำเร็จ");
+    } finally {
+      setLoading("");
+    }
+  };
+
   const uploadDocument = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isAdmin || !file) return;
     setLoading("document");
-    setMessage(null);
+    setMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
     try {
-      const formData = new FormData();
-      formData.append("category", documentForm.category);
-      formData.append("title", documentForm.title || file.name);
-      formData.append("notes", documentForm.notes);
-      formData.append("file", file);
-      const res = await fetch(documentsKey, { method: "POST", body: formData });
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(result.error || "อัปโหลดไฟล์ไม่สำเร็จ");
-      const uploadedDocument = result.data as DocumentRecord | undefined;
+      const uploadedDocument = await uploadProjectDocumentDirectly({
+        endpoint: documentsKey,
+        category: documentForm.category,
+        title: documentForm.title || file.name,
+        notes: documentForm.notes,
+        file,
+      }) as DocumentRecord | undefined;
       setDocumentForm({ category: "contract", title: "", notes: "" });
       setFile(null);
       if (uploadedDocument) {
@@ -386,7 +402,7 @@ export default function LifecycleWorkspace({
       void mutateDocuments().catch((error: unknown) => {
         console.warn("Document list refresh failed after upload:", error);
       });
-      setMessage("อัปโหลดเอกสารและบันทึก version แล้ว");
+      setMessage("อัปโหลดเข้า Drive และบันทึก version history แล้ว");
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
     } finally {
@@ -407,40 +423,6 @@ export default function LifecycleWorkspace({
           {message}
         </div>
       )}
-
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
-          <ConnectionCard
-            icon={<Database size={18} />}
-            label="Site Sheet"
-            value={projectMeta.siteSheetId ? "เชื่อมแล้ว" : "ยังไม่ได้เชื่อม"}
-            ok={Boolean(projectMeta.siteSheetId)}
-          />
-          <ConnectionCard
-            icon={<FolderOpen size={18} />}
-            label="Drive Folder"
-            value={projectMeta.driveFolderId ? "พร้อมอัปโหลด" : "ยังไม่มีโฟลเดอร์"}
-            ok={Boolean(projectMeta.driveFolderId)}
-          />
-          <ConnectionCard
-            icon={<ShieldCheck size={18} />}
-            label="สิทธิ์แก้ไข"
-            value={isAdmin ? "Admin" : "ดูอย่างเดียว"}
-            ok={isAdmin}
-          />
-          <ConnectionCard
-            icon={apiIsLoading ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-            label="Backend"
-            value={apiIsLoading ? "กำลังอ่านข้อมูล" : apiHasError ? "อ่านข้อมูลไม่สำเร็จ" : "เชื่อมต่อได้"}
-            ok={!apiHasError && !apiIsLoading}
-          />
-        </div>
-        {!projectMeta.driveFolderId && (
-          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
-            การบันทึกรายละเอียดงานและประกันยังใช้ได้ แต่การอัปโหลด PDF ต้องมี Google Drive Folder ID ก่อน
-          </div>
-        )}
-      </section>
 
       <nav className="grid grid-cols-1 gap-3 md:grid-cols-3">
         {tabs.map((tab) => (
@@ -583,11 +565,11 @@ export default function LifecycleWorkspace({
                 {file && (
                   <div className="rounded-lg border border-orange-100 bg-white px-3 py-2">
                     <p className="truncate text-sm font-extrabold text-gray-800">{file.name}</p>
-                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อบันทึกเข้า Drive และ Version History</p>
+                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อส่งตรงเข้า Drive และบันทึก Version History</p>
                   </div>
                 )}
                 {!file && (
-                  <p className="text-xs font-semibold text-gray-500">การเลือกไฟล์ยังไม่ใช่การบันทึก ระบบจะบันทึกเมื่อกด “อัปโหลด PDF”</p>
+                  <p className="text-xs font-semibold text-gray-500">การเลือกไฟล์ยังไม่ใช่การบันทึก ระบบจะส่งไฟล์ตรงไป Google Drive เมื่อกด “อัปโหลด PDF”</p>
                 )}
               </div>
             </Field>
@@ -601,8 +583,19 @@ export default function LifecycleWorkspace({
             </Field>
             <button disabled={!isAdmin || !file || loading === "document" || !projectMeta.driveFolderId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
               {loading === "document" ? <Loader2 size={17} className="animate-spin" /> : <FileUp size={17} />}
-              {projectMeta.driveFolderId ? "อัปโหลดและบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
+              {projectMeta.driveFolderId ? "อัปโหลดตรงไป Drive และบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
             </button>
+            {projectMeta.driveFolderId ? (
+              <button
+                type="button"
+                onClick={openSelectedDocumentFolder}
+                disabled={loading === "document_folder"}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-wait disabled:opacity-70"
+              >
+                {loading === "document_folder" ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />}
+                เปิดโฟลเดอร์หมวดนี้ใน Drive <ExternalLink size={16} />
+              </button>
+            ) : null}
           </div>
         </form>
 
@@ -759,30 +752,6 @@ function StatusDestinationCard({
           <ArrowRight size={16} />
         </button>
       )}
-    </div>
-  );
-}
-
-function ConnectionCard({
-  icon,
-  label,
-  value,
-  ok,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  ok: boolean;
-}) {
-  return (
-    <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${ok ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-amber-100 bg-amber-50 text-amber-700"}`}>
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/80">
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="truncate text-xs font-extrabold opacity-70">{label}</p>
-        <p className="truncate text-sm font-extrabold">{value}</p>
-      </div>
     </div>
   );
 }

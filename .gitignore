@@ -23,12 +23,18 @@
 # misc
 .DS_Store
 *.pem
+output/
+scratch/
+scratch-test.png
+test-output.png
+test-output.pptx
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -39,3 +45,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel

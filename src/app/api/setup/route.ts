@@ -67,7 +67,10 @@ async function migrateLegacySiteData() {
 
     let siteSheetId = "";
     try {
-      siteSheetId = await createSiteSpreadsheet(`${project.project_id} - ${project.name || "Site"} Data`, project.drive_folder_id);
+      siteSheetId = await createSiteSpreadsheet(
+        `${project.project_id} - ${project.name || "Site"} Data`,
+        String(project.drive_folder_id || "")
+      );
     } catch (error) {
       console.error(`Failed to create site sheet for ${project.project_id}:`, error);
       migrated.skipped += 1;

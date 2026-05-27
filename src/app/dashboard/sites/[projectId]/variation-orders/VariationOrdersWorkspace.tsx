@@ -4,15 +4,16 @@ import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Banknote,
-  BarChart3,
   CheckCircle2,
   ExternalLink,
   FileText,
   Loader2,
   Paperclip,
+  Pencil,
   Plus,
   Printer,
   Workflow,
+  XCircle,
 } from "lucide-react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
@@ -61,8 +62,10 @@ type CreateForm = {
   vo_type: string;
   title: string;
   description: string;
+  amount: string;
+  extension_days: string;
+  status: string;
   client_name: string;
-  contract_before: string;
   source_type: string;
   source_ref_id: string;
   source_description: string;
@@ -77,8 +80,10 @@ const emptyCreateForm: CreateForm = {
   vo_type: "VO+",
   title: "",
   description: "",
+  amount: "",
+  extension_days: "0",
+  status: "pending_approval",
   client_name: "",
-  contract_before: "",
   source_type: "client_request",
   source_ref_id: "",
   source_description: "",
@@ -113,12 +118,9 @@ const emptyPlan = {
 };
 
 const tabs = [
-  { key: "pipeline", label: "Pipeline", icon: FileText },
-  { key: "create", label: "สร้าง VO", icon: Plus },
-  { key: "approval", label: "หลักฐาน", icon: CheckCircle2 },
+  { key: "create", label: "กรอก / แนบหลักฐาน", icon: Plus },
   { key: "plan", label: "เข้าแผนงาน", icon: Workflow },
-  { key: "finance", label: "วางบิล/รับชำระ", icon: Banknote },
-  { key: "reports", label: "รายงาน/Audit", icon: BarChart3 },
+  { key: "history", label: "ประวัติ / Print รายเดือน", icon: FileText },
 ];
 
 type VoPermissions = {
@@ -157,30 +159,21 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   }), [userRole]);
   const visibleTabs = useMemo(() => {
     return tabs.filter((tab) => {
-      if (isClient) return ["pipeline", "approval"].includes(tab.key);
+      if (isClient) return tab.key === "history";
       if (tab.key === "create") return permissions.create;
       if (tab.key === "plan") return permissions.addToPlan;
-      if (tab.key === "finance") return permissions.createInvoice || permissions.recordPayment || permissions.overdueCheck;
-      if (tab.key === "reports") return permissions.generateMonthlyReport;
       return true;
     });
   }, [isClient, permissions]);
-  const [activeTab, setActiveTab] = useState("pipeline");
+  const [activeTab, setActiveTab] = useState(permissions.create && !isClient ? "create" : "history");
   const [selectedVoId, setSelectedVoId] = useState("");
+  const [editingVoId, setEditingVoId] = useState("");
   const [createForm, setCreateForm] = useState<CreateForm>({
     ...emptyCreateForm,
     client_name: project.client || "",
-    contract_before: project.budget || "",
   });
   const [supportingDocFiles, setSupportingDocFiles] = useState<File[]>([]);
-  const [evidence, setEvidence] = useState(emptyEvidence);
-  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
-  const [clientDecision, setClientDecision] = useState({ remarks: "", reject_reason: "" });
-  const [cancelReason, setCancelReason] = useState("");
   const [plan, setPlan] = useState(emptyPlan);
-  const [invoice, setInvoice] = useState({ invoice_no: "", invoice_date: todayBangkok(), due_days: "7" });
-  const [payment, setPayment] = useState({ receipt_no: "", paid_date: todayBangkok(), amount_paid: "", payment_method: "bank_transfer", payment_ref: "", evidence_file: "" });
-  const [paymentEvidenceFile, setPaymentEvidenceFile] = useState<File | null>(null);
   const [reportMonth, setReportMonth] = useState(todayBangkok().slice(0, 7));
   const [loadingAction, setLoadingAction] = useState("");
   const [message, setMessage] = useState("");
@@ -194,22 +187,25 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     if (!selectedVo?.vo_id) return [];
     return (data?.documents || []).filter((document) => document.vo_id === selectedVo.vo_id);
   }, [data?.documents, selectedVo]);
-  const selectedPayments = useMemo(() => {
-    if (!selectedVo?.vo_id) return [];
-    return (data?.payments || []).filter((paymentRow) => paymentRow.vo_id === selectedVo.vo_id);
-  }, [data?.payments, selectedVo]);
-  const selectedLedger = useMemo(() => {
-    if (!selectedVo?.vo_id) return [];
-    return (data?.ledger || []).filter((ledgerRow) => ledgerRow.vo_id === selectedVo.vo_id);
-  }, [data?.ledger, selectedVo]);
 
   const stats = useMemo(() => {
-    const outstanding = vos.reduce((sum, vo) => sum + numberValue(vo.balance), 0);
+    const approvedStatuses = new Set(["approved", "billed", "partial_payment", "paid", "overdue", "work_unlocked"]);
+    const approvedVos = vos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
+    const addAmount = approvedVos
+      .filter((vo) => asVoType(String(vo.vo_type || "")) === "VO+")
+      .reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
+    const deductAmount = approvedVos
+      .filter((vo) => asVoType(String(vo.vo_type || "")) === "VO-")
+      .reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
+    const extensionDays = approvedVos.reduce((sum, vo) => sum + numberValue(vo.extension_days), 0);
     return {
       count: vos.length,
       pending: vos.filter((vo) => vo.status === "pending_approval").length,
-      approved: vos.filter((vo) => vo.status === "approved").length,
-      outstanding,
+      approved: approvedVos.length,
+      addAmount,
+      deductAmount,
+      netAmount: addAmount - deductAmount,
+      extensionDays,
     };
   }, [vos]);
 
@@ -242,49 +238,80 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   };
 
   const createVo = async () => {
-    if (!createForm.supporting_docs.trim() && supportingDocFiles.length === 0) {
+    if (!createForm.amount.trim() || numberValue(createForm.amount) <= 0) {
       setMessage("");
-      setError("กรุณาแนบรูปแชทหรือระบุหลักฐานจากลูกค้า");
+      setError("กรุณากรอกมูลค่างานเพิ่ม/งานลด");
+      return;
+    }
+    if (!editingVoId && supportingDocFiles.length === 0 && !createForm.supporting_docs.trim()) {
+      setMessage("");
+      setError("กรุณาแนบเอกสาร ใบเสร็จ/บิล หรือแคปหน้าจอจากลูกค้า");
       return;
     }
     const supportingUploads = await Promise.all(supportingDocFiles.map(fileToUploadPayload));
-    const result = await postAction("create_vo", {
+    const result = await postAction(editingVoId ? "update_vo" : "create_vo", {
+      ...(editingVoId ? { vo_id: editingVoId } : {}),
       ...createForm,
-      contract_before: createForm.contract_before || project.budget || "",
+      items: [
+        {
+          item_no: 1,
+          description: createForm.title || createForm.description || "งานเพิ่ม-ลด",
+          unit: "LS",
+          quantity: "1",
+          unit_price: createForm.amount,
+        },
+      ],
       supporting_doc_uploads: supportingUploads,
-      auto_approve_with_evidence: true,
     });
     if (result?.data?.vo_id) {
       setSelectedVoId(result.data.vo_id);
-      setCreateForm({ ...emptyCreateForm, client_name: project.client || "", contract_before: project.budget || "" });
+      setEditingVoId("");
+      setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
       setSupportingDocFiles([]);
-      setActiveTab(permissions.addToPlan ? "plan" : "pipeline");
+      setActiveTab(permissions.addToPlan ? "plan" : "history");
     }
   };
 
-  const approveSelected = async () => {
-    if (!selectedVo?.vo_id) return;
-    const upload = evidenceFile ? await fileToUploadPayload(evidenceFile) : null;
-    const result = await postAction("approve_on_behalf", { vo_id: selectedVo.vo_id, evidence, evidence_file_upload: upload });
-    if (result?.success) setActiveTab("plan");
+  const startEditVo = (vo: VoRecord & { items?: VoItemInput[] }) => {
+    const firstItem = Array.isArray(vo.items) ? vo.items[0] : undefined;
+    setSelectedVoId(vo.vo_id);
+    setEditingVoId(vo.vo_id);
+    setCreateForm({
+      vo_type: String(vo.vo_type || "VO+"),
+      title: String(vo.title || ""),
+      description: String(vo.description || ""),
+      amount: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
+      extension_days: String(vo.extension_days || "0"),
+      status: ["draft", "pending_approval", "rejected"].includes(String(vo.status || "")) ? String(vo.status || "") : "pending_approval",
+      client_name: String(vo.client_name || project.client || ""),
+      source_type: String(vo.source_type || "client_request"),
+      source_ref_id: String(vo.source_ref_id || ""),
+      source_description: String(vo.source_description || ""),
+      vat_exempt: String(vo.vat_exempt || "").toLowerCase() === "true",
+      withholding_tax: String(vo.withholding_tax || "0"),
+      supporting_docs: String(vo.supporting_docs || ""),
+      approval_deadline_days: "14",
+      items: [
+        {
+          item_no: 1,
+          description: String(firstItem?.description || vo.title || vo.description || "งานเพิ่ม-ลด"),
+          unit: String(firstItem?.unit || "LS"),
+          quantity: String(firstItem?.quantity || "1"),
+          unit_price: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
+        },
+      ],
+    });
+    setSupportingDocFiles([]);
+    setActiveTab("create");
+    setMessage(`กำลังแก้ไข ${vo.vo_id}`);
+    setError("");
   };
 
-  const clientApproveSelected = async () => {
-    if (!selectedVo?.vo_id) return;
-    await postAction("client_decision", {
-      vo_id: selectedVo.vo_id,
-      decision: "approved",
-      client_remarks: clientDecision.remarks,
-    });
-  };
-
-  const clientRejectSelected = async () => {
-    if (!selectedVo?.vo_id) return;
-    await postAction("client_decision", {
-      vo_id: selectedVo.vo_id,
-      decision: "rejected",
-      reject_reason: clientDecision.reject_reason,
-    });
+  const cancelEdit = () => {
+    setEditingVoId("");
+    setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
+    setSupportingDocFiles([]);
+    setMessage("");
   };
 
   const addToPlan = async () => {
@@ -300,55 +327,24 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     }
   };
 
-  const createInvoice = async () => {
+  const sendApproval = async () => {
     if (!selectedVo?.vo_id) return;
-    await postAction("create_invoice", {
+    await postAction("send_approval", {
       vo_id: selectedVo.vo_id,
-      invoice_no: invoice.invoice_no || `INV-${selectedVo.vo_id}`,
-      invoice_date: invoice.invoice_date,
-      due_days: invoice.due_days,
+      origin: window.location.origin,
     });
-  };
-
-  const recordPayment = async () => {
-    if (!selectedVo?.vo_id) return;
-    if (!paymentEvidenceFile) {
-      setMessage("");
-      setError("กรุณาแนบหลักฐานการชำระเงิน");
-      return;
-    }
-    const upload = await fileToUploadPayload(paymentEvidenceFile);
-    await postAction("record_payment", {
-      vo_id: selectedVo.vo_id,
-      ...payment,
-      receipt_no: payment.receipt_no || `RCP-${selectedVo.vo_id}`,
-      payment_ref: payment.payment_ref || paymentEvidenceFile.name,
-      evidence_file: payment.evidence_file || paymentEvidenceFile.name,
-      payment_evidence_upload: upload,
-    });
-    setPaymentEvidenceFile(null);
-  };
-
-  const runOverdueCheck = async () => {
-    await postAction("overdue_check", {});
-  };
-  const runExpiryCheck = async () => {
-    await postAction("expiry_check", {});
-  };
-  const cancelSelected = async () => {
-    if (!selectedVo?.vo_id) return;
-    const result = await postAction("cancel_vo", { vo_id: selectedVo.vo_id, reason: cancelReason });
-    if (result?.success) setCancelReason("");
-  };
-  const generateMonthlyReport = async () => {
-    await postAction("generate_monthly_report", { month: reportMonth });
   };
 
   const printDocument = () => {
     if (!documentHtml) return;
-    const win = window.open("", "_blank", "noopener,noreferrer,width=900,height=1200");
+    printHtml(documentHtml, 900, 1200);
+  };
+
+  const printHtml = (html: string, width = 900, height = 1200, targetWindow?: Window | null) => {
+    const win = targetWindow || window.open("", "_blank", `noopener,noreferrer,width=${width},height=${height}`);
     if (!win) return;
-    win.document.write(documentHtml);
+    win.document.open();
+    win.document.write(html);
     win.document.close();
     window.setTimeout(() => {
       win.focus();
@@ -356,14 +352,27 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     }, 400);
   };
 
+  const printMonthlyReport = async () => {
+    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1100,height=800");
+    printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานรายเดือน...</body></html>");
+    printWindow?.document.close();
+    const result = await postAction("generate_monthly_report", { month: reportMonth });
+    if (result?.document_html) {
+      printHtml(String(result.document_html), 1100, 800, printWindow);
+    } else {
+      printWindow?.close();
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="grid gap-3 lg:grid-cols-4">
-          <Metric label="VO ทั้งหมด" value={`${stats.count}`} />
-          <Metric label="รออนุมัติ" value={`${stats.pending}`} tone="amber" />
-          <Metric label="อนุมัติแล้ว" value={`${stats.approved}`} tone="sky" />
-          <Metric label="เงินค้างชำระ" value={`${formatMoney(stats.outstanding)} บาท`} tone={stats.outstanding > 0 ? "orange" : "green"} />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <Metric label="ยอดเงินงานเพิ่มรวม" value={`${formatMoney(stats.addAmount)} บาท`} tone="green" />
+          <Metric label="ยอดเงินงานลดรวม" value={`${formatMoney(stats.deductAmount)} บาท`} tone="red" />
+          <Metric label="ยอดเงินสุทธิ" value={`${formatMoney(stats.netAmount)} บาท`} tone={stats.netAmount >= 0 ? "orange" : "red"} />
+          <Metric label="วันเพิ่มรวม" value={`${formatMoney(stats.extensionDays)} วัน`} tone="sky" />
+          <Metric label="อนุมัติแล้ว" value={`${stats.approved} รายการ`} tone="gray" />
         </div>
       </section>
 
@@ -399,9 +408,6 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
         <main className="min-w-0">
-          {activeTab === "pipeline" && (
-            <PipelineSection vos={vos} isLoading={isLoading} selectedVoId={selectedVo?.vo_id || ""} onSelect={setSelectedVoId} />
-          )}
           {activeTab === "create" && (
             <CreateSection
               form={createForm}
@@ -409,28 +415,9 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               supportingDocFiles={supportingDocFiles}
               setSupportingDocFiles={setSupportingDocFiles}
               onSubmit={createVo}
-              loading={loadingAction === "create_vo"}
-            />
-          )}
-          {activeTab === "approval" && (
-            <ApprovalSection
-              vo={selectedVo}
-              evidence={evidence}
-              setEvidence={setEvidence}
-              evidenceFile={evidenceFile}
-              setEvidenceFile={setEvidenceFile}
-              onApprove={approveSelected}
-              userRole={normalizedRole}
-              permissions={permissions}
-              clientDecision={clientDecision}
-              setClientDecision={setClientDecision}
-              onClientApprove={clientApproveSelected}
-              onClientReject={clientRejectSelected}
-              cancelReason={cancelReason}
-              setCancelReason={setCancelReason}
-              onCancel={cancelSelected}
-              onExpiryCheck={runExpiryCheck}
-              loadingAction={loadingAction}
+              loading={loadingAction === "create_vo" || loadingAction === "update_vo"}
+              editingVoId={editingVoId}
+              onCancelEdit={cancelEdit}
             />
           )}
           {activeTab === "plan" && (
@@ -445,41 +432,32 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               canAddToPlan={permissions.addToPlan}
             />
           )}
-          {activeTab === "finance" && (
-            <FinanceSection
-              vo={selectedVo}
-              invoice={invoice}
-              setInvoice={setInvoice}
-              payment={payment}
-              setPayment={setPayment}
-              paymentEvidenceFile={paymentEvidenceFile}
-              setPaymentEvidenceFile={setPaymentEvidenceFile}
-              onCreateInvoice={createInvoice}
-              onRecordPayment={recordPayment}
-              onOverdueCheck={runOverdueCheck}
-              payments={selectedPayments}
-              ledger={selectedLedger}
-              loadingAction={loadingAction}
-              canCreateInvoice={permissions.createInvoice}
-              canRecordPayment={permissions.recordPayment}
-              canRunOverdueCheck={permissions.overdueCheck}
-            />
-          )}
-          {activeTab === "reports" && (
-            <ReportsAuditSection
+          {activeTab === "history" && (
+            <HistoryPrintSection
               vos={vos}
               auditLogs={data?.audit_logs || []}
               month={reportMonth}
               setMonth={setReportMonth}
-              onGenerateMonthlyReport={generateMonthlyReport}
-              loading={loadingAction === "generate_monthly_report"}
-              canGenerateMonthlyReport={permissions.generateMonthlyReport}
+              selectedVoId={selectedVo?.vo_id || ""}
+              onSelect={setSelectedVoId}
+              isLoading={isLoading}
+              onPrintMonthly={printMonthlyReport}
+              printing={loadingAction === "generate_monthly_report"}
+              canPrintMonthly={permissions.generateMonthlyReport}
             />
           )}
         </main>
 
         <aside className="space-y-4">
-          <SelectedVoPanel vo={selectedVo} documents={selectedDocuments} />
+          <SelectedVoPanel
+            vo={selectedVo}
+            documents={selectedDocuments}
+            canSendApproval={permissions.submitToClient}
+            canEdit={permissions.create}
+            loading={loadingAction === "send_approval"}
+            onSendApproval={sendApproval}
+            onEdit={startEditVo}
+          />
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="text-sm font-extrabold text-gray-900">หลักการใช้งาน</div>
             <div className="mt-3 space-y-2 text-sm leading-6 text-gray-600">
@@ -491,10 +469,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
                 </>
               ) : (
                 <>
-                  <p>1. สร้างรายการงานเพิ่ม-ลดและตรวจยอด</p>
-                  <p>2. แนบรูปแชทหรือระบุหลักฐานจากลูกค้า ระบบจะบันทึกเป็นอนุมัติจากหลักฐานทันที</p>
-                  <p>3. หลังสร้างแล้ว ให้เพิ่มเข้าแผนงานเอง เลือกหัวข้อหลักและวันเวลาได้เหมือน task ปกติ</p>
-                  <p>4. วางบิลและรับชำระเพื่อปิดยอดทางบัญชี</p>
+                  <p>1. วิศวกรกรอกหัวข้องานเพิ่ม-ลด มูลค่า และจำนวนวันเพิ่ม</p>
+                  <p>2. แนบไฟล์เอกสาร ใบเสร็จ/บิล และแคปหน้าจอจากลูกค้า แล้วกดบันทึก</p>
+                  <p>3. ถ้าต้องใช้แผนงาน ให้ทำต่อใน tab เข้าแผนงานเหมือน workflow เดิม</p>
+                  <p>4. tab ประวัติใช้ดูทะเบียนย้อนหลังและ print รายงานตามเดือน</p>
                 </>
               )}
             </div>
@@ -531,8 +509,9 @@ function PipelineSection({
               <th className="px-4 py-3">ชื่องาน</th>
               <th className="px-4 py-3 text-right">มูลค่า</th>
               <th className="px-4 py-3">สถานะ</th>
+              <th className="px-4 py-3 text-right">วันเพิ่ม</th>
               <th className="px-4 py-3">แผนงาน</th>
-              <th className="px-4 py-3">กำหนดอนุมัติ</th>
+              <th className="px-4 py-3">วันที่บันทึก</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -550,16 +529,17 @@ function PipelineSection({
                   </td>
                   <td className="px-4 py-3 text-right font-bold">{formatMoney(vo.grand_total)}</td>
                   <td className="px-4 py-3"><StatusBadge status={status} /></td>
+                  <td className="px-4 py-3 text-right font-bold text-sky-700">{formatMoney(vo.extension_days)}</td>
                   <td className="px-4 py-3">{vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : status === "approved" ? "รอเพิ่มเข้าแผน" : "-"}</td>
-                  <td className="px-4 py-3">{formatThaiDate(vo.approval_deadline)}</td>
+                  <td className="px-4 py-3">{formatThaiDate(String(vo.created_at || "").slice(0, 10))}</td>
                 </tr>
               );
             })}
             {vos.length === 0 && !isLoading && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
             )}
             {isLoading && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
             )}
           </tbody>
         </table>
@@ -584,6 +564,8 @@ function CreateSection({
   setSupportingDocFiles,
   onSubmit,
   loading,
+  editingVoId,
+  onCancelEdit,
 }: {
   form: CreateForm;
   setForm: (next: CreateForm) => void;
@@ -591,74 +573,82 @@ function CreateSection({
   setSupportingDocFiles: (next: File[]) => void;
   onSubmit: () => void;
   loading: boolean;
+  editingVoId?: string;
+  onCancelEdit?: () => void;
 }) {
-  const updateItem = (index: number, key: keyof VoItemInput, value: string) => {
-    const items = form.items.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item);
-    setForm({ ...form, items });
-  };
   const addSupportingFiles = (files: FileList | null) => {
-    const nextFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+    const nextFiles = Array.from(files || []);
     if (nextFiles.length === 0) return;
     setSupportingDocFiles([...supportingDocFiles, ...nextFiles]);
   };
   const removeSupportingFile = (index: number) => {
     setSupportingDocFiles(supportingDocFiles.filter((_file, fileIndex) => fileIndex !== index));
   };
-  const addItem = () => {
-    setForm({ ...form, items: [...form.items, { item_no: form.items.length + 1, description: "", unit: "LS", quantity: "1", unit_price: "" }] });
-  };
-  const removeItem = (index: number) => {
-    const items = form.items.filter((_item, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, item_no: itemIndex + 1 }));
-    setForm({ ...form, items: items.length ? items : [{ item_no: 1, description: "", unit: "LS", quantity: "1", unit_price: "" }] });
-  };
 
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-5">
-        <h3 className="text-lg font-extrabold text-gray-900">สร้างงานเพิ่ม-ลด</h3>
-        <p className="text-sm text-gray-500">กรอกข้อมูลและแนบหลักฐานแชทจากลูกค้า ระบบจะคำนวณยอด สร้างใบ VO และบันทึกอนุมัติจากหลักฐานให้ทันที</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-lg font-extrabold text-gray-900">{editingVoId ? `แก้ไขงานเพิ่ม-ลด ${editingVoId}` : "กรอกงานเพิ่ม-ลด / แนบหลักฐาน"}</h3>
+            <p className="text-sm text-gray-500">
+              {editingVoId
+                ? "แก้ไขข้อมูลก่อนลูกค้าอนุมัติได้ หากส่ง LINE ไปแล้วให้กดส่งอีกครั้งหลังบันทึก เพื่อให้ลูกค้าเห็นข้อมูลล่าสุด"
+                : "วิศวกรนำเอกสารที่ทำจากข้างนอกมาแนบในระบบ พร้อมบันทึกยอดเงินและจำนวนวันเพิ่มเพื่อสรุปภาพรวมไซต์"}
+            </p>
+          </div>
+          {editingVoId && onCancelEdit ? (
+            <button type="button" onClick={onCancelEdit} className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
+              <XCircle size={16} />
+              ยกเลิกแก้ไข
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="grid gap-4 lg:grid-cols-3">
-        <Field label="ประเภท">
+        <Field label="ประเภทงาน">
           <select value={form.vo_type} onChange={(event) => setForm({ ...form, vo_type: event.target.value })} className="form-input bg-white">
-            <option value="VO+">งานเพิ่ม (VO+)</option>
-            <option value="VO-">งานลด (VO-)</option>
-            <option value="VO0">งานสับเปลี่ยน (VO0)</option>
+            <option value="VO+">งานเพิ่ม</option>
+            <option value="VO-">งานลด</option>
+            <option value="VO0">งานสับเปลี่ยน</option>
           </select>
         </Field>
-        <Field label="ชื่องาน">
+        <Field label="หัวข้อ">
           <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" />
         </Field>
-        <Field label="ลูกค้า">
-          <input value={form.client_name} onChange={(event) => setForm({ ...form, client_name: event.target.value })} className="form-input" />
+        <Field label="เลขที่เอกสาร / ใบเสร็จ / อ้างอิง">
+          <input value={form.source_ref_id} onChange={(event) => setForm({ ...form, source_ref_id: event.target.value })} className="form-input" placeholder="เช่น VO-001, ใบเสร็จ, เลขที่แชท" />
         </Field>
-        <Field label="WHT">
-          <select value={form.withholding_tax} onChange={(event) => setForm({ ...form, withholding_tax: event.target.value })} className="form-input bg-white">
-            <option value="0">ไม่หัก</option>
-            <option value="1">1%</option>
-            <option value="3">3%</option>
-            <option value="5">5%</option>
+        <Field label="มูลค่า (บาท)">
+          <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} className="form-input" inputMode="decimal" placeholder="0.00" />
+        </Field>
+        <Field label="จำนวนวันเพิ่ม">
+          <input value={form.extension_days} onChange={(event) => setForm({ ...form, extension_days: event.target.value })} className="form-input" inputMode="numeric" placeholder="0" />
+        </Field>
+        <Field label="สถานะ">
+          <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="form-input bg-white">
+            <option value="approved">อนุมัติแล้ว / ลูกค้ายืนยันแล้ว</option>
+            <option value="pending_approval">รอลูกค้ายืนยัน</option>
+            <option value="draft">บันทึกร่าง</option>
+            <option value="rejected">ไม่อนุมัติ</option>
           </select>
-        </Field>
-        <Field label="กำหนดอนุมัติ (วัน)">
-          <input value={form.approval_deadline_days} onChange={(event) => setForm({ ...form, approval_deadline_days: event.target.value })} className="form-input" inputMode="numeric" />
         </Field>
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Field label="รายละเอียด">
+        <Field label="รายละเอียด / เหตุผล">
           <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={4} className="form-input resize-none" />
         </Field>
-        <Field label="เอกสารประกอบ/อ้างอิง">
+        <Field label="หลักฐาน / หมายเหตุ">
           <div className="space-y-3">
-            <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" />
+            <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" placeholder="อธิบายว่าแนบอะไร เช่น ใบเสร็จ, บิล, แคปหน้าจอ LINE, รูปหน้างาน" />
             <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-3">
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-orange-100 bg-white px-3 py-2 text-sm font-bold text-orange-700 hover:bg-orange-50">
                 <Paperclip size={16} />
-                แนบรูปแชท
+                แนบไฟล์หลักฐาน
                 <input
                   type="file"
                   multiple
-                  accept="image/*"
+                  accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx"
                   className="sr-only"
                   onChange={(event) => {
                     addSupportingFiles(event.target.files);
@@ -666,7 +656,7 @@ function CreateSection({
                   }}
                 />
               </label>
-              <p className="mt-2 text-xs font-semibold text-gray-500">ใช้เป็นหลักฐานจากลูกค้า ไม่ต้องให้ลูกค้า/role อื่นยืนยันซ้ำ</p>
+              <p className="mt-2 text-xs font-semibold text-gray-500">รองรับรูปแคปหน้าจอ, PDF, Word, Excel และเอกสารอ้างอิงจากภายนอก</p>
               {supportingDocFiles.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {supportingDocFiles.map((file, index) => (
@@ -681,44 +671,31 @@ function CreateSection({
           </div>
         </Field>
       </div>
-      <div className="mt-5 overflow-hidden rounded-xl border border-gray-200">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="bg-gray-50 text-xs font-bold text-gray-500">
-            <tr>
-              <th className="px-3 py-2">รายการ</th>
-              <th className="px-3 py-2 w-24">จำนวน</th>
-              <th className="px-3 py-2 w-24">หน่วย</th>
-              <th className="px-3 py-2 w-36">ราคา/หน่วย</th>
-              <th className="px-3 py-2 w-20"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {form.items.map((item, index) => (
-              <tr key={index}>
-                <td className="px-3 py-2"><input value={String(item.description || "")} onChange={(event) => updateItem(index, "description", event.target.value)} className="form-input" /></td>
-                <td className="px-3 py-2"><input value={String(item.quantity || "")} onChange={(event) => updateItem(index, "quantity", event.target.value)} className="form-input" inputMode="decimal" /></td>
-                <td className="px-3 py-2"><input value={String(item.unit || "")} onChange={(event) => updateItem(index, "unit", event.target.value)} className="form-input" /></td>
-                <td className="px-3 py-2"><input value={String(item.unit_price || "")} onChange={(event) => updateItem(index, "unit_price", event.target.value)} className="form-input" inputMode="decimal" /></td>
-                <td className="px-3 py-2 text-right"><button type="button" onClick={() => removeItem(index)} className="text-sm font-bold text-red-600">ลบ</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-5 grid gap-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 text-sm sm:grid-cols-3">
+        <div>
+          <p className="font-bold text-gray-500">ยอดที่บันทึก</p>
+          <p className="mt-1 text-xl font-extrabold text-gray-950">{formatMoney(form.amount)} บาท</p>
+        </div>
+        <div>
+          <p className="font-bold text-gray-500">วันเพิ่ม</p>
+          <p className="mt-1 text-xl font-extrabold text-sky-700">{formatMoney(form.extension_days)} วัน</p>
+        </div>
+        <div>
+          <p className="font-bold text-gray-500">การนำไปคิดยอดรวม</p>
+          <p className="mt-1 text-sm font-bold text-gray-700">{form.status === "approved" ? "นับใน dashboard ทันที" : "ยังไม่นับจนกว่าจะอนุมัติ"}</p>
+        </div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <button type="button" onClick={addItem} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
-          <Plus size={16} />
-          เพิ่มรายการ
-        </button>
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
         <button type="button" onClick={onSubmit} disabled={loading} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
-          {loading ? <Loader2 size={17} className="animate-spin" /> : <FileText size={17} />}
-          สร้าง VO
+          {loading ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}
+          {editingVoId ? "บันทึกการแก้ไข" : "บันทึกงานเพิ่ม-ลด"}
         </button>
       </div>
     </section>
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ApprovalSection({
   vo,
   evidence,
@@ -990,6 +967,7 @@ function PlanSection({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FinanceSection({
   vo,
   invoice,
@@ -1137,80 +1115,79 @@ function FinanceSection({
   );
 }
 
-function ReportsAuditSection({
+function HistoryPrintSection({
   vos,
   auditLogs,
   month,
   setMonth,
-  onGenerateMonthlyReport,
-  loading,
-  canGenerateMonthlyReport,
+  selectedVoId,
+  onSelect,
+  isLoading,
+  onPrintMonthly,
+  printing,
+  canPrintMonthly,
 }: {
   vos: Array<VoRecord & { items?: VoItemInput[] }>;
   auditLogs: Array<Record<string, string | number | undefined>>;
   month: string;
   setMonth: (month: string) => void;
-  onGenerateMonthlyReport: () => void;
-  loading: boolean;
-  canGenerateMonthlyReport: boolean;
+  selectedVoId: string;
+  onSelect: (voId: string) => void;
+  isLoading: boolean;
+  onPrintMonthly: () => void;
+  printing: boolean;
+  canPrintMonthly: boolean;
 }) {
-  const monthlyRows = useMemo(() => {
-    const grouped = new Map<string, { label: string; plus: number; minus: number; paid: number }>();
-    vos.forEach((vo) => {
-      const key = String(vo.created_at || vo.invoice_date || "").slice(0, 7) || "ไม่ระบุ";
-      const current = grouped.get(key) || { label: key, plus: 0, minus: 0, paid: 0 };
-      if (vo.vo_type === "VO-") current.minus += numberValue(vo.grand_total);
-      else if (vo.vo_type === "VO+") current.plus += numberValue(vo.grand_total);
-      current.paid += numberValue(vo.amount_paid);
-      grouped.set(key, current);
+  const monthlyVos = useMemo(() => {
+    return vos.filter((vo) => {
+      const createdMonth = String(vo.created_at || "").slice(0, 7);
+      const invoiceMonth = String(vo.invoice_date || "").slice(0, 7);
+      return createdMonth === month || invoiceMonth === month;
     });
-    return Array.from(grouped.values()).sort((a, b) => a.label.localeCompare(b.label)).slice(-8);
-  }, [vos]);
-  const maxValue = Math.max(1, ...monthlyRows.flatMap((row) => [row.plus, row.minus, row.paid]));
+  }, [month, vos]);
+  const monthlySummary = useMemo(() => {
+    const approvedStatuses = new Set(["approved", "billed", "partial_payment", "paid", "overdue", "work_unlocked"]);
+    const approvedVos = monthlyVos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
+    const plus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO+").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
+    const minus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO-").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
+    const days = approvedVos.reduce((sum, vo) => sum + numberValue(vo.extension_days), 0);
+    return { plus, minus, net: plus - minus, days, approved: approvedVos.length };
+  }, [monthlyVos]);
 
   return (
     <section className="space-y-5">
       <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h3 className="text-lg font-extrabold text-gray-900">รายงานงานเพิ่ม-ลด</h3>
-            <p className="text-sm text-gray-500">สร้างรายงานประจำเดือนแบบ print-ready และเก็บ PDF เข้า Drive</p>
+            <h3 className="text-lg font-extrabold text-gray-900">ประวัติงานเพิ่ม-ลด</h3>
+            <p className="text-sm text-gray-500">ดูทะเบียนย้อนหลัง เลือกเดือน แล้วกด print เพื่อส่งรายงานภายในหรือแนบประชุม</p>
           </div>
           <div className="flex flex-wrap items-end gap-3">
-            <Field label="เดือนรายงาน">
+            <Field label="เดือนที่ต้องการพิมพ์">
               <input type="month" value={month} onChange={(event) => setMonth(event.target.value)} className="form-input" />
             </Field>
             <button
               type="button"
-              onClick={onGenerateMonthlyReport}
-              disabled={loading || !canGenerateMonthlyReport}
-              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70"
+              onClick={onPrintMonthly}
+              disabled={!canPrintMonthly || printing}
+              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
-              สร้างรายงาน
+              {printing ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
+              Print รายเดือน
             </button>
           </div>
         </div>
       </div>
 
       <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 flex items-center gap-2 font-extrabold text-gray-900">
-          <BarChart3 size={19} className="text-orange-600" />
-          Cashflow VO ตามเดือน
+        <div className="mb-4 grid gap-3 md:grid-cols-5">
+          <Metric label="งานเพิ่มเดือนนี้" value={`${formatMoney(monthlySummary.plus)} บาท`} tone="green" />
+          <Metric label="งานลดเดือนนี้" value={`${formatMoney(monthlySummary.minus)} บาท`} tone="red" />
+          <Metric label="สุทธิเดือนนี้" value={`${formatMoney(monthlySummary.net)} บาท`} tone={monthlySummary.net >= 0 ? "orange" : "red"} />
+          <Metric label="วันเพิ่มเดือนนี้" value={`${formatMoney(monthlySummary.days)} วัน`} tone="sky" />
+          <Metric label="อนุมัติแล้ว" value={`${monthlySummary.approved} รายการ`} />
         </div>
-        <div className="space-y-3">
-          {monthlyRows.map((row) => (
-            <div key={row.label} className="grid grid-cols-[90px_1fr] items-center gap-3 text-sm">
-              <div className="font-bold text-gray-600">{row.label}</div>
-              <div className="space-y-1">
-                <Bar label="VO+" value={row.plus} max={maxValue} className="bg-emerald-500" />
-                <Bar label="VO-" value={row.minus} max={maxValue} className="bg-red-500" />
-                <Bar label="Paid" value={row.paid} max={maxValue} className="bg-sky-500" />
-              </div>
-            </div>
-          ))}
-          {monthlyRows.length === 0 && <EmptyText text="ยังไม่มีข้อมูล cashflow" />}
-        </div>
+        <PipelineSection vos={monthlyVos} isLoading={isLoading} selectedVoId={selectedVoId} onSelect={onSelect} />
       </div>
 
       <HistoryTable
@@ -1229,6 +1206,7 @@ function ReportsAuditSection({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Bar({ label, value, max, className }: { label: string; value: number; max: number; className: string }) {
   const width = Math.max(2, Math.round((value / max) * 100));
   return (
@@ -1242,7 +1220,23 @@ function Bar({ label, value, max, className }: { label: string; value: number; m
   );
 }
 
-function SelectedVoPanel({ vo, documents }: { vo?: VoRecord; documents: Array<Record<string, string | number | undefined>> }) {
+function SelectedVoPanel({
+  vo,
+  documents,
+  canSendApproval,
+  canEdit,
+  loading,
+  onSendApproval,
+  onEdit,
+}: {
+  vo?: VoRecord & { items?: VoItemInput[] };
+  documents: Array<Record<string, string | number | undefined>>;
+  canSendApproval: boolean;
+  canEdit: boolean;
+  loading: boolean;
+  onSendApproval: () => void;
+  onEdit: (vo: VoRecord & { items?: VoItemInput[] }) => void;
+}) {
   if (!vo) {
     return (
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -1252,6 +1246,7 @@ function SelectedVoPanel({ vo, documents }: { vo?: VoRecord; documents: Array<Re
   }
   const type = asVoType(String(vo.vo_type || ""));
   const status = asVoStatus(String(vo.status || ""));
+  const canEditVo = canEdit && ["draft", "pending_approval", "rejected", "expired"].includes(status);
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -1265,8 +1260,36 @@ function SelectedVoPanel({ vo, documents }: { vo?: VoRecord; documents: Array<Re
         <InfoRow label="ประเภท" value={VO_TYPE_LABELS[type]} />
         <InfoRow label="ชื่องาน" value={String(vo.title || "-")} />
         <InfoRow label="มูลค่า" value={`${formatMoney(vo.grand_total)} บาท`} />
-        <InfoRow label="ยอดคงเหลือ" value={`${formatMoney(vo.balance)} บาท`} />
+        <InfoRow label="จำนวนวันเพิ่ม" value={`${formatMoney(vo.extension_days)} วัน`} />
+        <InfoRow label="อ้างอิงเอกสาร" value={String(vo.source_ref_id || "-")} />
+        <InfoRow label="ส่งลูกค้า" value={vo.sent_to_customer_at ? formatThaiDate(String(vo.sent_to_customer_at).slice(0, 10)) : "-"} />
         <InfoRow label="แผนงาน" value={vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : "ยังไม่เพิ่มเข้าแผน"} />
+      </div>
+      <div className="mt-5 space-y-2 border-t border-gray-100 pt-4">
+        <button
+          type="button"
+          onClick={() => onEdit(vo)}
+          disabled={!canEditVo}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-extrabold text-orange-700 hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Pencil size={16} />
+          แก้ไขรายการนี้
+        </button>
+        <button
+          type="button"
+          onClick={onSendApproval}
+          disabled={loading || !canSendApproval || !["draft", "pending_approval"].includes(String(vo.status || ""))}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+          ส่ง LINE ให้ลูกค้าอนุมัติ
+        </button>
+        {vo.approval_url ? (
+          <a href={String(vo.approval_url)} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-extrabold text-gray-700 hover:bg-gray-50">
+            <ExternalLink size={15} />
+            เปิดลิงก์อนุมัติ
+          </a>
+        ) : null}
       </div>
       <div className="mt-5 border-t border-gray-100 pt-4">
         <div className="text-sm font-extrabold text-gray-900">เอกสาร</div>

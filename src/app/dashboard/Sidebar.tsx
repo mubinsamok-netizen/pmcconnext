@@ -5,22 +5,22 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Banknote,
   Bug,
   Building2,
   CalendarClock,
   X,
   ChevronLeft,
   ChevronRight,
-  FileQuestion,
+  FileSignature,
   FileText,
   FolderKanban,
   Images,
   Info,
   LayoutDashboard,
   ListChecks,
-  Megaphone,
   Presentation,
+  ShieldCheck,
+  StickyNote,
   Users,
 } from "lucide-react";
 import type { ComponentType } from "react";
@@ -46,11 +46,11 @@ const siteNavItems = [
   { name: "รายละเอียดโครงการ", segment: "details", icon: Info },
   { name: "รายละเอียดงาน/ประกัน", segment: "lifecycle", icon: CalendarClock },
   { name: "รายงานประจำวัน", segment: "reports", icon: FileText },
+  { name: "บันทึกหน้างาน", segment: "notes", icon: StickyNote },
+  { name: "บันทึกข้อความ / Memo", segment: "memos", icon: FileSignature },
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
+  { name: "QC Checklist", segment: "qc-checklists", icon: ShieldCheck },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
-  { name: "ระบบเบิกเงิน", segment: "payments", icon: Banknote },
-  { name: "RFA", segment: "rfa", icon: FileQuestion },
-  { name: "RFI", segment: "rfi", icon: Megaphone },
   { name: "Defect", segment: "defects", icon: Bug },
   { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },
 ];
@@ -101,9 +101,11 @@ export default function Sidebar({
   const isSiteMode = Boolean(siteId);
   const isAdmin = getAppRole(user?.role) === "Admin";
   const isForeman = isForemanRole(user?.role);
-  const visibleWorkspaceNavItems = isForeman
-    ? workspaceNavItems.filter((item) => item.href === "/dashboard/projects")
-    : workspaceNavItems;
+  const visibleWorkspaceNavItems = workspaceNavItems.filter((item) => {
+    if (item.href === "/dashboard/sales-crm") return isAdmin;
+    if (isForeman) return item.href === "/dashboard/projects";
+    return true;
+  });
   const visibleSiteNavItems = siteNavItems.filter((item) => canAccessSiteSegment(user?.role, item.segment));
 
   const toggleCollapse = () => {
@@ -210,8 +212,8 @@ export default function Sidebar({
   return (
     <>
       <aside
-        className={`relative hidden flex-col border-r border-gray-200 bg-white transition-all duration-300 ease-in-out md:flex ${
-          collapsed ? "w-[76px]" : "w-[280px]"
+        className={`relative hidden shrink-0 flex-col border-r border-gray-200 bg-white transition-all duration-300 ease-in-out md:flex ${
+          collapsed ? "w-[76px]" : "w-[236px] lg:w-[256px] 2xl:w-[280px]"
         }`}
       >
         {sidebarContent(false)}
@@ -262,7 +264,7 @@ function SidebarLink({
     >
       {active && <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-orange-600" />}
       <Icon size={20} className={active ? "text-orange-600" : "text-gray-400"} />
-      {!collapsed && <span>{name}</span>}
+      {!collapsed && <span className="min-w-0 truncate">{name}</span>}
       {collapsed && (
         <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-lg bg-gray-900 px-2.5 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
           {name}

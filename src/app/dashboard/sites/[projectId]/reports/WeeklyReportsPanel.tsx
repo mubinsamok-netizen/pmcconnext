@@ -154,6 +154,7 @@ export function WeeklyReportsPanel({ project }: { project: MasterProject }) {
           <PreviewTable title="Machinery From Daily Reports" rows={summary.machinery} columns={["name", "qty", "usage", "note"]} />
           <PreviewTable title="Personnel From Daily Reports" rows={summary.personnel} columns={["role", "avg_qty", "work_days", "note"]} />
           <PreviewTable title="Instructions / Corrective Actions" rows={summary.instructions} columns={["date", "description", "ordered_by", "status"]} />
+          <PreviewTable title="VO / Payment / Documents" rows={summary.approvals} columns={["document_no", "type", "subject", "submitted_date", "status", "owner", "note"]} />
         </section>
       )}
 

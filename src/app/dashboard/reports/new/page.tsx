@@ -1,17 +1,23 @@
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import ReportForm from "./ReportForm";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
+type Project = {
+  project_id: string;
+  name?: string;
+};
+
 export default async function NewReportPage() {
-  let projects: any[] = [];
+  let projects: Project[] = [];
   
   try {
-    await ensureMasterSchema();
-    projects = await findAllMaster("Projects");
+    if (!isSupabaseBackend()) await ensureMasterSchema();
+    projects = await findAllMaster("Projects") as unknown as Project[];
   } catch (e) {
     console.error("Failed to fetch projects for report form:", e);
   }

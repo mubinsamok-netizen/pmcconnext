@@ -2,16 +2,10 @@ import { getAppRole, type AppRole } from "@/lib/roles";
 
 export type AppPermission =
   | "team.manage"
-  | "payment.create"
-  | "payment.submit"
-  | "payment.review"
-  | "payment.approve"
-  | "payment.requestInfo"
-  | "payment.reject"
-  | "payment.transfer"
-  | "payment.close"
-  | "payment.uploadAttachment"
-  | "payment.generateDocument"
+  | "siteDocument.upload"
+  | "siteMemo.create"
+  | "siteMemo.issue"
+  | "siteMemo.acknowledge"
   | "vo.create"
   | "vo.submitToClient"
   | "vo.approveOnBehalf"
@@ -27,16 +21,10 @@ export type AppPermission =
 const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
   Admin: [
     "team.manage",
-    "payment.create",
-    "payment.submit",
-    "payment.review",
-    "payment.approve",
-    "payment.requestInfo",
-    "payment.reject",
-    "payment.transfer",
-    "payment.close",
-    "payment.uploadAttachment",
-    "payment.generateDocument",
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
     "vo.create",
     "vo.submitToClient",
     "vo.approveOnBehalf",
@@ -50,10 +38,9 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "vo.generateMonthlyReport",
   ],
   "Project Manager": [
-    "payment.create",
-    "payment.submit",
-    "payment.uploadAttachment",
-    "payment.generateDocument",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
     "vo.create",
     "vo.submitToClient",
     "vo.approveOnBehalf",
@@ -65,21 +52,18 @@ const PERMISSION_MATRIX: Record<AppRole, AppPermission[]> = {
     "vo.generateMonthlyReport",
   ],
   Engineer: [
-    "payment.create",
-    "payment.submit",
-    "payment.uploadAttachment",
-    "payment.generateDocument",
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
   ],
-  Foreman: [],
+  Foreman: [
+    "siteDocument.upload",
+    "siteMemo.create",
+    "siteMemo.issue",
+    "siteMemo.acknowledge",
+  ],
   Staff: [
-    "payment.review",
-    "payment.approve",
-    "payment.requestInfo",
-    "payment.reject",
-    "payment.transfer",
-    "payment.close",
-    "payment.uploadAttachment",
-    "payment.generateDocument",
     "vo.create",
     "vo.approveOnBehalf",
     "vo.recordClientDecision",

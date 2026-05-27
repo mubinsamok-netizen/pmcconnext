@@ -5,9 +5,10 @@ import { findOrCreateFolder } from "@/lib/drive";
 import { getMasterProjects, type MasterProject } from "@/lib/masterProjects";
 import { buildMonthlyReportHtml, stringifyMonthlyRows, type MonthlyReportPayload, type MonthlyReportTableRow } from "@/lib/monthlyReports";
 import { createPdfReportFile } from "@/lib/reportPdf";
-import { findAll, insert } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, insert } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type SheetRecord = Record<string, string | number | undefined>;
 type ProjectContext = MasterProject & { line_group_id?: string; line_group_name?: string; line_notify_enabled?: string };
@@ -47,6 +48,24 @@ function isWithinRange(date: string, start: string, end: string) {
   return date >= start && date <= end;
 }
 
+function firstText(row: SheetRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = String(row[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function dateText(row: SheetRecord, keys: string[]) {
+  const value = firstText(row, keys);
+  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : "";
+}
+
+function rowDateInRange(row: SheetRecord, start: string, end: string, keys: string[]) {
+  const date = dateText(row, keys);
+  return Boolean(date && isWithinRange(date, start, end));
+}
+
 function overlapsRange(start: string, end: string, rangeStart: string, rangeEnd: string) {
   return (!end || end >= rangeStart) && (!start || start <= rangeEnd);
 }
@@ -76,6 +95,12 @@ function safeJsonStringArray(value?: string | number) {
 function numberValue(value?: string | number) {
   const numeric = Number(value || 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function moneyText(value?: string | number) {
+  const numeric = numberValue(String(value || "").replace(/,/g, ""));
+  if (!numeric) return "";
+  return `${new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 }).format(numeric)} บาท`;
 }
 
 function groupByKey(rows: MonthlyReportTableRow[], keyField: string, qtyField: string, outputQtyField: string, extra: Record<string, string> = {}) {
@@ -204,6 +229,86 @@ function getIssues(dailyReports: SheetRecord[], weeklyReports: SheetRecord[]) {
   return [...dailyIssues, ...weeklyIssues];
 }
 
+function buildMonthlyIssuesFromExistingData({
+  dailyReports,
+  weeklyReports,
+  defectItems,
+  memos,
+}: {
+  dailyReports: SheetRecord[];
+  weeklyReports: SheetRecord[];
+  defectItems: SheetRecord[];
+  memos: SheetRecord[];
+}) {
+  const currentIssues = getIssues(dailyReports, weeklyReports);
+  const defectIssues = defectItems.map((item) => ({
+    date: dateText(item, ["reported_date", "due_date", "created_at"]),
+    description: `Defect ${firstText(item, ["item_no", "item_id"])}: ${firstText(item, ["description", "remarks"])}`,
+    solution: firstText(item, ["repair_note", "remarks"]),
+    status: String(item.status || "-"),
+  }));
+  const memoIssues = memos.map((memo) => ({
+    date: dateText(memo, ["event_date", "issue_date", "created_at"]),
+    description: `${firstText(memo, ["document_no", "memo_id"])}: ${firstText(memo, ["title", "detail"])}`,
+    solution: firstText(memo, ["acknowledgement_note", "extension_reason"]),
+    status: String(memo.status || "-"),
+  }));
+
+  return [...currentIssues, ...defectIssues, ...memoIssues];
+}
+
+function buildMonthlyApprovalsFromExistingData({
+  variationOrders,
+  documents,
+}: {
+  variationOrders: SheetRecord[];
+  documents: SheetRecord[];
+}) {
+  const voRows = variationOrders.map((vo) => ({
+    document_no: firstText(vo, ["vo_id", "document_no"]),
+    type: `VO ${String(vo.vo_type || "")}`.trim(),
+    subject: firstText(vo, ["title", "description"]),
+    status: String(vo.status || "-"),
+    note: [moneyText(vo.grand_total), vo.extension_days ? `extension ${vo.extension_days} days` : "", dateText(vo, ["created_at", "approval_deadline"])].filter(Boolean).join(" / "),
+  }));
+  const documentRows = documents.map((document) => ({
+    document_no: firstText(document, ["document_id", "version_number"]),
+    type: firstText(document, ["category", "mime_type"]) || "Document",
+    subject: firstText(document, ["title", "file_name"]),
+    status: "uploaded",
+    note: [dateText(document, ["created_at", "updated_at"]), firstText(document, ["notes", "drive_url"])].filter(Boolean).join(" / "),
+  }));
+
+  return [...voRows, ...documentRows];
+}
+
+function buildMonthlyInspectionsFromExistingData({
+  defectRounds,
+  defectItems,
+}: {
+  defectRounds: SheetRecord[];
+  defectItems: SheetRecord[];
+}) {
+  const roundRows = defectRounds.map((round) => ({
+    date: dateText(round, ["inspection_date", "issued_at", "created_at"]),
+    item: `${firstText(round, ["document_no", "round_id"])}: ${firstText(round, ["title", "notes"])}`,
+    result: String(round.status || "-"),
+    note: [
+      round.item_count ? `items ${round.item_count}` : "",
+      round.open_count ? `open ${round.open_count}` : "",
+      round.acknowledged_by ? `ack ${round.acknowledged_by}` : "",
+    ].filter(Boolean).join(" / "),
+  }));
+  const itemRows = defectItems.map((item) => ({
+    date: dateText(item, ["reported_date", "due_date", "created_at"]),
+    item: `Defect ${firstText(item, ["item_no", "item_id"])}: ${firstText(item, ["description", "zone"])}`,
+    result: String(item.status || "-"),
+    note: [firstText(item, ["owner", "discipline", "work_category"]), item.due_date ? `due ${item.due_date}` : ""].filter(Boolean).join(" / "),
+  }));
+
+  return [...roundRows, ...itemRows];
+}
+
 function getPhotos(dailyReports: SheetRecord[]) {
   return dailyReports.flatMap((report) => {
     const photos = safeJsonStringArray(report.photos_json);
@@ -243,11 +348,24 @@ async function buildMonthlyPayload({
 }): Promise<MonthlyReportPayload> {
   const { month: normalizedMonth, start, end } = getMonthRange(month);
   const nextMonthRange = getMonthRange(addMonths(normalizedMonth, 1));
-  const [allDaily, allWeekly, allTasks] = await Promise.all([
-    findAll("Daily_Reports", sheetId) as Promise<SheetRecord[]>,
-    findAll("Weekly_Reports", sheetId) as Promise<SheetRecord[]>,
-    findAll("Tasks", sheetId) as Promise<SheetRecord[]>,
-  ]);
+  const rows = await findAllBatch([
+    "Daily_Reports",
+    "Weekly_Reports",
+    "Tasks",
+    "Defect_Rounds",
+    "Defect_Items",
+    "Variation_Orders",
+    "Site_Memos",
+    "Project_Documents",
+  ], sheetId) as Record<string, SheetRecord[]>;
+  const allDaily = rows.Daily_Reports || [];
+  const allWeekly = rows.Weekly_Reports || [];
+  const allTasks = rows.Tasks || [];
+  const allDefectRounds = rows.Defect_Rounds || [];
+  const allDefectItems = rows.Defect_Items || [];
+  const allVariationOrders = rows.Variation_Orders || [];
+  const allMemos = rows.Site_Memos || [];
+  const allDocuments = rows.Project_Documents || [];
 
   const dailyReports = allDaily
     .filter((report) => report.project_id === projectId && isWithinRange(String(report.date || ""), start, end))
@@ -257,6 +375,11 @@ async function buildMonthlyPayload({
     .sort((a, b) => String(a.week_start || "").localeCompare(String(b.week_start || "")));
   const currentMonthTasks = allTasks.filter((task) => task.project_id === projectId && taskDateInRange(task, start, end));
   const nextMonthTasks = allTasks.filter((task) => task.project_id === projectId && taskDateInRange(task, nextMonthRange.start, nextMonthRange.end));
+  const monthlyDefectRounds = allDefectRounds.filter((round) => round.project_id === projectId && rowDateInRange(round, start, end, ["inspection_date", "issued_at", "created_at", "updated_at"]));
+  const monthlyDefectItems = allDefectItems.filter((item) => item.project_id === projectId && rowDateInRange(item, start, end, ["reported_date", "due_date", "created_at", "updated_at"]));
+  const monthlyVariationOrders = allVariationOrders.filter((vo) => vo.project_id === projectId && rowDateInRange(vo, start, end, ["created_at", "updated_at", "approval_deadline", "due_date"]));
+  const monthlyMemos = allMemos.filter((memo) => memo.project_id === projectId && rowDateInRange(memo, start, end, ["event_date", "issue_date", "created_at", "updated_at"]));
+  const monthlyDocuments = allDocuments.filter((document) => document.project_id === projectId && rowDateInRange(document, start, end, ["created_at", "updated_at"]));
   const dailyMaterials = dailyReports.flatMap((report) => safeJsonRows(report.materials_json));
   const dailyMachinery = dailyReports.flatMap((report) => safeJsonRows(report.machinery_json));
   const dailyPersonnel = dailyReports.flatMap((report) => safeJsonRows(report.personnel_json));
@@ -297,10 +420,24 @@ async function buildMonthlyPayload({
     personnel,
     machinery: groupByKey(dailyMachinery, "name", "qty", "qty").map((row) => ({ ...row, hours: row.hours || "", note: row.note || "" })),
     materials: groupByKey(dailyMaterials, "name", "qty", "qty").map((row) => ({ ...row, unit: row.unit || "", note: row.note || "" })),
-    issues: getIssues(dailyReports, weeklyReports),
-    approvals: weeklyReports.flatMap((report) => safeJsonRows(report.approvals_json)),
+    issues: buildMonthlyIssuesFromExistingData({
+      dailyReports,
+      weeklyReports,
+      defectItems: monthlyDefectItems,
+      memos: monthlyMemos,
+    }),
+    approvals: [
+      ...weeklyReports.flatMap((report) => safeJsonRows(report.approvals_json)),
+      ...buildMonthlyApprovalsFromExistingData({
+        variationOrders: monthlyVariationOrders,
+        documents: monthlyDocuments,
+      }),
+    ],
     certifications: [],
-    inspections: [],
+    inspections: buildMonthlyInspectionsFromExistingData({
+      defectRounds: monthlyDefectRounds,
+      defectItems: monthlyDefectItems,
+    }),
     field_engineer_name: sessionUser?.name || sessionUser?.email || "",
     field_engineer_email: sessionUser?.email || "",
     field_engineer_position: "วิศวกรสนาม",
@@ -320,7 +457,7 @@ export async function GET(req: Request) {
     const month = searchParams.get("month");
     const mode = searchParams.get("mode");
     const { sheetId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     if (mode === "summary" && projectId && month) {
       const session = await getServerSession(authOptions);
@@ -356,8 +493,8 @@ export async function POST(req: Request) {
 
     const project = await getProject(projectId);
     const { sheetId, driveFolderId } = await getProjectContext(projectId);
-    await ensureSchema(sheetId);
-    const targetDriveFolderId = getText(formData, "project_drive_folder_id") || project?.drive_folder_id || driveFolderId;
+    if (!isSupabaseBackend()) await ensureSchema(sheetId);
+    const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
     if (!targetDriveFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
 
     const existingReports = await findAll("Monthly_Reports", sheetId) as SheetRecord[];

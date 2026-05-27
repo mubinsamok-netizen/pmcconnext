@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
@@ -36,11 +37,13 @@ function getErrorMessage(error: unknown) {
 export default function EditTeamPage() {
   const router = useRouter();
   const params = useParams<{ memberId: string }>();
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState("");
-  const { data: teamData, isLoading: teamLoading } = useSWR<ApiResponse<TeamMember>>("/api/team", fetcher);
-  const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>("/api/projects", fetcher);
+  const { data: teamData, isLoading: teamLoading } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
+  const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
   const projects = projectsData?.data || [];
 
   const member = useMemo(() => {
@@ -49,6 +52,12 @@ export default function EditTeamPage() {
   }, [params.memberId, teamData?.data]);
 
   const selectedProjects = useMemo(() => new Set((member?.project_ids || "").split(",").filter(Boolean)), [member?.project_ids]);
+
+  useEffect(() => {
+    if (sessionStatus !== "loading" && !isAdmin) {
+      router.replace("/dashboard/projects");
+    }
+  }, [isAdmin, router, sessionStatus]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -85,6 +94,14 @@ export default function EditTeamPage() {
       setLoading(false);
     }
   };
+
+  if (sessionStatus === "loading" || !isAdmin) {
+    return (
+      <div className="max-w-2xl mx-auto rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
+        กำลังตรวจสอบสิทธิ์...
+      </div>
+    );
+  }
 
   if (teamLoading) {
     return (
