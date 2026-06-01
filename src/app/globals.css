@@ -2010,6 +2010,18 @@ textarea.form-input {
   body {
     background: #ffffff !important;
     color: #111827 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  html,
+  .dashboard-shell,
+  .dashboard-shell > div,
+  .dashboard-shell main {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
   }
 
   body.printing-sales-crm * {
