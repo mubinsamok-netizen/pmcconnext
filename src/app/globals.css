@@ -1894,6 +1894,40 @@ textarea.form-input {
   padding-left: 18px !important;
 }
 
+.print-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.print-status-todo {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.print-status-progress {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.print-status-review {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.print-status-done {
+  background: #dcfce7;
+  color: #15803d;
+}
+
 .print-signatures {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

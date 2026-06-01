@@ -213,6 +213,33 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   Done: "เสร็จแล้ว",
 };
 
+const TASK_STATUS_TONES: Record<string, { screen: string; print: string; svgFill: string; svgStroke: string }> = {
+  "To Do": {
+    screen: "bg-slate-100 text-slate-700",
+    print: "print-status-todo",
+    svgFill: "#f1f5f9",
+    svgStroke: "#64748b",
+  },
+  "In Progress": {
+    screen: "bg-blue-50 text-blue-700",
+    print: "print-status-progress",
+    svgFill: "#dbeafe",
+    svgStroke: "#2563eb",
+  },
+  Review: {
+    screen: "bg-amber-50 text-amber-700",
+    print: "print-status-review",
+    svgFill: "#fef3c7",
+    svgStroke: "#d97706",
+  },
+  Done: {
+    screen: "bg-emerald-50 text-emerald-700",
+    print: "print-status-done",
+    svgFill: "#dcfce7",
+    svgStroke: "#16a34a",
+  },
+};
+
 const STATUS_PROGRESS_PRESETS: Record<string, number> = {
   "To Do": 0,
   "In Progress": 50,
@@ -620,6 +647,10 @@ function dateRangeLabel(start: Date, end: Date) {
 
 function getTrackerColumnStyle(status: string) {
   return TRACKER_COLUMN_STYLES[status] || TRACKER_COLUMN_STYLES["To Do"];
+}
+
+function getTaskStatusTone(status?: string) {
+  return TASK_STATUS_TONES[status || "To Do"] || TASK_STATUS_TONES["To Do"];
 }
 
 function getDecisionStatusClass(status?: string) {
@@ -1816,7 +1847,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                       />
                     </td>
                     <td className="px-4 py-4">
-                      <span className="px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">
+                      <span className={`px-2 py-1 rounded-md text-xs font-semibold ${getTaskStatusTone(task.status).screen}`}>
                         {TASK_STATUS_LABELS[task.status || "To Do"]}
                       </span>
                     </td>
@@ -2115,9 +2146,9 @@ function GanttPanel({
                 <div
                   key={task.task_id}
                   onClick={() => quickDateEdit && !isHeading && onEditTaskDate?.(task)}
-                  className={`grid grid-cols-[300px_1fr] min-h-[60px] border-b border-gray-100 ${quickDateEdit && !isHeading ? "cursor-pointer hover:bg-orange-50/30" : ""} ${isHeading ? "bg-gray-50" : "gantt-child-row"}`}
+                  className={`grid grid-cols-[300px_1fr] min-h-[60px] border-b ${quickDateEdit && !isHeading ? "cursor-pointer hover:bg-orange-50/30" : ""} ${isHeading ? "border-slate-800 bg-slate-900 text-white" : "border-gray-100 gantt-child-row"}`}
                 >
-                  <div className={`px-5 py-3 bg-white border-r border-gray-100 flex items-center justify-between gap-3 ${isHeading ? "" : "pl-12"}`}>
+                  <div className={`px-5 py-3 border-r flex items-center justify-between gap-3 ${isHeading ? "border-slate-700 bg-slate-900 text-white" : "border-gray-100 bg-white pl-12"}`}>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         {isHeading && onToggleHeading && (
@@ -2127,17 +2158,17 @@ function GanttPanel({
                               event.stopPropagation();
                               onToggleHeading(task.task_id);
                             }}
-                            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:border-orange-300 hover:text-orange-700"
+                            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/20 bg-white/10 text-white hover:bg-white/20"
                             title={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                             aria-label={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                           >
                             {task.is_collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                           </button>
                         )}
-                        <span className={`gantt-category-dot ${isHeading ? "w-3 h-3 rounded-[3px]" : "w-2.5 h-2.5 rounded-full"}`} style={{ backgroundColor: isHeading ? "#111827" : color, borderColor: isHeading ? "#111827" : color }} />
-                        <strong className={`${isHeading ? "text-base" : "text-sm"} text-gray-900 truncate`}>{task.name}</strong>
+                        <span className={`gantt-category-dot ${isHeading ? "w-3 h-3 rounded-[3px]" : "w-2.5 h-2.5 rounded-full"}`} style={{ backgroundColor: isHeading ? "#f97316" : color, borderColor: isHeading ? "#fdba74" : color }} />
+                        <strong className={`${isHeading ? "text-base text-white" : "text-sm text-gray-900"} truncate`}>{task.name}</strong>
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-5 text-xs text-gray-500">
+                      <div className={`mt-1 flex flex-wrap items-center gap-1.5 pl-5 text-xs ${isHeading ? "text-slate-300" : "text-gray-500"}`}>
                         <span>{isHeading ? "H1 หัวข้อหลัก" : task.assignee || "-"}</span>
                         {!isHeading && task.linked_vo_id && (
                           <span className="rounded-md bg-orange-50 px-1.5 py-0.5 font-extrabold text-orange-700">
@@ -2148,11 +2179,11 @@ function GanttPanel({
                     </div>
                     {!isHeading && <span className="px-2 py-1 bg-red-50 text-red-600 rounded-md text-xs font-bold">{progress}%</span>}
                   </div>
-                  <div className="relative bg-white">
+                  <div className={`relative ${isHeading ? "bg-slate-950" : "bg-white"}`}>
                     {hasTaskDates ? (
                       <div
                         className={`gantt-task-bar absolute top-1/2 -translate-y-1/2 rounded-md text-white text-xs font-bold flex items-center px-3 overflow-hidden shadow-sm ${isHeading ? "h-5" : "h-8"}`}
-                        style={{ left: `${left}%`, width: `${width}%`, backgroundColor: isHeading ? "#111827" : color, borderColor: isHeading ? "#111827" : color, boxShadow: `inset 0 0 0 999px ${isHeading ? "#111827" : color}` }}
+                        style={{ left: `${left}%`, width: `${width}%`, backgroundColor: isHeading ? "#f97316" : color, borderColor: isHeading ? "#f97316" : color, boxShadow: `inset 0 0 0 999px ${isHeading ? "#f97316" : color}` }}
                         title={`${task.name}: ${formatDateShort(task.start)} - ${formatDateShort(task.end)}`}
                       >
                         {!isHeading && <span className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${progress}%` }} />}
@@ -3405,7 +3436,11 @@ function PlanPrintDocument({ active, project, tasks, stats }: { active: boolean;
                 <td>{formatDateShort(task.end)}</td>
                 <td>{task.duration_days || daysBetween(task.start, task.end) || "-"}</td>
                 <td>{task.percent_done || 0}%</td>
-                <td>{TASK_STATUS_LABELS[task.status || "To Do"]}</td>
+                <td>
+                  <span className={`print-status-pill ${getTaskStatusTone(task.status).print}`}>
+                    {TASK_STATUS_LABELS[task.status || "To Do"]}
+                  </span>
+                </td>
                 <td>{task.notes || "-"}</td>
               </tr>
             );
@@ -3559,6 +3594,7 @@ function GanttPrintSvg({
         const taskEnd = parseDate(task.end) || taskStart;
         const color = isHeading ? "#111827" : getTaskCategoryColor(task, taskMap);
         const progress = clamp(Number(task.percent_done || 0));
+        const statusTone = getTaskStatusTone(task.status);
         const outline = getTaskOutlineNumber(task, allTasks, allTasks);
         const intersects = taskStart && taskEnd && taskStart <= segment.end && taskEnd >= segment.start;
         const barStart = taskStart ? maxDate(taskStart, segment.start) : segment.start;
@@ -3571,15 +3607,24 @@ function GanttPrintSvg({
         return (
           <g key={`${task.task_id}-${index}`}>
             <rect x="0" y={y} width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill={isHeading ? "#f8fafc" : (index % 2 === 0 ? "#ffffff" : "#fbfdff")} />
+            {isHeading ? <rect x="0" y={y} width={GANTT_PRINT_LEFT_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill="#111827" /> : null}
             <line x1="0" y1={y + GANTT_PRINT_ROW_HEIGHT} x2={GANTT_PRINT_SVG_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#e5e7eb" strokeWidth="1" />
             <line x1={GANTT_PRINT_LEFT_WIDTH} y1={y} x2={GANTT_PRINT_LEFT_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#cbd5e1" strokeWidth="1.4" />
-            <text x="16" y={y + 17} fill="#111827" fontSize="11" fontWeight="800">{outline}</text>
-            <text x="58" y={y + 17} fill="#111827" fontSize={isHeading ? "13" : "12"} fontWeight={isHeading ? "800" : "700"}>
-              {isHeading ? truncateText(task.name, 42) : truncateText(task.name, 38)}
+            <text x="16" y={y + 17} fill={isHeading ? "#ffffff" : "#111827"} fontSize="11" fontWeight="800">{outline}</text>
+            <text x="58" y={y + 17} fill={isHeading ? "#ffffff" : "#111827"} fontSize={isHeading ? "13" : "12"} fontWeight={isHeading ? "800" : "700"}>
+              {isHeading ? truncateText(task.name, 42) : truncateText(task.name, 28)}
             </text>
-            <text x="58" y={y + 32} fill="#64748b" fontSize="10">
+            <text x="58" y={y + 32} fill={isHeading ? "#cbd5e1" : "#64748b"} fontSize="10">
               {isHeading ? `${task.summary_child_count || 0} tasks` : `${truncateText(task.assignee || "-", 18)} • ${formatDateShort(task.start)}-${formatDateShort(task.end)} • ${progress}%`}
             </text>
+            {!isHeading ? (
+              <g>
+                <rect x="292" y={y + 9} width="102" height="18" rx="9" fill={statusTone.svgFill} stroke={statusTone.svgStroke} strokeWidth="1" />
+                <text x="343" y={y + 22} fill={statusTone.svgStroke} fontSize="9" fontWeight="800" textAnchor="middle">
+                  {TASK_STATUS_LABELS[task.status || "To Do"]}
+                </text>
+              </g>
+            ) : null}
             {intersects ? (
               <g>
                 <rect x={barX} y={barY} width={barW} height={barH} rx="5" fill={color} />
