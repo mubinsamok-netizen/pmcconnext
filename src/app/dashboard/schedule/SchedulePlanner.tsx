@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
@@ -193,6 +193,12 @@ type TaskDateForm = {
   end: string;
 };
 type CollapsedState = Record<string, Record<string, boolean>>;
+type GanttPrintSegment = {
+  start: Date;
+  end: Date;
+  index: number;
+  total: number;
+};
 
 const TASK_STATUSES = ["To Do", "In Progress", "Review", "Done"];
 const TASK_TYPES = [
@@ -205,6 +211,13 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   "In Progress": "กำลังดำเนินการ",
   Review: "รอตรวจ",
   Done: "เสร็จแล้ว",
+};
+
+const STATUS_PROGRESS_PRESETS: Record<string, number> = {
+  "To Do": 0,
+  "In Progress": 50,
+  Review: 95,
+  Done: 100,
 };
 
 const TRACKER_COLUMN_STYLES: Record<string, { dot: string; badge: string; surface: string }> = {
@@ -240,6 +253,13 @@ const CATEGORY_COLORS: Record<string, string> = {
 const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "อื่น ๆ"];
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
 const COLLAPSED_STORAGE_KEY = "pmc.schedule.collapsedHeadings.v1";
+const GANTT_PRINT_DAYS_PER_PAGE = 56;
+const GANTT_PRINT_ROWS_PER_PAGE = 16;
+const GANTT_PRINT_SVG_WIDTH = 1500;
+const GANTT_PRINT_LEFT_WIDTH = 410;
+const GANTT_PRINT_CHART_WIDTH = GANTT_PRINT_SVG_WIDTH - GANTT_PRINT_LEFT_WIDTH - 28;
+const GANTT_PRINT_HEADER_HEIGHT = 86;
+const GANTT_PRINT_ROW_HEIGHT = 38;
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -299,6 +319,63 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
+function diffDays(start: Date, end: Date) {
+  return Math.round((end.getTime() - start.getTime()) / 86400000);
+}
+
+function maxDate(a: Date, b: Date) {
+  return a > b ? a : b;
+}
+
+function minDate(a: Date, b: Date) {
+  return a < b ? a : b;
+}
+
+function chunkList<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks.length ? chunks : [[]];
+}
+
+function truncateText(value: string | undefined, maxLength: number) {
+  const text = value || "-";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function buildGanttPrintSegments(timeline: Timeline): GanttPrintSegment[] {
+  const totalDays = Math.max(1, diffDays(timeline.start, timeline.end) + 1);
+  const pageCount = Math.max(1, Math.ceil(totalDays / GANTT_PRINT_DAYS_PER_PAGE));
+  return Array.from({ length: pageCount }, (_, index) => {
+    const start = addDays(timeline.start, index * GANTT_PRINT_DAYS_PER_PAGE);
+    const end = minDate(addDays(start, GANTT_PRINT_DAYS_PER_PAGE - 1), timeline.end);
+    return { start, end, index: index + 1, total: pageCount };
+  });
+}
+
+function buildGanttPrintTicks(segment: GanttPrintSegment) {
+  const totalDays = Math.max(1, diffDays(segment.start, segment.end) + 1);
+  const step = totalDays <= 35 ? 3 : 7;
+  const ticks = [];
+  for (let day = 0; day < totalDays; day += step) {
+    ticks.push(addDays(segment.start, day));
+  }
+  if (toInputDate(ticks[ticks.length - 1] || segment.start) !== toInputDate(segment.end)) ticks.push(segment.end);
+  return ticks;
+}
+
+function buildGanttPrintMonthMarkers(segment: GanttPrintSegment) {
+  const markers: Date[] = [];
+  const cursor = new Date(segment.start.getFullYear(), segment.start.getMonth(), 1, 12);
+  if (cursor < segment.start) cursor.setMonth(cursor.getMonth() + 1);
+  while (cursor <= segment.end) {
+    markers.push(new Date(cursor));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return markers;
+}
+
 function daysBetween(start?: string, end?: string) {
   const startDate = parseDate(start);
   const endDate = parseDate(end);
@@ -334,6 +411,43 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.min(Math.max(value, min), max);
 }
 
+function normalizeProgressValue(value: string | number | undefined) {
+  const parsed = Number(value);
+  return String(Math.round(clamp(Number.isFinite(parsed) ? parsed : 0)));
+}
+
+function getStatusForProgress(value: string | number | undefined) {
+  const progress = Number(normalizeProgressValue(value));
+  if (progress <= 0) return "To Do";
+  if (progress >= 100) return "Done";
+  return "In Progress";
+}
+
+function getProgressForStatus(status: string, currentProgress?: string | number) {
+  if (status === "In Progress") {
+    const progress = Number(normalizeProgressValue(currentProgress));
+    if (progress > 0 && progress < 100) return String(progress);
+  }
+
+  return String(STATUS_PROGRESS_PRESETS[status] ?? 0);
+}
+
+function buildTaskProgressPatch(progress: string | number | undefined): TaskPatch {
+  const percentDone = normalizeProgressValue(progress);
+  return {
+    percent_done: percentDone,
+    status: getStatusForProgress(percentDone),
+  };
+}
+
+function buildTaskStatusPatch(status: string, currentProgress?: string | number): TaskPatch {
+  const percentDone = getProgressForStatus(status, currentProgress);
+  return {
+    status,
+    percent_done: percentDone,
+  };
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "ดำเนินการไม่สำเร็จ กรุณาลองอีกครั้ง";
 }
@@ -347,12 +461,17 @@ function normalizeTask(task: Task, index: number): Task {
   const start = task.start || task.planned_start || "";
   const end = task.end || task.planned_end || "";
   const fallbackCategory = TASK_CATEGORIES[TASK_CATEGORIES.length - 1];
+  const normalizedProgress = normalizeProgressValue(task.percent_done);
+  const normalizedStatus = task.status || getStatusForProgress(normalizedProgress);
+  const progressPatch = normalizedStatus === "In Progress"
+    ? buildTaskProgressPatch(normalizedProgress)
+    : buildTaskStatusPatch(normalizedStatus, normalizedProgress);
   return {
     ...task,
     start,
     end,
-    status: task.status || "To Do",
-    percent_done: task.percent_done || "0",
+    status: progressPatch.status || "To Do",
+    percent_done: progressPatch.percent_done || "0",
     category: task.category || (task.task_type === "heading" ? task.name : fallbackCategory),
     duration_days: task.duration_days || daysBetween(start, end),
     priority: task.priority || "ปกติ",
@@ -566,7 +685,10 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const [dateEditForm, setDateEditForm] = useState<TaskDateForm>({ start: "", end: "" });
   const [collapsedByProject, setCollapsedByProject] = useState<CollapsedState>(readCollapsedState);
   const [pendingDeleteTask, setPendingDeleteTask] = useState<Task | null>(null);
+  const [planDragTask, setPlanDragTask] = useState<Task | null>(null);
   const [milestoneDeleteOpen, setMilestoneDeleteOpen] = useState(false);
+  const planDragRef = useRef<{ task: Task; startX: number; startY: number; dragging: boolean } | null>(null);
+  const suppressPlanDragClickRef = useRef(false);
 
   useEffect(() => {
     const handleAfterPrint = () => setPrintTarget(null);
@@ -881,6 +1003,69 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     void moveTaskToPosition(task, nextPosition);
   };
 
+  const canDropPlanTaskFrom = (sourceTask: Task, targetTask: Task) => {
+    return Boolean(
+      !saving &&
+      !isHeadingTask(sourceTask) &&
+      !isHeadingTask(targetTask) &&
+      sourceTask.task_id !== targetTask.task_id &&
+      (sourceTask.parent_task_id || "") === (targetTask.parent_task_id || "")
+    );
+  };
+
+  const canDropPlanTask = (targetTask: Task) => {
+    return Boolean(planDragTask && canDropPlanTaskFrom(planDragTask, targetTask));
+  };
+
+  const resetPlanPointerDrag = () => {
+    planDragRef.current = null;
+    setPlanDragTask(null);
+  };
+
+  const handlePlanTaskPointerDown = (event: React.PointerEvent<HTMLButtonElement>, task: Task) => {
+    if (saving || isHeadingTask(task)) return;
+    event.stopPropagation();
+    planDragRef.current = { task, startX: event.clientX, startY: event.clientY, dragging: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePlanTaskPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const dragState = planDragRef.current;
+    if (!dragState) return;
+
+    const distance = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+    if (!dragState.dragging && distance > 6) {
+      dragState.dragging = true;
+      setPlanDragTask(dragState.task);
+    }
+    if (dragState.dragging) event.preventDefault();
+  };
+
+  const handlePlanTaskPointerUp = async (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const dragState = planDragRef.current;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+
+    if (!dragState) return;
+    resetPlanPointerDrag();
+    if (!dragState.dragging) return;
+
+    event.preventDefault();
+    suppressPlanDragClickRef.current = true;
+    const dropElement = document.elementFromPoint(event.clientX, event.clientY);
+    const dropRow = dropElement instanceof HTMLElement ? dropElement.closest<HTMLElement>("[data-plan-task-id]") : null;
+    const targetTaskId = dropRow?.dataset.planTaskId || "";
+    const targetTask = sortedTasks.find((item) => item.task_id === targetTaskId);
+    if (!targetTask || !canDropPlanTaskFrom(dragState.task, targetTask)) return;
+
+    const targetPosition = sortedTasks.findIndex((item) => item.task_id === targetTask.task_id) + 1;
+    if (targetPosition > 0) await moveTaskToPosition(dragState.task, targetPosition);
+  };
+
   const saveTask = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selectedProject || !taskForm.name) return;
@@ -892,8 +1077,10 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     const plannedStart = isHeading ? "" : taskForm.planned_start || taskForm.start;
     const plannedEnd = isHeading ? "" : taskForm.planned_end || taskForm.end;
     const parentTask = sortedTasks.find((task) => task.task_id === taskForm.parent_task_id);
+    const progressPatch = isHeading ? {} : buildTaskStatusPatch(taskForm.status, taskForm.percent_done);
     const payload = {
       ...taskForm,
+      ...progressPatch,
       project_id: selectedProject,
       category: isHeading ? taskForm.name : parentTask?.name || "",
       order_index: taskForm.order_index || String(sortedTasks.length + 1),
@@ -1348,7 +1535,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           projectName={selectedProjectData?.name || "-"}
           onCreateTask={() => openNewTask("subtask")}
           onEditTask={openEditTask}
-          onStatusChange={(task, status) => saveTaskPatch(task, { status }, "อัปเดตสถานะงานเรียบร้อยแล้ว")}
+          onStatusChange={(task, status) => saveTaskPatch(task, buildTaskStatusPatch(status, task.percent_done), "อัปเดตสถานะงานเรียบร้อยแล้ว")}
         />
       ) : activeTab === "plan" ? (
         <div className="schedule-screen-only bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
@@ -1478,6 +1665,8 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                   const isHeading = isHeadingTask(task);
                   const parentTaskName = getParentTaskName(task, taskMap);
                   const outlineNumber = getTaskOutlineNumber(task, visibleTaskRows, sortedTasks);
+                  const isDropTarget = canDropPlanTask(task);
+                  const isDraggingTask = Boolean(planDragTask && planDragTask.task_id === task.task_id);
 
                   if (isHeading) {
                     return (
@@ -1527,20 +1716,29 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                   return (
                   <tr
                     key={task.task_id}
+                    data-plan-task-id={task.task_id}
                     onClick={() => quickDateEdit && openDateEditTask(task)}
-                    className={`border-b border-gray-100 hover:bg-orange-50/30 ${quickDateEdit ? "cursor-pointer" : ""} ${isHeading ? "bg-gray-50" : ""}`}
+                    className={`border-b border-gray-100 hover:bg-orange-50/30 ${quickDateEdit ? "cursor-pointer" : ""} ${isHeading ? "bg-gray-50" : ""} ${isDropTarget ? "bg-orange-50 ring-1 ring-inset ring-orange-200" : ""} ${isDraggingTask ? "opacity-60" : ""}`}
                   >
                     <td className="px-4 py-4 text-gray-500">
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
+                          onPointerDown={(event) => handlePlanTaskPointerDown(event, task)}
+                          onPointerMove={handlePlanTaskPointerMove}
+                          onPointerUp={(event) => void handlePlanTaskPointerUp(event)}
+                          onPointerCancel={resetPlanPointerDrag}
                           onClick={(event) => {
                             event.stopPropagation();
+                            if (suppressPlanDragClickRef.current) {
+                              suppressPlanDragClickRef.current = false;
+                              return;
+                            }
                             promptMoveTask(task);
                           }}
                           disabled={saving}
-                          className="inline-flex min-w-14 items-center justify-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 font-semibold text-gray-700 hover:border-orange-300 hover:text-orange-700 disabled:opacity-50 ml-6"
-                          title="คลิกเพื่อย้ายไปลำดับที่ต้องการ"
+                          className="ml-6 inline-flex min-w-14 cursor-grab items-center justify-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 font-semibold text-gray-700 hover:border-orange-300 hover:text-orange-700 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50"
+                          title="ลากเพื่อย้ายลำดับ หรือคลิกเพื่อระบุลำดับ"
                         >
                           <GripVertical size={14} />
                           {outlineNumber}
@@ -1606,12 +1804,16 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                     <td className="px-4 py-4 font-semibold">{formatDateShort(task.end)}</td>
                     <td className="px-4 py-4 text-center">{task.duration_days || daysBetween(task.start, task.end) || "-"}</td>
                     <td className="px-4 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-20 h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-orange-600 rounded-full" style={{ width: `${clamp(Number(task.percent_done || 0))}%` }} />
-                        </div>
-                        <span className="text-xs font-bold text-orange-700">{task.percent_done || 0}%</span>
-                      </div>
+                      <InlineTaskProgress
+                        key={`${task.task_id || task._rowIndex}-${task.percent_done || 0}`}
+                        task={task}
+                        saving={saving}
+                        onProgressChange={(targetTask, progress) => saveTaskPatch(
+                          targetTask,
+                          buildTaskProgressPatch(progress),
+                          "อัปเดตความคืบหน้างานเรียบร้อยแล้ว"
+                        )}
+                      />
                     </td>
                     <td className="px-4 py-4">
                       <span className="px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">
@@ -2285,6 +2487,55 @@ function DecisionTable({
   );
 }
 
+function InlineTaskProgress({
+  task,
+  saving,
+  onProgressChange,
+}: {
+  task: Task;
+  saving: boolean;
+  onProgressChange: (task: Task, progress: string) => Promise<boolean>;
+}) {
+  const savedProgress = normalizeProgressValue(task.percent_done);
+  const [currentProgress, setCurrentProgress] = useState(savedProgress);
+
+  const commitProgress = async () => {
+    const nextProgress = normalizeProgressValue(currentProgress);
+    if (nextProgress === savedProgress || saving) return;
+
+    const saved = await onProgressChange(task, nextProgress);
+    if (!saved) setCurrentProgress(savedProgress);
+  };
+
+  return (
+    <div
+      className="flex w-44 items-center gap-2"
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value={currentProgress}
+        disabled={saving}
+        onChange={(event) => setCurrentProgress(normalizeProgressValue(event.target.value))}
+        onPointerUp={() => void commitProgress()}
+        onBlur={() => void commitProgress()}
+        onKeyUp={(event) => {
+          if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Enter"].includes(event.key)) {
+            void commitProgress();
+          }
+        }}
+        className="h-2 w-28 cursor-pointer accent-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
+        aria-label={`Progress ${task.name}`}
+      />
+      <span className="w-10 text-right text-xs font-bold text-orange-700">{currentProgress}%</span>
+    </div>
+  );
+}
+
 function GanttOverlay({
   timeline,
   milestones,
@@ -2723,12 +2974,25 @@ function TaskModal({
               <input type="date" value={form.planned_end || form.end} onChange={(event) => onChange((prev) => ({ ...prev, end: event.target.value, planned_end: event.target.value }))} className="schedule-input" />
             </Field>
             <Field label="สถานะ">
-              <select value={form.status} onChange={(event) => onChange((prev) => ({ ...prev, status: event.target.value }))} className="schedule-input">
+              <select
+                value={form.status}
+                onChange={(event) => onChange((prev) => ({ ...prev, ...buildTaskStatusPatch(event.target.value, prev.percent_done) }))}
+                className="schedule-input"
+              >
                 {TASK_STATUSES.map((status) => <option key={status} value={status}>{TASK_STATUS_LABELS[status]}</option>)}
               </select>
             </Field>
             <Field label="ความคืบหน้า (%)">
-              <input type="number" min="0" max="100" value={form.percent_done} onChange={(event) => onChange((prev) => ({ ...prev, percent_done: event.target.value }))} className="schedule-input" />
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={normalizeProgressValue(form.percent_done)}
+                onChange={(event) => onChange((prev) => ({ ...prev, ...buildTaskProgressPatch(event.target.value) }))}
+                className="w-full accent-orange-600"
+              />
+              <div className="mt-1 text-xs font-extrabold text-orange-700">{normalizeProgressValue(form.percent_done)}%</div>
             </Field>
           </div>
 
@@ -3171,30 +3435,183 @@ function GanttPrintDocument({
   todayLeft: number | null;
 }) {
   const workTasks = tasks.filter((task) => !isHeadingTask(task));
+  const printSegments = buildGanttPrintSegments(timeline);
+  const rowPages = chunkList(tasks, GANTT_PRINT_ROWS_PER_PAGE);
+  const totalPages = printSegments.length * rowPages.length;
+  const printedAt = new Intl.DateTimeFormat("th-TH", { dateStyle: "long" }).format(new Date());
 
   return (
     <div className={`schedule-print-doc gantt-print-doc ${active ? "is-printing" : ""}`}>
-      <PrintHeader title="Gantt Chart / แผนภูมิแกนต์" project={project} />
-      <PrintMetaGrid
-        items={[
-          { label: "ช่วงเวลา", value: dateRangeLabel(timeline.start, timeline.end) },
-          { label: "แถวที่แสดง", value: tasks.length },
-          { label: "งานย่อยที่แสดง", value: workTasks.length },
-          { label: "ความครบถ้วนแผน", value: `${stats.average}%` },
-        ]}
-      />
-      <div className="print-gantt">
-        <GanttPanel
-          tasks={tasks}
-          milestones={milestones}
-          timeline={timeline}
-          todayLeft={todayLeft}
-          loading={false}
-          onEditMilestone={() => undefined}
-        />
-      </div>
-      <PrintSignatures />
+      {printSegments.flatMap((segment, segmentIndex) => rowPages.map((rowTasks, rowPageIndex) => {
+        const pageNumber = segmentIndex * rowPages.length + rowPageIndex + 1;
+        return (
+          <section key={`${segment.index}-${rowPageIndex}`} className="gantt-print-page">
+            <PrintHeader title="High Resolution Gantt Chart / แผนภูมิแกนต์ความละเอียดสูง" project={project} />
+            <PrintMetaGrid
+              items={[
+                { label: "วันที่พิมพ์", value: printedAt },
+                { label: "ช่วงเวลาหน้านี้", value: dateRangeLabel(segment.start, segment.end) },
+                { label: "ช่วงเวลาโครงการ", value: dateRangeLabel(timeline.start, timeline.end) },
+                { label: "หน้า", value: `${pageNumber} / ${totalPages}` },
+                { label: "แถวในหน้านี้", value: rowTasks.length },
+                { label: "งานย่อยทั้งหมด", value: workTasks.length },
+                { label: "Milestone", value: milestones.length },
+                { label: "Progress รวม", value: `${stats.average}%` },
+              ]}
+            />
+            <GanttPrintSvg
+              tasks={rowTasks}
+              allTasks={tasks}
+              milestones={milestones}
+              segment={segment}
+              today={todayLeft === null ? null : new Date()}
+            />
+            {pageNumber === totalPages ? <PrintSignatures /> : null}
+          </section>
+        );
+      }))}
     </div>
+  );
+}
+
+function GanttPrintSvg({
+  tasks,
+  allTasks,
+  milestones,
+  segment,
+  today,
+}: {
+  tasks: Task[];
+  allTasks: Task[];
+  milestones: Milestone[];
+  segment: GanttPrintSegment;
+  today: Date | null;
+}) {
+  const taskMap = new Map(allTasks.map((task) => [task.task_id, task]));
+  const ticks = buildGanttPrintTicks(segment);
+  const monthMarkers = buildGanttPrintMonthMarkers(segment);
+  const totalDays = Math.max(1, diffDays(segment.start, segment.end) + 1);
+  const svgHeight = GANTT_PRINT_HEADER_HEIGHT + Math.max(1, tasks.length) * GANTT_PRINT_ROW_HEIGHT + 44;
+  const chartX = GANTT_PRINT_LEFT_WIDTH;
+  const chartEndX = chartX + GANTT_PRINT_CHART_WIDTH;
+  const rowStartY = GANTT_PRINT_HEADER_HEIGHT;
+
+  const xForDate = (date: Date) => {
+    const offset = diffDays(segment.start, date);
+    return chartX + clamp(offset / totalDays, 0, 1) * GANTT_PRINT_CHART_WIDTH;
+  };
+
+  const xForEndDate = (date: Date) => {
+    const offset = diffDays(segment.start, addDays(date, 1));
+    return chartX + clamp(offset / totalDays, 0, 1) * GANTT_PRINT_CHART_WIDTH;
+  };
+
+  const todayX = today && today >= segment.start && today <= segment.end ? xForDate(today) : null;
+
+  return (
+    <svg className="gantt-print-svg" viewBox={`0 0 ${GANTT_PRINT_SVG_WIDTH} ${svgHeight}`} role="img" aria-label="High resolution Gantt chart">
+      <rect x="0" y="0" width={GANTT_PRINT_SVG_WIDTH} height={svgHeight} fill="#ffffff" />
+      <rect x="0" y="0" width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#111827" />
+      <rect x="0" y="0" width={GANTT_PRINT_LEFT_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#1f2937" />
+      <text x="18" y="31" fill="#ffffff" fontSize="18" fontWeight="800">Task / Owner / Dates</text>
+      <text x="18" y="58" fill="#d1d5db" fontSize="12">Rows {tasks.length} • Segment {segment.index}/{segment.total}</text>
+
+      {monthMarkers.map((date) => {
+        const x = xForDate(date);
+        return (
+          <g key={`month-${toInputDate(date)}`}>
+            <line x1={x} y1="0" x2={x} y2={svgHeight} stroke="#94a3b8" strokeWidth="1.4" strokeDasharray="5 5" />
+            <text x={x + 6} y="24" fill="#ffffff" fontSize="14" fontWeight="800">
+              {new Intl.DateTimeFormat("th-TH", { month: "short", year: "2-digit" }).format(date)}
+            </text>
+          </g>
+        );
+      })}
+
+      {ticks.map((date) => {
+        const x = xForDate(date);
+        return (
+          <g key={`tick-${toInputDate(date)}`}>
+            <line x1={x} y1="44" x2={x} y2={svgHeight} stroke="#e5e7eb" strokeWidth="1" />
+            <text x={x + 4} y="65" fill="#e5e7eb" fontSize="11">
+              {new Intl.DateTimeFormat("th-TH", { day: "2-digit", month: "short" }).format(date)}
+            </text>
+          </g>
+        );
+      })}
+
+      {todayX !== null ? (
+        <g>
+          <line x1={todayX} y1="0" x2={todayX} y2={svgHeight} stroke="#dc2626" strokeWidth="2.5" />
+          <rect x={todayX - 28} y="7" width="56" height="20" rx="10" fill="#dc2626" />
+          <text x={todayX} y="21" fill="#ffffff" fontSize="10" fontWeight="800" textAnchor="middle">TODAY</text>
+        </g>
+      ) : null}
+
+      {tasks.length === 0 ? (
+        <text x={GANTT_PRINT_SVG_WIDTH / 2} y={rowStartY + 36} fill="#64748b" fontSize="18" textAnchor="middle">No tasks in this page</text>
+      ) : null}
+
+      {tasks.map((task, index) => {
+        const y = rowStartY + index * GANTT_PRINT_ROW_HEIGHT;
+        const isHeading = isHeadingTask(task);
+        const taskStart = parseDate(task.start) || parseDate(task.end);
+        const taskEnd = parseDate(task.end) || taskStart;
+        const color = isHeading ? "#111827" : getTaskCategoryColor(task, taskMap);
+        const progress = clamp(Number(task.percent_done || 0));
+        const outline = getTaskOutlineNumber(task, allTasks, allTasks);
+        const intersects = taskStart && taskEnd && taskStart <= segment.end && taskEnd >= segment.start;
+        const barStart = taskStart ? maxDate(taskStart, segment.start) : segment.start;
+        const barEnd = taskEnd ? minDate(taskEnd, segment.end) : segment.start;
+        const barX = xForDate(barStart);
+        const barW = Math.max(4, xForEndDate(barEnd) - barX);
+        const barY = y + (isHeading ? 15 : 10);
+        const barH = isHeading ? 10 : 18;
+
+        return (
+          <g key={`${task.task_id}-${index}`}>
+            <rect x="0" y={y} width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill={isHeading ? "#f8fafc" : (index % 2 === 0 ? "#ffffff" : "#fbfdff")} />
+            <line x1="0" y1={y + GANTT_PRINT_ROW_HEIGHT} x2={GANTT_PRINT_SVG_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#e5e7eb" strokeWidth="1" />
+            <line x1={GANTT_PRINT_LEFT_WIDTH} y1={y} x2={GANTT_PRINT_LEFT_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#cbd5e1" strokeWidth="1.4" />
+            <text x="16" y={y + 17} fill="#111827" fontSize="11" fontWeight="800">{outline}</text>
+            <text x="58" y={y + 17} fill="#111827" fontSize={isHeading ? "13" : "12"} fontWeight={isHeading ? "800" : "700"}>
+              {isHeading ? truncateText(task.name, 42) : truncateText(task.name, 38)}
+            </text>
+            <text x="58" y={y + 32} fill="#64748b" fontSize="10">
+              {isHeading ? `${task.summary_child_count || 0} tasks` : `${truncateText(task.assignee || "-", 18)} • ${formatDateShort(task.start)}-${formatDateShort(task.end)} • ${progress}%`}
+            </text>
+            {intersects ? (
+              <g>
+                <rect x={barX} y={barY} width={barW} height={barH} rx="5" fill={color} />
+                {!isHeading ? <rect x={barX} y={barY} width={Math.max(0, barW * (progress / 100))} height={barH} rx="5" fill="rgba(255,255,255,0.30)" /> : null}
+                {!isHeading ? (
+                  <text x={Math.min(barX + barW + 6, chartEndX - 28)} y={y + 24} fill="#111827" fontSize="10" fontWeight="800">
+                    {progress}%
+                  </text>
+                ) : null}
+              </g>
+            ) : taskStart && taskEnd ? (
+              <text x={chartX + 10} y={y + 24} fill="#94a3b8" fontSize="10">outside this date segment</text>
+            ) : (
+              <text x={chartX + 10} y={y + 24} fill="#94a3b8" fontSize="10">no planned date</text>
+            )}
+          </g>
+        );
+      })}
+
+      {milestones.map((milestone) => {
+        const date = parseDate(milestone.date);
+        if (!date || date < segment.start || date > segment.end) return null;
+        const x = xForDate(date);
+        return (
+          <g key={milestone.milestone_id}>
+            <line x1={x} y1="0" x2={x} y2={svgHeight} stroke={milestone.color || "#f97316"} strokeWidth="2" strokeDasharray="4 4" />
+            <rect x={x - 5} y="36" width="10" height="10" transform={`rotate(45 ${x} 41)`} fill={milestone.color || "#f97316"} />
+            <text x={x + 7} y="42" fill="#111827" fontSize="10" fontWeight="800">{truncateText(milestone.title, 24)}</text>
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 

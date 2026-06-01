@@ -1958,7 +1958,7 @@ textarea.form-input {
 
 @media print {
   @page {
-    size: A4 landscape;
+    size: A3 landscape;
     margin: 8mm;
   }
 
@@ -2089,6 +2089,14 @@ textarea.form-input {
     page-break-inside: auto !important;
   }
 
+  .plan-print-doc .print-plan-table thead {
+    display: table-header-group !important;
+  }
+
+  .plan-print-doc .print-plan-table tbody {
+    display: table-row-group !important;
+  }
+
   .plan-print-doc .print-plan-table tr {
     break-inside: avoid !important;
   }
@@ -2171,36 +2179,25 @@ textarea.form-input {
     break-inside: avoid;
   }
 
-  .print-gantt .gantt-scroll {
-    max-height: none !important;
-    overflow: visible !important;
+  .gantt-print-page {
+    break-after: page !important;
+    page-break-after: always !important;
+    break-inside: avoid !important;
   }
 
-  .print-gantt .gantt-panel-heading {
-    display: none !important;
+  .gantt-print-page:last-child {
+    break-after: auto !important;
+    page-break-after: auto !important;
   }
 
-  .print-gantt .min-w-\[1560px\] {
-    min-width: 1040px !important;
-  }
-
-  .print-gantt .gantt-child-row > div:first-child {
-    padding-left: 40px !important;
-  }
-
-  .print-gantt {
-    transform: scale(0.94);
-    transform-origin: top left;
-    width: 106%;
-  }
-
-  .print-gantt .bg-white,
-  .print-gantt .bg-\[\#1d1d1d\],
-  .print-gantt .bg-red-50,
-  .print-gantt .bg-gray-100,
-  .print-gantt .bg-white\/20 {
-    print-color-adjust: exact !important;
-    -webkit-print-color-adjust: exact !important;
+  .gantt-print-svg {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    border: 1px solid #cbd5e1 !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    background: #ffffff !important;
   }
 
   .gantt-task-bar {
