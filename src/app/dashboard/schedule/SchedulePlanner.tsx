@@ -280,6 +280,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่งมอบ", "อื่น ๆ"];
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
 const COLLAPSED_STORAGE_KEY = "pmc.schedule.collapsedHeadings.v1";
+const PLAN_PRINT_ROWS_PER_PAGE = 28;
 const GANTT_PRINT_DAYS_PER_PAGE = 56;
 const GANTT_PRINT_ROWS_PER_PAGE = 16;
 const GANTT_PRINT_SVG_WIDTH = 1500;
@@ -364,6 +365,20 @@ function chunkList<T>(items: T[], size: number) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks.length ? chunks : [[]];
+}
+
+function chunkPlanPrintRows(tasks: Task[], size: number) {
+  const chunks = chunkList(tasks, size).filter((chunk) => chunk.length > 0);
+  if (!chunks.length) return [[]];
+  for (let index = 0; index < chunks.length - 1; index += 1) {
+    const chunk = chunks[index];
+    const lastTask = chunk[chunk.length - 1];
+    if (lastTask && isHeadingTask(lastTask)) {
+      chunks[index + 1] = [lastTask, ...chunks[index + 1]];
+      chunk.pop();
+    }
+  }
+  return chunks.filter((chunk) => chunk.length > 0);
 }
 
 function truncateText(value: string | undefined, maxLength: number) {
@@ -3383,71 +3398,79 @@ function PrintMetaGrid({ items }: { items: { label: string; value: string | numb
 function PlanPrintDocument({ active, project, tasks, stats }: { active: boolean; project?: Project; tasks: Task[]; stats: { average: number }; }) {
   const workTasks = tasks.filter((task) => !isHeadingTask(task));
   const headingCount = tasks.filter(isHeadingTask).length;
+  const rowPages = chunkPlanPrintRows(tasks, PLAN_PRINT_ROWS_PER_PAGE);
+  const totalPages = rowPages.length;
   const printedAt = new Intl.DateTimeFormat("th-TH", { dateStyle: "long" }).format(new Date());
 
   return (
     <div className={`schedule-print-doc plan-print-doc ${active ? "is-printing" : ""}`}>
-      <PrintHeader title="Project Schedule / แผนงานโครงการ" project={project} />
-      <PrintMetaGrid
-        items={[
-          { label: "วันที่พิมพ์", value: printedAt },
-          { label: "หัวข้อหลัก", value: headingCount },
-          { label: "งานย่อยที่แสดง", value: workTasks.length },
-          { label: "ความครบถ้วนแผน", value: `${stats.average}%` },
-        ]}
-      />
-      <table className="print-plan-table">
-        <thead>
-          <tr>
-            <th>ลำดับ</th>
-            <th>ชื่องาน</th>
-            <th>ผู้รับผิดชอบ</th>
-            <th>เริ่ม</th>
-            <th>สิ้นสุด</th>
-            <th>วัน</th>
-            <th>Progress</th>
-            <th>สถานะ</th>
-            <th>หมายเหตุ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tasks.map((task) => {
-            const isHeading = isHeadingTask(task);
-            const outline = getTaskOutlineNumber(task, tasks, tasks);
-
-            if (isHeading) {
-              return (
-                <tr key={task.task_id} className="print-heading-task">
-                  <td>{outline}</td>
-                  <td colSpan={8}>
-                    <strong>{task.name}</strong>
-                    <span>{task.summary_child_count || 0} งานย่อย | {formatDateShort(task.start)} - {formatDateShort(task.end)}</span>
-                  </td>
-                </tr>
-              );
-            }
-
-            return (
-              <tr key={task.task_id}>
-                <td>{outline}</td>
-                <td className="print-child-task-name">{task.name}</td>
-                <td>{task.assignee || "-"}</td>
-                <td>{formatDateShort(task.start)}</td>
-                <td>{formatDateShort(task.end)}</td>
-                <td>{task.duration_days || daysBetween(task.start, task.end) || "-"}</td>
-                <td>{task.percent_done || 0}%</td>
-                <td>
-                  <span className={`print-status-pill ${getTaskStatusTone(task.status).print}`}>
-                    {TASK_STATUS_LABELS[task.status || "To Do"]}
-                  </span>
-                </td>
-                <td>{task.notes || "-"}</td>
+      {rowPages.map((rowTasks, pageIndex) => (
+        <section key={`plan-page-${pageIndex}`} className="plan-print-page">
+          <PrintHeader title="Project Schedule / แผนงานโครงการ" project={project} />
+          <PrintMetaGrid
+            items={[
+              { label: "วันที่พิมพ์", value: printedAt },
+              { label: "หัวข้อหลัก", value: headingCount },
+              { label: "งานย่อยที่แสดง", value: workTasks.length },
+              { label: "ความครบถ้วนแผน", value: `${stats.average}%` },
+              { label: "หน้า", value: `${pageIndex + 1} / ${totalPages}` },
+              { label: "แถวในหน้านี้", value: rowTasks.length },
+            ]}
+          />
+          <table className="print-plan-table">
+            <thead>
+              <tr>
+                <th>ลำดับ</th>
+                <th>ชื่องาน</th>
+                <th>ผู้รับผิดชอบ</th>
+                <th>เริ่ม</th>
+                <th>สิ้นสุด</th>
+                <th>วัน</th>
+                <th>Progress</th>
+                <th>สถานะ</th>
+                <th>หมายเหตุ</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <PrintSignatures />
+            </thead>
+            <tbody>
+              {rowTasks.map((task) => {
+                const isHeading = isHeadingTask(task);
+                const outline = getTaskOutlineNumber(task, tasks, tasks);
+
+                if (isHeading) {
+                  return (
+                    <tr key={task.task_id} className="print-heading-task">
+                      <td>{outline}</td>
+                      <td colSpan={8}>
+                        <strong>{task.name}</strong>
+                        <span>{task.summary_child_count || 0} งานย่อย | {formatDateShort(task.start)} - {formatDateShort(task.end)}</span>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                return (
+                  <tr key={task.task_id}>
+                    <td>{outline}</td>
+                    <td className="print-child-task-name">{task.name}</td>
+                    <td>{task.assignee || "-"}</td>
+                    <td>{formatDateShort(task.start)}</td>
+                    <td>{formatDateShort(task.end)}</td>
+                    <td>{task.duration_days || daysBetween(task.start, task.end) || "-"}</td>
+                    <td>{task.percent_done || 0}%</td>
+                    <td>
+                      <span className={`print-status-pill ${getTaskStatusTone(task.status).print}`}>
+                        {TASK_STATUS_LABELS[task.status || "To Do"]}
+                      </span>
+                    </td>
+                    <td>{task.notes || "-"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {pageIndex === totalPages - 1 ? <PrintSignatures /> : null}
+        </section>
+      ))}
     </div>
   );
 }
