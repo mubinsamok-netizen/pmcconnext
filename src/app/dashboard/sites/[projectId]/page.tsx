@@ -25,12 +25,13 @@ import {
   TrendingUp,
 } from "lucide-react";
 import SiteWeatherCard from "@/components/SiteWeatherCard";
+import SiteCalendarPanel, { type SiteCalendarEvent } from "./SiteCalendarPanel";
 import { authOptions } from "@/lib/authOptions";
 import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
-import { findAllBatch } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllRaw } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
-import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { isSupabaseBackend, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
 import { getSiteWeather } from "@/lib/siteWeather";
@@ -137,6 +138,7 @@ type DashboardData = {
   lifecycleAlerts: DashboardAction[];
   actions: DashboardAction[];
   recent: RecentItem[];
+  calendarEvents: SiteCalendarEvent[];
   error: string;
 };
 
@@ -202,6 +204,7 @@ const emptyData: DashboardData = {
   lifecycleAlerts: [],
   actions: [],
   recent: [],
+  calendarEvents: [],
   error: "",
 };
 
@@ -244,6 +247,12 @@ function formatMoney(value: number) {
   }).format(value);
 }
 
+function toDateInputValue(value?: SiteValue) {
+  const date = parseDate(value);
+  if (!date) return "";
+  return date.toISOString().slice(0, 10);
+}
+
 function buildDriveFolderUrl(folderId?: SiteValue) {
   const value = stringValue(folderId);
   if (!value) return "";
@@ -271,6 +280,22 @@ function isTaskDone(task: SiteRecord) {
 
 function isProjectRow(projectId: string) {
   return (row: SiteRecord) => stringValue(row.project_id) === projectId;
+}
+
+function mergeRowsById(primary: SiteRecord[], fallback: SiteRecord[], idField: string) {
+  const merged = new Map<string, SiteRecord>();
+
+  fallback.forEach((row, index) => {
+    const key = stringValue(row[idField] || row._rowIndex || `fallback-${index}`);
+    merged.set(key, row);
+  });
+
+  primary.forEach((row, index) => {
+    const key = stringValue(row[idField] || row._rowIndex || `primary-${index}`);
+    merged.set(key, row);
+  });
+
+  return Array.from(merged.values());
 }
 
 function daysUntil(value?: SiteValue) {
@@ -311,7 +336,442 @@ function statusLabel(value?: SiteValue) {
 }
 
 function itemTitle(row: SiteRecord, fallback: string) {
-  return stringValue(row.title || row.name || row.description || row.document_no || row.doc_no || row.file_name) || fallback;
+  return stringValue(row.title || row.name || row.description || row.summary || row.document_no || row.doc_no || row.ref_no || row.file_name) || fallback;
+}
+
+function calendarTone(status?: SiteValue, date?: SiteValue): SiteCalendarEvent["tone"] {
+  const remaining = daysUntil(date);
+  if (remaining !== null && remaining < 0 && !isClosedStatus(status)) return "red";
+  if (isClosedStatus(status)) return "green";
+  if (isHighPriority(status)) return "orange";
+  const normalized = stringValue(status).toLowerCase();
+  if (["pending", "pending_approval", "รอลูกค้า", "ต้องยืนยัน", "ส่งแจ้งเตือนแล้ว", "waiting_ack"].includes(normalized)) return "orange";
+  return "blue";
+}
+
+function calendarEvent({
+  id,
+  date,
+  title,
+  detail,
+  source,
+  href,
+  tone = "blue",
+  time = "",
+}: {
+  id: string;
+  date?: SiteValue;
+  title: string;
+  detail: string;
+  source: SiteCalendarEvent["source"];
+  href: string;
+  tone?: SiteCalendarEvent["tone"];
+  time?: string;
+}): SiteCalendarEvent | null {
+  const day = toDateInputValue(date);
+  if (!day) return null;
+  return { id, date: day, title, detail, source, href, tone, time };
+}
+
+function calendarDateRange(start?: SiteValue, end?: SiteValue) {
+  const startDate = parseDate(start);
+  if (!startDate) return [];
+  const endDate = parseDate(end) || startDate;
+  const first = startDate.getTime() <= endDate.getTime() ? startDate : endDate;
+  const last = startDate.getTime() <= endDate.getTime() ? endDate : startDate;
+  const days: string[] = [];
+  const cursor = new Date(first);
+  cursor.setHours(12, 0, 0, 0);
+  last.setHours(12, 0, 0, 0);
+
+  while (cursor.getTime() <= last.getTime() && days.length < 180) {
+    days.push(toDateInputValue(cursor.toISOString()));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return days;
+}
+
+function compactCalendarEvents(events: Array<SiteCalendarEvent | null>) {
+  return events
+    .filter((event): event is SiteCalendarEvent => Boolean(event))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title, "th"))
+    .slice(0, 2500);
+}
+
+function buildCalendarEvents(project: MasterProject, rows: {
+  tasks: SiteRecord[];
+  milestones: SiteRecord[];
+  customerDecisions: SiteRecord[];
+  qcChecklists: SiteRecord[];
+  issues: SiteRecord[];
+  materials: SiteRecord[];
+  dailyReports: SiteRecord[];
+  weeklyReports: SiteRecord[];
+  monthlyReports: SiteRecord[];
+  defectRounds: SiteRecord[];
+  defectItems: SiteRecord[];
+  documents: SiteRecord[];
+  variationOrders: SiteRecord[];
+  voFinanceLedger: SiteRecord[];
+  siteNotes: SiteRecord[];
+  siteMemos: SiteRecord[];
+  lifecycle?: SiteRecord;
+  warranty?: SiteRecord;
+}) {
+  const events: Array<SiteCalendarEvent | null> = [];
+  const projectId = project.project_id;
+  const scheduleHref = `/dashboard/sites/${projectId}/schedule`;
+  const reportsHref = `/dashboard/sites/${projectId}/reports`;
+  const lifecycleHref = `/dashboard/sites/${projectId}/lifecycle`;
+  const detailsHref = `/dashboard/sites/${projectId}/details`;
+
+  events.push(calendarEvent({
+    id: `project-start-${projectId}`,
+    date: project.start_date,
+    title: `เริ่มโครงการ: ${project.name}`,
+    detail: project.client || project.project_id,
+    source: "โครงการ",
+    href: detailsHref,
+    tone: "blue",
+  }));
+  events.push(calendarEvent({
+    id: `project-end-${projectId}`,
+    date: project.end_date,
+    title: `สิ้นสุดโครงการ: ${project.name}`,
+    detail: statusLabel(project.status),
+    source: "โครงการ",
+    href: detailsHref,
+    tone: calendarTone(project.status, project.end_date),
+  }));
+
+  rows.tasks.forEach((task) => {
+    const start = task.planned_start || task.start;
+    const end = task.planned_end || task.end;
+    const activeDates = calendarDateRange(start, end);
+    if (activeDates.length === 0) return;
+    const title = itemTitle(task, "งานแผนงาน");
+    const detail = stringValue(task.assignee) || statusLabel(task.status);
+    const taskId = stringValue(task.task_id || title);
+    const isHeading = stringValue(task.task_type) === "heading";
+
+    activeDates.forEach((day, index) => {
+      const isFirst = index === 0;
+      const isLast = index === activeDates.length - 1;
+      const label =
+        activeDates.length === 1
+          ? title
+          : isFirst
+            ? `เริ่ม: ${title}`
+            : isLast
+              ? `ครบกำหนด: ${title}`
+              : isHeading
+                ? `ช่วงงาน: ${title}`
+                : title;
+      events.push(calendarEvent({
+        id: `task-active-${taskId}-${day}`,
+        date: day,
+        title: label,
+        detail,
+        source: "แผนงาน",
+        href: scheduleHref,
+        tone: isTaskDone(task) ? "green" : calendarTone(task.status, day),
+      }));
+    });
+  });
+
+  rows.milestones.forEach((milestone) => {
+    events.push(calendarEvent({
+      id: `milestone-${stringValue(milestone.milestone_id || milestone.title)}-${toDateInputValue(milestone.date)}`,
+      date: milestone.date,
+      title: itemTitle(milestone, "Milestone"),
+      detail: stringValue(milestone.type) || "Milestone",
+      source: "Milestone",
+      href: scheduleHref,
+      tone: "green",
+    }));
+  });
+
+  rows.customerDecisions.forEach((decision) => {
+    const status = stringValue(decision.decision_status);
+    events.push(calendarEvent({
+      id: `decision-notified-${stringValue(decision.decision_id || decision.title)}`,
+      date: decision.notified_at || decision.updated_at || decision.created_at,
+      title: itemTitle(decision, "รายการลูกค้าต้องตัดสินใจ"),
+      detail: status || "รอลูกค้าตัดสินใจ",
+      source: "ตัดสินใจ",
+      href: scheduleHref,
+      tone: calendarTone(status || "รอลูกค้า", decision.notified_at || decision.updated_at),
+    }));
+    events.push(calendarEvent({
+      id: `decision-confirmed-${stringValue(decision.decision_id || decision.title)}`,
+      date: decision.decided_at,
+      title: `ยืนยันแล้ว: ${itemTitle(decision, "รายการลูกค้าตัดสินใจ")}`,
+      detail: stringValue(decision.decided_by) || "ลูกค้า",
+      source: "ตัดสินใจ",
+      href: scheduleHref,
+      tone: "green",
+    }));
+  });
+
+  rows.qcChecklists.forEach((qc) => {
+    const href = `/dashboard/sites/${projectId}/qc-checklists`;
+    events.push(calendarEvent({
+      id: `qc-inspection-${stringValue(qc.qc_id || qc.title)}`,
+      date: qc.inspection_date,
+      title: `ตรวจ QC: ${itemTitle(qc, "QC Checklist")}`,
+      detail: statusLabel(qc.status || qc.approval_status),
+      source: "QC",
+      href,
+      tone: calendarTone(qc.status || qc.approval_status, qc.inspection_date),
+    }));
+    events.push(calendarEvent({
+      id: `qc-approved-${stringValue(qc.qc_id || qc.title)}`,
+      date: qc.customer_approved_at,
+      title: `QC อนุมัติ: ${itemTitle(qc, "QC Checklist")}`,
+      detail: stringValue(qc.customer_approved_by) || "ลูกค้า",
+      source: "QC",
+      href,
+      tone: "green",
+    }));
+  });
+
+  rows.issues.forEach((issue) => {
+    events.push(calendarEvent({
+      id: `issue-due-${stringValue(issue.issue_id || issue.title)}`,
+      date: issue.due_date,
+      title: `ครบกำหนด Issue: ${itemTitle(issue, "Issue")}`,
+      detail: stringValue(issue.owner || issue.priority) || statusLabel(issue.status),
+      source: "Issue",
+      href: "/dashboard/issues",
+      tone: calendarTone(issue.status || issue.priority, issue.due_date),
+    }));
+  });
+
+  rows.materials.forEach((material) => {
+    const href = "/dashboard/materials";
+    const title = itemTitle(material, "วัสดุ");
+    events.push(calendarEvent({
+      id: `material-order-${stringValue(material.material_id || title)}`,
+      date: material.order_date,
+      title: `สั่งวัสดุ: ${title}`,
+      detail: stringValue(material.supplier || material.quantity || material.qty_actual || material.unit) || statusLabel(material.status),
+      source: "วัสดุ",
+      href,
+      tone: calendarTone(material.status, material.order_date),
+    }));
+    events.push(calendarEvent({
+      id: `material-delivery-${stringValue(material.material_id || title)}`,
+      date: material.delivery_date,
+      title: `ส่งวัสดุ: ${title}`,
+      detail: stringValue(material.supplier || material.quantity || material.qty_actual || material.unit) || statusLabel(material.status),
+      source: "วัสดุ",
+      href,
+      tone: calendarTone(material.status, material.delivery_date),
+    }));
+  });
+
+  rows.defectRounds.forEach((round) => {
+    events.push(calendarEvent({
+      id: `defect-round-${stringValue(round.round_id || round.document_no)}`,
+      date: round.inspection_date,
+      title: itemTitle(round, "รอบตรวจ Defect"),
+      detail: statusLabel(round.status),
+      source: "Defect",
+      href: `/dashboard/sites/${projectId}/defects`,
+      tone: calendarTone(round.status, round.inspection_date),
+    }));
+  });
+
+  rows.defectItems.forEach((item) => {
+    events.push(calendarEvent({
+      id: `defect-due-${stringValue(item.item_id || item.item_no)}`,
+      date: item.due_date,
+      title: `ครบกำหนดแก้: ${itemTitle(item, "Defect")}`,
+      detail: stringValue(item.owner || item.zone || item.work_category) || statusLabel(item.status),
+      source: "Defect",
+      href: `/dashboard/sites/${projectId}/defects`,
+      tone: calendarTone(item.status, item.due_date),
+    }));
+  });
+
+  rows.variationOrders.forEach((vo) => {
+    const href = `/dashboard/sites/${projectId}/variation-orders`;
+    events.push(calendarEvent({
+      id: `vo-approval-${stringValue(vo.vo_id || vo.title)}`,
+      date: vo.approval_deadline,
+      title: `กำหนดอนุมัติ VO: ${itemTitle(vo, "Variation Order")}`,
+      detail: `${formatMoney(numberValue(vo.grand_total || vo.net_payable || vo.amount_due))} บาท`,
+      source: "VO",
+      href,
+      tone: calendarTone(vo.status, vo.approval_deadline),
+    }));
+    events.push(calendarEvent({
+      id: `vo-approved-${stringValue(vo.vo_id || vo.title)}`,
+      date: vo.customer_approved_at,
+      title: `VO อนุมัติ: ${itemTitle(vo, "Variation Order")}`,
+      detail: stringValue(vo.customer_approved_by) || statusLabel(vo.status),
+      source: "VO",
+      href,
+      tone: "green",
+    }));
+    events.push(calendarEvent({
+      id: `vo-payment-${stringValue(vo.vo_id || vo.title)}`,
+      date: vo.due_date,
+      title: `ครบกำหนดชำระ: ${itemTitle(vo, "Variation Order")}`,
+      detail: `${formatMoney(numberValue(vo.balance || vo.amount_due))} บาท`,
+      source: "VO",
+      href,
+      tone: calendarTone(vo.payment_status || vo.status, vo.due_date),
+    }));
+  });
+
+  rows.voFinanceLedger.forEach((entry) => {
+    events.push(calendarEvent({
+      id: `vo-ledger-${stringValue(entry.ledger_id || entry.ref_no || entry.summary)}`,
+      date: entry.entry_date,
+      title: itemTitle(entry, "รายการบัญชี VO"),
+      detail: stringValue(entry.ref_no || entry.entry_type) || `${formatMoney(numberValue(entry.debit || entry.credit))} บาท`,
+      source: "บัญชี",
+      href: `/dashboard/sites/${projectId}/variation-orders`,
+      tone: numberValue(entry.balance) > 0 ? "orange" : "green",
+    }));
+  });
+
+  rows.siteMemos.forEach((memo) => {
+    const href = `/dashboard/sites/${projectId}/memos`;
+    events.push(calendarEvent({
+      id: `memo-event-${stringValue(memo.memo_id || memo.document_no)}`,
+      date: memo.event_date || memo.issue_date,
+      title: itemTitle(memo, "Memo"),
+      detail: statusLabel(memo.status),
+      source: "Memo",
+      href,
+      tone: calendarTone(memo.status, memo.event_date || memo.issue_date),
+    }));
+    events.push(calendarEvent({
+      id: `memo-ack-${stringValue(memo.memo_id || memo.document_no)}`,
+      date: memo.acknowledged_date,
+      title: `รับทราบ Memo: ${itemTitle(memo, "Memo")}`,
+      detail: stringValue(memo.acknowledged_by) || "ลูกค้า",
+      source: "Memo",
+      href,
+      tone: "green",
+    }));
+  });
+
+  rows.siteNotes.forEach((note) => {
+    events.push(calendarEvent({
+      id: `note-follow-${stringValue(note.note_id || note.title)}`,
+      date: note.follow_up_date,
+      title: itemTitle(note, "ติดตามบันทึกหน้างาน"),
+      detail: stringValue(note.category || note.priority) || "Follow-up",
+      source: "บันทึก",
+      href: `/dashboard/sites/${projectId}/notes`,
+      tone: calendarTone(note.priority, note.follow_up_date),
+    }));
+  });
+
+  rows.dailyReports.forEach((report) => {
+    events.push(calendarEvent({
+      id: `daily-report-${stringValue(report.report_id || report.date)}`,
+      date: report.date,
+      title: itemTitle(report, "รายงานประจำวัน"),
+      detail: stringValue(report.weather || report.work_done) || "Daily Report",
+      source: "รายงาน",
+      href: reportsHref,
+      tone: "slate",
+    }));
+  });
+
+  rows.weeklyReports.forEach((report) => {
+    events.push(calendarEvent({
+      id: `weekly-report-${stringValue(report.report_id || report.week_start)}`,
+      date: report.week_end || report.week_start,
+      title: itemTitle(report, "รายงานประจำสัปดาห์"),
+      detail: report.week_start && report.week_end ? `${formatDate(report.week_start)} - ${formatDate(report.week_end)}` : "Weekly Report",
+      source: "รายงาน",
+      href: reportsHref,
+      tone: "slate",
+    }));
+  });
+
+  rows.monthlyReports.forEach((report) => {
+    events.push(calendarEvent({
+      id: `monthly-report-${stringValue(report.report_id || report.month || report.month_end)}`,
+      date: report.month_end || report.month_start || report.month,
+      title: itemTitle(report, "รายงานประจำเดือน"),
+      detail: stringValue(report.month) || "Monthly Report",
+      source: "รายงาน",
+      href: reportsHref,
+      tone: "slate",
+    }));
+  });
+
+  rows.documents.forEach((document) => {
+    events.push(calendarEvent({
+      id: `document-upload-${stringValue(document.document_id || document.drive_file_id || document.title)}`,
+      date: document.created_at || document.updated_at,
+      title: itemTitle(document, "เอกสารไซต์"),
+      detail: stringValue(document.category || document.uploaded_by_name) || "อัปโหลดเอกสาร",
+      source: "เอกสาร",
+      href: `/dashboard/sites/${projectId}/files`,
+      tone: "blue",
+    }));
+  });
+
+  const lifecycleEvents: Array<{ key: string; label: string; date?: SiteValue; tone?: SiteCalendarEvent["tone"] }> = [
+    { key: "design_start_date", label: "เริ่มออกแบบ", date: rows.lifecycle?.design_start_date, tone: "blue" },
+    { key: "design_done_date", label: "ออกแบบเสร็จ", date: rows.lifecycle?.design_done_date, tone: "green" },
+    { key: "contract_signed_date", label: "เซ็นสัญญา", date: rows.lifecycle?.contract_signed_date, tone: "green" },
+    { key: "drawing_start_date", label: "เริ่มแบบก่อสร้าง", date: rows.lifecycle?.drawing_start_date, tone: "blue" },
+    { key: "drawing_done_date", label: "แบบก่อสร้างเสร็จ", date: rows.lifecycle?.drawing_done_date, tone: "green" },
+    { key: "permit_submitted_date", label: "ยื่นขออนุญาต", date: rows.lifecycle?.permit_submitted_date, tone: "orange" },
+    { key: "permit_received_date", label: "ได้รับใบอนุญาต", date: rows.lifecycle?.permit_received_date, tone: "green" },
+    { key: "permit_expiry_date", label: "ใบอนุญาตหมดอายุ", date: rows.lifecycle?.permit_expiry_date },
+    { key: "temporary_electric_install_date", label: "ติดตั้งไฟชั่วคราว", date: rows.lifecycle?.temporary_electric_install_date, tone: "blue" },
+    { key: "temporary_electric_expiry_date", label: "ไฟชั่วคราวหมดอายุ", date: rows.lifecycle?.temporary_electric_expiry_date },
+    { key: "temporary_water_install_date", label: "ติดตั้งน้ำชั่วคราว", date: rows.lifecycle?.temporary_water_install_date, tone: "blue" },
+    { key: "temporary_water_expiry_date", label: "น้ำชั่วคราวหมดอายุ", date: rows.lifecycle?.temporary_water_expiry_date },
+    { key: "demolition_waiting_date", label: "รอรื้อถอน", date: rows.lifecycle?.demolition_waiting_date, tone: "orange" },
+    { key: "demolition_done_date", label: "รื้อถอนเสร็จ", date: rows.lifecycle?.demolition_done_date, tone: "green" },
+    { key: "construction_start_date", label: "เริ่มก่อสร้าง", date: rows.lifecycle?.construction_start_date, tone: "blue" },
+    { key: "construction_end_date", label: "สิ้นสุดก่อสร้าง", date: rows.lifecycle?.construction_end_date },
+  ];
+  lifecycleEvents.forEach((item) => {
+    events.push(calendarEvent({
+      id: `lifecycle-${projectId}-${item.key}`,
+      date: item.date,
+      title: item.label,
+      detail: statusLabel(rows.lifecycle?.current_status),
+      source: "Lifecycle",
+      href: lifecycleHref,
+      tone: item.tone || calendarTone(rows.lifecycle?.current_status, item.date),
+    }));
+  });
+
+  const warrantyEvents: Array<{ key: string; label: string; date?: SiteValue; tone?: SiteCalendarEvent["tone"] }> = [
+    { key: "handover_date", label: "วันส่งมอบงาน", date: rows.warranty?.handover_date, tone: "green" },
+    { key: "structure_retention_date", label: "Retention โครงสร้าง", date: rows.warranty?.structure_retention_date, tone: "orange" },
+    { key: "structure_expiry_date", label: "หมดประกันโครงสร้าง", date: rows.warranty?.structure_expiry_date },
+    { key: "roof_retention_date", label: "Retention หลังคา", date: rows.warranty?.roof_retention_date, tone: "orange" },
+    { key: "roof_expiry_date", label: "หมดประกันหลังคา", date: rows.warranty?.roof_expiry_date },
+    { key: "architecture_retention_date", label: "Retention สถาปัตย์", date: rows.warranty?.architecture_retention_date, tone: "orange" },
+    { key: "architecture_expiry_date", label: "หมดประกันสถาปัตย์", date: rows.warranty?.architecture_expiry_date },
+  ];
+  warrantyEvents.forEach((item) => {
+    events.push(calendarEvent({
+      id: `warranty-${projectId}-${item.key}`,
+      date: item.date,
+      title: item.label,
+      detail: project.name,
+      source: "ประกัน",
+      href: lifecycleHref,
+      tone: item.tone || calendarTone("", item.date),
+    }));
+  });
+
+  return compactCalendarEvents(events);
 }
 
 function isForemanVisibleHref(href: string) {
@@ -326,7 +786,10 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const rows = await findAllBatch([
       "Tasks",
       "Milestones",
+      "Customer_Decisions",
+      "QC_Checklists",
       "Issues",
+      "Materials",
       "Daily_Reports",
       "Weekly_Reports",
       "Monthly_Reports",
@@ -334,15 +797,22 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       "Defect_Items",
       "Project_Documents",
       "Variation_Orders",
+      "VO_Finance_Ledger",
       "Site_Notes",
       "Site_Memos",
       "Project_Lifecycle",
       "Project_Warranty",
     ], sheetId) as Record<string, SiteRecord[]>;
 
-    const tasks = rows.Tasks || [];
+    const tasksFromBatch = rows.Tasks || [];
+    const tasks = isSupabaseBackend() && shouldFallbackToSheets()
+      ? mergeRowsById(tasksFromBatch, await findAllRaw("Tasks", sheetId) as SiteRecord[], "task_id")
+      : tasksFromBatch;
     const milestones = rows.Milestones || [];
+    const customerDecisions = rows.Customer_Decisions || [];
+    const qcChecklists = rows.QC_Checklists || [];
     const issues = rows.Issues || [];
+    const materials = rows.Materials || [];
     const dailyReports = rows.Daily_Reports || [];
     const weeklyReports = rows.Weekly_Reports || [];
     const monthlyReports = rows.Monthly_Reports || [];
@@ -350,6 +820,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const defectItems = rows.Defect_Items || [];
     const documents = rows.Project_Documents || [];
     const variationOrders = rows.Variation_Orders || [];
+    const voFinanceLedger = rows.VO_Finance_Ledger || [];
     const siteNotes = rows.Site_Notes || [];
     const siteMemos = rows.Site_Memos || [];
     const lifecycles = rows.Project_Lifecycle || [];
@@ -357,8 +828,12 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
 
     const belongsToProject = isProjectRow(project.project_id);
     const projectTasks = tasks.filter((task) => belongsToProject(task) && stringValue(task.task_type) !== "heading");
+    const projectCalendarTasks = tasks.filter(belongsToProject);
     const projectMilestones = milestones.filter(belongsToProject);
+    const projectCustomerDecisions = customerDecisions.filter((decision) => belongsToProject(decision) && stringValue(decision.active) !== "FALSE");
+    const projectQcChecklists = qcChecklists.filter((qc) => belongsToProject(qc) && stringValue(qc.active) !== "FALSE");
     const projectIssues = issues.filter(belongsToProject);
+    const projectMaterials = materials.filter(belongsToProject);
     const projectDailyReports = dailyReports.filter(belongsToProject);
     const projectWeeklyReports = weeklyReports.filter(belongsToProject);
     const projectMonthlyReports = monthlyReports.filter(belongsToProject);
@@ -366,6 +841,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
     const projectDefectItems = defectItems.filter(belongsToProject);
     const projectDocuments = documents.filter(belongsToProject);
     const projectVariationOrders = variationOrders.filter(belongsToProject);
+    const projectVoFinanceLedger = voFinanceLedger.filter(belongsToProject);
     const projectNotes = siteNotes.filter((note) => belongsToProject(note) && !isTruthyText(note.archived));
     const projectMemos = siteMemos.filter(belongsToProject);
     const projectLifecycle = lifecycles.find(belongsToProject);
@@ -513,6 +989,26 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       latestRound,
       latestVo: [...projectVariationOrders].sort((a, b) => dateKey(b.updated_at || b.created_at) - dateKey(a.updated_at || a.created_at))[0],
     });
+    const calendarEvents = buildCalendarEvents(project, {
+      tasks: projectCalendarTasks,
+      milestones: projectMilestones,
+      customerDecisions: projectCustomerDecisions,
+      qcChecklists: projectQcChecklists,
+      issues: projectIssues,
+      materials: projectMaterials,
+      dailyReports: projectDailyReports,
+      weeklyReports: projectWeeklyReports,
+      monthlyReports: projectMonthlyReports,
+      defectRounds: projectDefectRounds,
+      defectItems: projectDefectItems,
+      documents: projectDocuments,
+      variationOrders: projectVariationOrders,
+      voFinanceLedger: projectVoFinanceLedger,
+      siteNotes: projectNotes,
+      siteMemos: projectMemos,
+      lifecycle: projectLifecycle,
+      warranty: projectWarranty,
+    });
 
     return {
       planning,
@@ -525,6 +1021,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       lifecycleAlerts,
       actions,
       recent,
+      calendarEvents,
       error: "",
     };
   } catch (error: unknown) {
@@ -747,6 +1244,7 @@ export default async function SiteDashboardPage({
     : 0;
   const visibleActions = isForeman ? dashboard.actions.filter((action) => isForemanVisibleHref(action.href)) : dashboard.actions;
   const visibleRecent = isForeman ? dashboard.recent.filter((item) => isForemanVisibleHref(item.href)) : dashboard.recent;
+  const visibleCalendarEvents = isForeman ? dashboard.calendarEvents.filter((event) => isForemanVisibleHref(event.href)) : dashboard.calendarEvents;
   const dailyReportWarning = getDailyReportWarning(project, dashboard.reports);
   const driveFolderUrl = buildDriveFolderUrl(project.drive_folder_id);
   const actionItems =
@@ -841,6 +1339,8 @@ export default async function SiteDashboardPage({
         )}
         <KpiCard icon={FileText} label="รายงานล่าสุด" value={dashboard.reports.latestDailyDate ? formatDate(dashboard.reports.latestDailyDate) : "-"} detail={`${dashboard.reports.dailyCount} daily reports`} tone="blue" />
       </section>
+
+      <SiteCalendarPanel events={visibleCalendarEvents} projectId={project.project_id} initialDate={toDateInputValue(new Date().toISOString())} />
 
       <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <Panel title="สิ่งที่ควรทำตอนนี้" icon={Sparkles} href={`/dashboard/sites/${project.project_id}/schedule`} actionLabel="เปิดแผนงาน">
