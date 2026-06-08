@@ -42,6 +42,8 @@ type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
 
 const TEST_LINE_GROUP_ID = process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
 const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
+const DECISION_STATUS_CONFIRMED = "ยืนยันแล้ว";
+const DECISION_STATUSES_WAITING_FOR_CUSTOMER = new Set(["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"]);
 
 function getLogoDataUrl() {
   try {
@@ -76,6 +78,34 @@ function isDecisionLineTestMode() {
 function lineTargetFor(context: RouteContext) {
   if (isDecisionLineTestMode()) return TEST_LINE_GROUP_ID;
   return text(context.project.line_group_id);
+}
+
+function todayDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function shouldConfirmFromEvidence(payload: Record<string, string>, evidenceFiles: unknown[], hasNewEvidence: boolean) {
+  if (payload.decision_status === DECISION_STATUS_CONFIRMED) return true;
+  if (!DECISION_STATUSES_WAITING_FOR_CUSTOMER.has(payload.decision_status)) return false;
+  if (evidenceFiles.length === 0) return false;
+  return hasNewEvidence || Boolean(payload.decided_at || payload.decided_by || payload.result_note || payload.evidence_note);
+}
+
+function applyEvidenceConfirmationDefaults<T extends Record<string, string>>(
+  payload: T,
+  context: RouteContext,
+  evidenceFiles: unknown[],
+  hasNewEvidence: boolean
+) {
+  if (!shouldConfirmFromEvidence(payload, evidenceFiles, hasNewEvidence)) return payload;
+
+  return {
+    ...payload,
+    decision_status: DECISION_STATUS_CONFIRMED,
+    decided_at: payload.decided_at || todayDate(),
+    decided_by: payload.decided_by || text(context.project.client) || "ลูกค้า",
+    result_note: payload.result_note || "ลูกค้ายืนยันตามหลักฐานแนบ",
+  };
 }
 
 function normalizeDecision(row: CustomerDecisionRecord) {
@@ -262,12 +292,13 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     const rows = await getRows(context);
     const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
     if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแก้ไข" }, { status: 404 });
+    const uploadedEvidenceFiles = await uploadDecisionFiles(context, decisionId, parseUploads(body.evidence_uploads));
     const nextEvidenceFiles = [
       ...parseDecisionEvidenceFiles(current.evidence_files_json),
-      ...await uploadDecisionFiles(context, decisionId, parseUploads(body.evidence_uploads)),
+      ...uploadedEvidenceFiles,
     ];
     const patch = {
-      ...payload,
+      ...applyEvidenceConfirmationDefaults(payload, context, nextEvidenceFiles, uploadedEvidenceFiles.length > 0),
       evidence_files_json: safeJsonStringify(nextEvidenceFiles),
     };
 
@@ -289,9 +320,10 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
   const nextRows = await getDecisionData(context);
   const createdId = createCustomerDecisionId();
   const nextEvidenceFiles = await uploadDecisionFiles(context, createdId, parseUploads(body.evidence_uploads));
+  const createdPayload = applyEvidenceConfirmationDefaults(payload, context, nextEvidenceFiles, nextEvidenceFiles.length > 0);
   const created = {
     decision_id: createdId,
-    ...payload,
+    ...createdPayload,
     document_no: "",
     evidence_files_json: safeJsonStringify(nextEvidenceFiles),
     pdf_file_id: "",
@@ -301,7 +333,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     issued_by_email: "",
     approval_token: "",
     approval_url: "",
-    order_index: payload.order_index || String(nextRows.length + 1),
+    order_index: createdPayload.order_index || String(nextRows.length + 1),
   };
   await insert("Customer_Decisions", created, context.siteSheetId);
   await writeAuditLog({
@@ -420,7 +452,7 @@ async function handleNotify(req: Request, body: Record<string, unknown>, context
 
   const patch = {
     ...pdfPatch,
-    decision_status: "รอลูกค้า",
+    decision_status: text(current.decision_status) === DECISION_STATUS_CONFIRMED ? DECISION_STATUS_CONFIRMED : "รอลูกค้า",
     notified_at: new Date().toISOString(),
     notified_by_name: context.session.user.name || "",
     notified_by_email: context.session.user.email || "",

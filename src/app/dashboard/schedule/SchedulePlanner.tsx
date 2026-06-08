@@ -327,6 +327,9 @@ const emptyDecisionForm: CustomerDecisionForm = {
   order_index: "",
 };
 
+const DECISION_STATUS_CONFIRMED = "ยืนยันแล้ว";
+const DECISION_STATUSES_WAITING_FOR_CUSTOMER = new Set(["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"]);
+
 function parseDate(value?: string) {
   if (!value) return null;
   const [year, month, day] = value.split("-").map(Number);
@@ -3318,6 +3321,15 @@ function CustomerDecisionModal({
                   onChange={(event) => {
                     const nextFiles = Array.from(event.target.files || []);
                     onEvidenceFilesChange((current) => [...current, ...nextFiles].slice(0, 10));
+                    if (nextFiles.length > 0 && DECISION_STATUSES_WAITING_FOR_CUSTOMER.has(form.decision_status)) {
+                      onChange((prev) => ({
+                        ...prev,
+                        decision_status: DECISION_STATUS_CONFIRMED,
+                        decided_at: prev.decided_at || new Date().toISOString().slice(0, 10),
+                        decided_by: prev.decided_by || "ลูกค้า",
+                        result_note: prev.result_note || "ลูกค้ายืนยันตามหลักฐานแนบ",
+                      }));
+                    }
                     event.currentTarget.value = "";
                   }}
                 />
