@@ -12,6 +12,14 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
+function normalizeText(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isActiveRecord(record: Record<string, unknown>) {
+  return normalizeText(record.active || "TRUE") !== "false";
+}
+
 async function requireAdmin() {
   const session = await getServerSession(authOptions);
   if (!session?.user || !hasPermission(session.user.role, "team.manage")) {
@@ -33,7 +41,7 @@ export async function GET() {
     const team = isSupabaseReadEnabled("admin")
       ? await readWithSheetsFallback("team", getSupabaseTeamMembers, readSheetsTeam)
       : await readSheetsTeam();
-    return NextResponse.json({ success: true, data: team });
+    return NextResponse.json({ success: true, data: team.filter(isActiveRecord) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -92,6 +100,85 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, data: result.inserted });
   } catch (error: unknown) {
     console.error("Failed to create team member:", error);
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const forbidden = await requireAdmin();
+    if (forbidden) return forbidden;
+
+    if (!isSupabaseBackend()) await ensureMasterSchema();
+
+    const session = await getServerSession(authOptions);
+    const { searchParams } = new URL(req.url);
+    const memberId = searchParams.get("member_id") || "";
+    const rowIndex = searchParams.get("_rowIndex") || "";
+
+    if (!memberId && !rowIndex) {
+      return NextResponse.json({ error: "Missing member id" }, { status: 400 });
+    }
+
+    const existingTeam = await findAllMaster("Team");
+    const currentMember = existingTeam.find((user) => (
+      (memberId && String(user.member_id || "") === memberId) ||
+      (rowIndex && String(user._rowIndex || "") === rowIndex)
+    ));
+
+    if (!currentMember) {
+      return NextResponse.json({ error: "ไม่พบพนักงานที่ต้องการลบ" }, { status: 404 });
+    }
+
+    const currentEmail = normalizeText(currentMember.email);
+    const sessionEmail = normalizeText(session?.user?.email);
+    const currentGoogleSub = normalizeText(currentMember.google_sub);
+    const sessionGoogleSub = normalizeText(session?.user?.googleSub);
+    const sessionMemberId = normalizeText(session?.user?.id);
+
+    if (
+      (memberId && normalizeText(memberId) === sessionMemberId) ||
+      (currentEmail && currentEmail === sessionEmail) ||
+      (currentGoogleSub && currentGoogleSub === sessionGoogleSub)
+    ) {
+      return NextResponse.json({ error: "ไม่สามารถลบบัญชีที่กำลังใช้งานอยู่ได้" }, { status: 400 });
+    }
+
+    await updateMaster(
+      "Team",
+      String(currentMember.member_id || currentMember._rowIndex),
+      { active: "FALSE" },
+      currentMember._rowIndex
+    );
+
+    const existingUserSites = await findAllMaster("UserSites");
+    const accessRows = existingUserSites.filter((item) => {
+      const itemEmail = normalizeText(item.email);
+      const itemGoogleSub = normalizeText(item.google_sub);
+      return (
+        (currentEmail && itemEmail === currentEmail) ||
+        (currentGoogleSub && itemGoogleSub === currentGoogleSub)
+      );
+    });
+
+    for (const item of accessRows) {
+      await updateMaster(
+        "UserSites",
+        String(item.user_site_id || item._rowIndex),
+        { active: "FALSE" },
+        item._rowIndex
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        member_id: currentMember.member_id || memberId,
+        deactivated_access_count: accessRows.length,
+      },
+    });
+  } catch (error: unknown) {
+    console.error("Failed to delete team member:", error);
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
 }

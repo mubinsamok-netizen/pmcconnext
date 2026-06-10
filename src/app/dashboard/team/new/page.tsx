@@ -30,6 +30,7 @@ export default function CreateTeamPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState("Engineer");
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
   const projects = projectsData?.data || [];
 
@@ -38,6 +39,13 @@ export default function CreateTeamPage() {
       router.replace("/dashboard/projects");
     }
   }, [isAdmin, router, sessionStatus]);
+
+  const toggleProject = (projectId: string, checked: boolean) => {
+    setSelectedProjectIds((current) => {
+      if (checked) return current.includes(projectId) ? current : [...current, projectId];
+      return current.filter((item) => item !== projectId);
+    });
+  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -48,7 +56,7 @@ export default function CreateTeamPage() {
     const roleValue = getAppRole(String(formData.get("role") || role));
     const data = {
       ...Object.fromEntries(formData.entries()),
-      project_ids: roleValue === "Admin" ? [] : formData.getAll("project_ids").map(String),
+      project_ids: roleValue === "Admin" ? [] : selectedProjectIds,
     };
 
     try {
@@ -145,16 +153,39 @@ export default function CreateTeamPage() {
             ) : projects.length === 0 ? (
               <div className="text-sm text-gray-400">ยังไม่มีไซต์งานใน Master Sheet</div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {projects.map((project) => (
-                  <label key={project.project_id} className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-sm hover:border-orange-200">
-                    <input name="project_ids" type="checkbox" value={project.project_id} className="h-4 w-4 accent-orange-600" />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-gray-800 truncate">{project.name}</span>
-                      <span className="block text-xs text-gray-400">{project.project_id}</span>
-                    </span>
-                  </label>
-                ))}
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-orange-700">
+                  เลือกแล้ว {selectedProjectIds.length} ไซต์
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {projects.map((project) => {
+                    const selected = selectedProjectIds.includes(project.project_id);
+
+                    return (
+                      <label
+                        key={project.project_id}
+                        className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${
+                          selected
+                            ? "border-orange-300 bg-orange-50"
+                            : "border-gray-200 hover:border-orange-200"
+                        }`}
+                      >
+                        <input
+                          name="project_ids"
+                          type="checkbox"
+                          value={project.project_id}
+                          checked={selected}
+                          onChange={(event) => toggleProject(project.project_id, event.target.checked)}
+                          className="h-4 w-4 accent-orange-600"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-medium text-gray-800 truncate">{project.name}</span>
+                          <span className="block text-xs text-gray-400">{project.project_id}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { Edit3, Plus, Users, Mail, Phone, ShieldCheck, MapPin, Filter } from "lucide-react";
+import { Edit3, Filter, Loader2, Mail, MapPin, Phone, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
@@ -22,6 +22,8 @@ type TeamMember = {
   email?: string;
   phone?: string;
   project_ids?: string;
+  google_sub?: string;
+  active?: string;
 };
 
 type ApiResponse<T> = {
@@ -29,16 +31,32 @@ type ApiResponse<T> = {
   data: T[];
 };
 
+type DeleteMessage = {
+  type: "success" | "error";
+  text: string;
+};
+
+function normalizeText(value?: string | null) {
+  return (value || "").trim().toLowerCase();
+}
+
 export default function TeamPage() {
   const router = useRouter();
   const { data: session, status: sessionStatus } = useSession();
   const isAdmin = getAppRole(session?.user?.role) === "Admin";
   const [roleFilter, setRoleFilter] = useState("all");
-  const { data, error, isLoading } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteMessage, setDeleteMessage] = useState<DeleteMessage | null>(null);
+  const { data, error, isLoading, mutate } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
   const { data: projectsData } = useSWR<ApiResponse<Project>>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
   const team = useMemo(() => data?.data || [], [data?.data]);
   const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);
+  const currentUser = useMemo(() => ({
+    email: normalizeText(session?.user?.email),
+    googleSub: normalizeText(session?.user?.googleSub),
+    memberId: normalizeText(session?.user?.id),
+  }), [session?.user?.email, session?.user?.googleSub, session?.user?.id]);
   const roleCounts = useMemo(() => {
     return team.reduce<Record<string, number>>((counts, member) => {
       const role = getAppRole(member.role);
@@ -51,6 +69,46 @@ export default function TeamPage() {
     if (roleFilter === "all") return team;
     return team.filter((member) => getAppRole(member.role) === roleFilter);
   }, [roleFilter, team]);
+
+  const isOwnMember = (member: TeamMember) => Boolean(
+    (member.member_id && normalizeText(member.member_id) === currentUser.memberId) ||
+    (member.email && normalizeText(member.email) === currentUser.email) ||
+    (member.google_sub && normalizeText(member.google_sub) === currentUser.googleSub)
+  );
+
+  const handleDeleteMember = async (member: TeamMember) => {
+    if (isOwnMember(member)) {
+      setDeleteMessage({ type: "error", text: "ไม่สามารถลบบัญชีที่กำลังใช้งานอยู่ได้" });
+      return;
+    }
+
+    const confirmed = window.confirm(`ลบพนักงาน "${member.name}" ออกจากระบบใช่ไหม?\n\nระบบจะปิดบัญชีและสิทธิ์เข้าไซต์ของพนักงานคนนี้`);
+    if (!confirmed) return;
+
+    setDeletingId(member.member_id);
+    setDeleteMessage(null);
+
+    try {
+      const res = await fetch(`/api/team?member_id=${encodeURIComponent(member.member_id)}`, {
+        method: "DELETE",
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(payload.error || "ไม่สามารถลบพนักงานได้");
+      }
+
+      setDeleteMessage({ type: "success", text: `ลบ ${member.name} ออกจากระบบแล้ว` });
+      await mutate();
+    } catch (error) {
+      setDeleteMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "ไม่สามารถลบพนักงานได้",
+      });
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   useEffect(() => {
     if (sessionStatus !== "loading" && !isAdmin) {
@@ -110,6 +168,16 @@ export default function TeamPage() {
         </div>
       </div>
 
+      {deleteMessage && (
+        <div className={`rounded-xl border p-4 text-sm font-medium ${
+          deleteMessage.type === "success"
+            ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+            : "border-red-100 bg-red-50 text-red-600"
+        }`}>
+          {deleteMessage.text}
+        </div>
+      )}
+
       {error && (
         <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
           ไม่สามารถดึงข้อมูลพนักงานจาก Master Sheet ได้
@@ -126,13 +194,15 @@ export default function TeamPage() {
                 <th className="p-4 font-medium">อีเมล</th>
                 <th className="p-4 font-medium">เบอร์โทรศัพท์</th>
                 <th className="p-4 font-medium">ไซต์ที่เข้าถึงได้</th>
-                <th className="p-4 font-medium text-center">จัดการ</th>
+                <th className="w-28 min-w-[7rem] p-4 font-medium text-center">จัดการ</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
               {filteredTeam.map((member) => {
                 const memberProjects = (member.project_ids || "").split(",").filter(Boolean);
                 const isAdmin = getAppRole(member.role) === "Admin";
+                const isDeleting = deletingId === member.member_id;
+                const deleteDisabled = isDeleting || isOwnMember(member);
 
                 return (
                   <tr key={member.member_id} className="hover:bg-gray-50 transition">
@@ -180,15 +250,25 @@ export default function TeamPage() {
                         )) : <span className="text-gray-400">ยังไม่กำหนดไซต์</span>}
                       </div>
                     </td>
-                    <td className="p-4">
-                      <div className="flex justify-center">
+                    <td className="w-28 min-w-[7rem] p-4">
+                      <div className="flex min-w-[5rem] flex-nowrap justify-center gap-2">
                         <Link
                           href={`/dashboard/team/${member.member_id}/edit`}
-                          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-orange-50 hover:text-orange-600"
+                          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 hover:bg-orange-50 hover:text-orange-600"
                           title="แก้ไขพนักงาน"
                         >
                           <Edit3 size={16} />
                         </Link>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMember(member)}
+                          disabled={deleteDisabled}
+                          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                          title={isOwnMember(member) ? "ไม่สามารถลบบัญชีตัวเอง" : "ลบพนักงาน"}
+                          aria-label={`ลบพนักงาน ${member.name}`}
+                        >
+                          {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                        </button>
                       </div>
                     </td>
                   </tr>
