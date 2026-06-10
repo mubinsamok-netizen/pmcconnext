@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
+import { getAppRole } from "@/lib/roles";
 import { isForemanRole } from "@/lib/siteAccess";
 
 type Project = {
@@ -43,12 +44,27 @@ type ProjectsResponse = {
   data: Project[];
 };
 
+type TeamMember = {
+  member_id: string;
+  name: string;
+  role?: string;
+  email?: string;
+  project_ids?: string;
+  active?: string;
+};
+
+type TeamResponse = {
+  success: boolean;
+  data: TeamMember[];
+};
+
 const validStatuses = new Set(["Planning", "In Progress", "On Hold", "Completed", "Cancelled"]);
 const ALL_ENGINEERS = "__all__";
 const UNASSIGNED_ENGINEER = "__unassigned__";
 const FILTER_SITE_ENGINEER = "site_engineer";
 const FILTER_ARCHITECT = "architect";
-type ResponsibilityFilter = typeof FILTER_SITE_ENGINEER | typeof FILTER_ARCHITECT;
+const FILTER_TEAM_ACCESS = "team_access";
+type ResponsibilityFilter = typeof FILTER_SITE_ENGINEER | typeof FILTER_ARCHITECT | typeof FILTER_TEAM_ACCESS;
 const statusStyles = {
   Planning: {
     badge: "border-sky-100 bg-sky-50 text-sky-700",
@@ -187,19 +203,30 @@ function normalizeEngineerName(value?: string) {
 }
 
 function getResponsibleName(project: Project, filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "";
   return filter === FILTER_ARCHITECT ? normalizeEngineerName(project.architect_name) : normalizeEngineerName(project.se_name);
 }
 
 function getUnassignedLabel(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "ยังไม่มีสิทธิ์ไซต์";
   return filter === FILTER_ARCHITECT ? "ยังไม่ระบุ Architect" : "ยังไม่ระบุ Site Engineer";
 }
 
 function getAllLabel(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "ทุกสิทธิ์พนักงาน";
   return filter === FILTER_ARCHITECT ? "ทุก Architect" : "ทุก Site Engineer";
 }
 
 function getFilterTitle(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "กรองไซต์งานตามสิทธิ์พนักงาน";
   return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
+}
+
+function getProjectIds(value?: string) {
+  return String(value || "")
+    .split(",")
+    .map((projectId) => projectId.trim())
+    .filter(Boolean);
 }
 
 function extractDriveFileId(url?: string) {
@@ -328,13 +355,34 @@ function HealthPill({
 export default function ProjectsPage() {
   const { data: session } = useSession();
   const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
+  const { data: teamData } = useSWR<TeamResponse>(isAdmin ? "/api/team" : null, fetcher);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
   const [responsibilityFilter, setResponsibilityFilter] = useState<ResponsibilityFilter>(FILTER_SITE_ENGINEER);
   const [engineerFilter, setEngineerFilter] = useState(ALL_ENGINEERS);
   const projects = useMemo(() => data?.data || [], [data?.data]);
+  const team = useMemo(() => teamData?.data || [], [teamData?.data]);
   const isForeman = isForemanRole(session?.user?.role);
   const engineerOptions = useMemo(() => {
+    if (responsibilityFilter === FILTER_TEAM_ACCESS) {
+      const visibleProjectIds = new Set(projects.map((project) => project.project_id).filter(Boolean));
+      return team
+        .filter((member) => member.active !== "FALSE")
+        .map((member) => {
+          const count = getProjectIds(member.project_ids).filter((projectId) => visibleProjectIds.has(projectId)).length;
+          return {
+            value: member.member_id,
+            count,
+            label: `${member.name || member.email || member.member_id}${member.role ? ` (${member.role})` : ""}`,
+          };
+        })
+        .sort((a, b) => {
+          if (b.count !== a.count) return b.count - a.count;
+          return a.label.localeCompare(b.label, "th");
+        });
+    }
+
     const counts = new Map<string, number>();
     projects.forEach((project) => {
       const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
@@ -352,14 +400,20 @@ export default function ProjectsPage() {
         if (b.value === UNASSIGNED_ENGINEER) return -1;
         return a.label.localeCompare(b.label, "th");
       });
-  }, [projects, responsibilityFilter]);
+  }, [projects, responsibilityFilter, team]);
   const filteredProjects = useMemo(() => {
     if (engineerFilter === ALL_ENGINEERS) return projects;
+    if (responsibilityFilter === FILTER_TEAM_ACCESS) {
+      const selectedMember = team.find((member) => member.member_id === engineerFilter);
+      const projectIds = new Set(getProjectIds(selectedMember?.project_ids));
+      return projects.filter((project) => projectIds.has(project.project_id));
+    }
+
     return projects.filter((project) => {
       const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
       return engineer === engineerFilter;
     });
-  }, [engineerFilter, projects, responsibilityFilter]);
+  }, [engineerFilter, projects, responsibilityFilter, team]);
   const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
     ? getAllLabel(responsibilityFilter)
     : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
@@ -434,6 +488,7 @@ export default function ProjectsPage() {
             >
               <option value={FILTER_SITE_ENGINEER}>Site Engineer</option>
               <option value={FILTER_ARCHITECT}>Architect</option>
+              {isAdmin && <option value={FILTER_TEAM_ACCESS}>สิทธิ์พนักงาน</option>}
             </select>
             <select
               value={engineerFilter}

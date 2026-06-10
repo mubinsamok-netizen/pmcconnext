@@ -45,7 +45,8 @@ export default function EditTeamPage() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[] | null>(null);
   const { data: teamData, isLoading: teamLoading } = useSWR<ApiResponse<TeamMember>>(isAdmin ? "/api/team" : null, fetcher);
   const { data: projectsData, isLoading: projectsLoading } = useSWR<ApiResponse<Project>>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
-  const projects = projectsData?.data || [];
+  const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
+  const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);
 
   const member = useMemo(() => {
     const decodedMemberId = decodeURIComponent(params.memberId);
@@ -212,6 +213,15 @@ export default function EditTeamPage() {
                 <div className="text-xs font-semibold text-orange-700">
                   เลือกแล้ว {effectiveSelectedProjectIds.length} ไซต์
                 </div>
+                {effectiveSelectedProjectIds.length > 0 && (
+                  <div className="flex flex-wrap gap-2 rounded-xl bg-orange-50 p-3">
+                    {effectiveSelectedProjectIds.map((projectId) => (
+                      <span key={projectId} className="inline-flex max-w-full items-center rounded-full bg-white px-2.5 py-1 text-xs font-bold text-orange-700 ring-1 ring-orange-200">
+                        <span className="truncate">{projectMap.get(projectId) || projectId}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {projects.map((project) => {
                     const selected = effectiveSelectedProjectIds.includes(project.project_id);

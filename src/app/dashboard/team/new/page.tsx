@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { ArrowLeft, Save } from "lucide-react";
@@ -32,7 +32,8 @@ export default function CreateTeamPage() {
   const [role, setRole] = useState("Engineer");
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const { data: projectsData, isLoading: projectsLoading } = useSWR<ProjectsResponse>(isAdmin ? "/api/projects?mode=basic" : null, fetcher);
-  const projects = projectsData?.data || [];
+  const projects = useMemo(() => projectsData?.data || [], [projectsData?.data]);
+  const projectMap = useMemo(() => new Map(projects.map((project) => [project.project_id, project.name])), [projects]);
 
   useEffect(() => {
     if (sessionStatus !== "loading" && !isAdmin) {
@@ -157,6 +158,15 @@ export default function CreateTeamPage() {
                 <div className="text-xs font-semibold text-orange-700">
                   เลือกแล้ว {selectedProjectIds.length} ไซต์
                 </div>
+                {selectedProjectIds.length > 0 && (
+                  <div className="flex flex-wrap gap-2 rounded-xl bg-orange-50 p-3">
+                    {selectedProjectIds.map((projectId) => (
+                      <span key={projectId} className="inline-flex max-w-full items-center rounded-full bg-white px-2.5 py-1 text-xs font-bold text-orange-700 ring-1 ring-orange-200">
+                        <span className="truncate">{projectMap.get(projectId) || projectId}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {projects.map((project) => {
                     const selected = selectedProjectIds.includes(project.project_id);
