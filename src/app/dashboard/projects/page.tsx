@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
+import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
 import { isForemanRole } from "@/lib/siteAccess";
 
@@ -222,13 +223,6 @@ function getFilterTitle(filter: ResponsibilityFilter) {
   return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
 }
 
-function getProjectIds(value?: string) {
-  return String(value || "")
-    .split(",")
-    .map((projectId) => projectId.trim())
-    .filter(Boolean);
-}
-
 function extractDriveFileId(url?: string) {
   if (!url) return "";
   return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
@@ -370,7 +364,7 @@ export default function ProjectsPage() {
       return team
         .filter((member) => member.active !== "FALSE")
         .map((member) => {
-          const count = getProjectIds(member.project_ids).filter((projectId) => visibleProjectIds.has(projectId)).length;
+          const count = parseProjectIds(member.project_ids).filter((projectId) => visibleProjectIds.has(projectId)).length;
           return {
             value: member.member_id,
             count,
@@ -405,7 +399,7 @@ export default function ProjectsPage() {
     if (engineerFilter === ALL_ENGINEERS) return projects;
     if (responsibilityFilter === FILTER_TEAM_ACCESS) {
       const selectedMember = team.find((member) => member.member_id === engineerFilter);
-      const projectIds = new Set(getProjectIds(selectedMember?.project_ids));
+      const projectIds = new Set(parseProjectIds(selectedMember?.project_ids));
       return projects.filter((project) => projectIds.has(project.project_id));
     }
 

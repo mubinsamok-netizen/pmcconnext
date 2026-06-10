@@ -7,6 +7,7 @@ import { ArrowLeft, Save } from "lucide-react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
 
 type Project = {
@@ -53,7 +54,7 @@ export default function EditTeamPage() {
     return (teamData?.data || []).find((item) => item.member_id === decodedMemberId);
   }, [params.memberId, teamData?.data]);
 
-  const selectedProjects = useMemo(() => new Set((member?.project_ids || "").split(",").filter(Boolean)), [member?.project_ids]);
+  const selectedProjects = useMemo(() => new Set(parseProjectIds(member?.project_ids)), [member?.project_ids]);
 
   useEffect(() => {
     if (sessionStatus !== "loading" && !isAdmin) {

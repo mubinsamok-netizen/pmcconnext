@@ -1,5 +1,6 @@
 import { supabaseSelect } from "@/lib/supabaseRest";
 import { getSupabaseMasterSchema, getSupabaseSiteSchema } from "@/lib/supabaseSchema";
+import { serializeProjectIds } from "@/lib/projectIds";
 
 export type SheetLikeRecord = Record<string, string | number | undefined>;
 
@@ -458,7 +459,7 @@ function boolText(value: unknown) {
 }
 
 function listText(value: unknown) {
-  return Array.isArray(value) ? value.map(text).filter(Boolean).join(",") : text(value);
+  return serializeProjectIds(value);
 }
 
 function jsonText(value: unknown) {

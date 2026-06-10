@@ -1,4 +1,5 @@
 import { findAllMaster } from "@/lib/sheetsCrud";
+import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole, roleMatches } from "@/lib/roles";
 import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTeamMembers, getSupabaseUserProjectAccess } from "@/lib/supabaseReadModel";
@@ -55,7 +56,7 @@ function collectAccessibleProjectIds({
     const matchesEmail = email && normalizeEmail(String(site.email || "")) === email;
     const matchesGoogleSub = googleSub && String(site.google_sub || "") === googleSub;
     if (site.active !== "FALSE" && (matchesEmail || matchesGoogleSub) && site.project_id) {
-      ids.add(String(site.project_id));
+      parseProjectIds(site.project_id).forEach((projectId) => ids.add(projectId));
     }
   });
 
@@ -63,11 +64,7 @@ function collectAccessibleProjectIds({
     normalizeEmail(String(item.email || "")) === email || (googleSub && String(item.google_sub || "") === googleSub)
   ));
 
-  String(member?.project_ids || "")
-    .split(",")
-    .map((projectId) => projectId.trim())
-    .filter(Boolean)
-    .forEach((projectId) => ids.add(projectId));
+  parseProjectIds(member?.project_ids).forEach((projectId) => ids.add(projectId));
 
   return ids;
 }

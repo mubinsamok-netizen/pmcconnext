@@ -7,6 +7,7 @@ import { Edit3, Filter, Loader2, Mail, MapPin, Phone, Plus, ShieldCheck, Trash2,
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
 
 type Project = {
@@ -199,7 +200,7 @@ export default function TeamPage() {
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
               {filteredTeam.map((member) => {
-                const memberProjects = (member.project_ids || "").split(",").filter(Boolean);
+                const memberProjects = parseProjectIds(member.project_ids);
                 const isAdmin = getAppRole(member.role) === "Admin";
                 const isDeleting = deletingId === member.member_id;
                 const deleteDisabled = isDeleting || isOwnMember(member);

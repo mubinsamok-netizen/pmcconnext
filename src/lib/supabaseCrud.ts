@@ -34,6 +34,7 @@ import {
 } from "@/lib/supabaseReadModel";
 import { supabaseDelete, supabaseInsert, supabasePatch } from "@/lib/supabaseRest";
 import { getSupabaseMasterSchema, getSupabaseSiteSchema } from "@/lib/supabaseSchema";
+import { parseProjectIds } from "@/lib/projectIds";
 
 type SheetValue = string | number | boolean | null | undefined;
 type SheetRow = { _rowIndex: number | string } & Record<string, string | number | undefined>;
@@ -132,11 +133,7 @@ function jsonOrValue(value: unknown, fallback: unknown = null) {
 }
 
 function listOrNull(value: unknown) {
-  if (Array.isArray(value)) return value.map(text).filter(Boolean);
-  const values = text(value)
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const values = parseProjectIds(value);
   return values.length > 0 ? values : null;
 }
 

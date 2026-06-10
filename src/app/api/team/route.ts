@@ -5,6 +5,7 @@ import { getAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTeamMembers } from "@/lib/supabaseReadModel";
+import { serializeProjectIds } from "@/lib/projectIds";
 import { deleteRowMaster, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 
@@ -18,6 +19,13 @@ function normalizeText(value: unknown) {
 
 function isActiveRecord(record: Record<string, unknown>) {
   return normalizeText(record.active || "TRUE") !== "false";
+}
+
+function normalizeTeamRecord(record: Record<string, unknown>) {
+  return {
+    ...record,
+    project_ids: serializeProjectIds(record.project_ids),
+  };
 }
 
 async function requireAdmin() {
@@ -41,7 +49,7 @@ export async function GET() {
     const team = isSupabaseReadEnabled("admin")
       ? await readWithSheetsFallback("team", getSupabaseTeamMembers, readSheetsTeam)
       : await readSheetsTeam();
-    return NextResponse.json({ success: true, data: team.filter(isActiveRecord) });
+    return NextResponse.json({ success: true, data: team.filter(isActiveRecord).map(normalizeTeamRecord) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -67,9 +75,7 @@ export async function POST(req: Request) {
     }
 
     const memberId = `M-${Date.now().toString().slice(-6)}`;
-    const projectIds = Array.isArray(project_ids)
-      ? project_ids.filter(Boolean).join(",")
-      : typeof project_ids === "string" ? project_ids : "";
+    const projectIds = serializeProjectIds(project_ids);
     const roleValue = getAppRole(String(role || "Staff"));
     const assignedProjectIds = roleValue === "Admin" ? "" : projectIds;
 
@@ -86,7 +92,7 @@ export async function POST(req: Request) {
 
     const result = await insertMaster("Team", memberData);
 
-    await Promise.all(assignedProjectIds.split(",").filter(Boolean).map((projectId) => (
+    await Promise.all(serializeProjectIds(assignedProjectIds).split(",").filter(Boolean).map((projectId) => (
       insertMaster("UserSites", {
         user_site_id: `US-${Date.now().toString().slice(-6)}-${projectId}`,
         email,
@@ -197,9 +203,7 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const projectIds = Array.isArray(project_ids)
-      ? project_ids.filter(Boolean).join(",")
-      : typeof project_ids === "string" ? project_ids : "";
+    const projectIds = serializeProjectIds(project_ids);
     const roleValue = getAppRole(String(role || "Staff"));
     const assignedProjectIds = roleValue === "Admin" ? "" : projectIds;
 
@@ -240,7 +244,7 @@ export async function PUT(req: Request) {
       await deleteRowMaster("UserSites", rowIndex);
     }
 
-    await Promise.all(assignedProjectIds.split(",").filter(Boolean).map((projectId) => (
+    await Promise.all(serializeProjectIds(assignedProjectIds).split(",").filter(Boolean).map((projectId) => (
       insertMaster("UserSites", {
         user_site_id: `US-${Date.now().toString().slice(-6)}-${projectId}`,
         email,
