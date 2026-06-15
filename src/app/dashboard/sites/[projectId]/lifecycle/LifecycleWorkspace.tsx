@@ -50,6 +50,29 @@ type DocumentRecord = Record<string, string | number | undefined> & {
   created_at?: string;
 };
 
+type DriveFolderFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string | null;
+  webViewLink?: string | null;
+  webContentLink?: string | null;
+  createdTime?: string | null;
+  modifiedTime?: string | null;
+  folderPath?: string;
+  isFolder?: boolean;
+};
+
+type DocumentHistoryRow = {
+  id: string;
+  title: string;
+  category: string;
+  versionLabel: string;
+  date: string;
+  driveUrl: string;
+  sourceLabel: string;
+};
+
 const emptyLifecycle: LifecycleForm = {
   current_status: "design",
   design_start_date: "",
@@ -158,6 +181,75 @@ function normalizeDateFields<T extends Record<string, string>>(data: T, fields: 
     if (next[field]) next[field] = toIsoDate(next[field]);
   });
   return next as T;
+}
+
+function safeText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function isPdfDriveFile(file: DriveFolderFile) {
+  return !file.isFolder && (
+    file.mimeType === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+
+function getDriveOpenUrl(file: DriveFolderFile) {
+  return safeText(file.webViewLink) || safeText(file.webContentLink) || `/api/drive/files/${encodeURIComponent(file.id)}`;
+}
+
+function getProjectDocumentDriveCategory(file: DriveFolderFile) {
+  const segments = safeText(file.folderPath)
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const rootIndex = segments.findIndex((segment) => segment.toLowerCase() === "project documents");
+  if (rootIndex < 0) return null;
+
+  const categorySegment = safeText(segments[rootIndex + 1]);
+  if (!categorySegment) return null;
+
+  const normalizedCategory = categorySegment.toLowerCase();
+  return documentCategoryOptions.find((option) => (
+    option.value.toLowerCase() === normalizedCategory ||
+    option.label.toLowerCase() === normalizedCategory
+  )) || null;
+}
+
+function buildDocumentHistory(documents: DocumentRecord[], driveFiles: DriveFolderFile[]) {
+  const knownDriveFileIds = new Set(
+    documents
+      .map((document) => safeText(document.drive_file_id))
+      .filter(Boolean)
+  );
+
+  const historyRows: DocumentHistoryRow[] = documents.map((document) => ({
+    id: safeText(document.document_id) || `doc-${safeText(document.drive_file_id)}`,
+    title: safeText(document.title) || safeText(document.file_name) || "เอกสารไซต์",
+    category: getCategoryLabel(safeText(document.category)),
+    versionLabel: `v${safeText(document.version_number) || "1"}`,
+    date: safeText(document.created_at || document.updated_at).slice(0, 10) || "-",
+    driveUrl: safeText(document.drive_url),
+    sourceLabel: "Version History",
+  }));
+
+  driveFiles.forEach((file) => {
+    if (!file.id || !isPdfDriveFile(file) || knownDriveFileIds.has(file.id)) return;
+    const category = getProjectDocumentDriveCategory(file);
+    if (!category) return;
+
+    historyRows.push({
+      id: `drive-${file.id}`,
+      title: file.name || "PDF ใน Drive",
+      category: category.label,
+      versionLabel: "Drive",
+      date: safeText(file.modifiedTime || file.createdTime).slice(0, 10) || "-",
+      driveUrl: getDriveOpenUrl(file),
+      sourceLabel: "Drive file",
+    });
+  });
+
+  return historyRows.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
 }
 
 function getStatusDestination(status: string, projectId: string): StatusDestination {
@@ -295,6 +387,7 @@ export default function LifecycleWorkspace({
   const lifecycleKey = `/api/sites/${encodeURIComponent(projectId)}/lifecycle`;
   const warrantyKey = `/api/sites/${encodeURIComponent(projectId)}/warranty`;
   const documentsKey = `/api/sites/${encodeURIComponent(projectId)}/documents`;
+  const driveFilesKey = `/api/sites/${encodeURIComponent(projectId)}/drive-files`;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("lifecycle");
   const [lifecycleForm, setLifecycleForm] = useState<LifecycleForm>(emptyLifecycle);
   const [warrantyForm, setWarrantyForm] = useState(emptyWarranty);
@@ -320,13 +413,22 @@ export default function LifecycleWorkspace({
     data: documentsData,
     mutate: mutateDocuments,
   } = useSWR<ApiResponse<DocumentRecord[]>>(activeTab === "documents" ? documentsKey : null, fetcher);
+  const {
+    data: driveFilesData,
+    isLoading: driveFilesLoading,
+    mutate: mutateDriveFiles,
+  } = useSWR<ApiResponse<DriveFolderFile[]>>(activeTab === "documents" ? driveFilesKey : null, fetcher);
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
+  const documentHistory = useMemo(
+    () => buildDocumentHistory(documents, driveFilesData?.data || []),
+    [documents, driveFilesData?.data]
+  );
   const filledLifecycleDates = lifecycleDateFields.filter((field) => Boolean(lifecycleForm[field])).length;
   const filledWarrantyDates = warrantyDateFields.filter((field) => Boolean(warrantyForm[field as keyof typeof emptyWarranty])).length;
   const tabs: { id: WorkspaceTab; label: string; description: string; meta: string }[] = [
     { id: "lifecycle", label: "รายละเอียดงาน", description: "สถานะและวันสำคัญ", meta: `${filledLifecycleDates}/${lifecycleDateFields.length}` },
-    { id: "documents", label: "เอกสาร", description: "PDF และ version history", meta: `${documents.length} ไฟล์` },
+    { id: "documents", label: "เอกสาร", description: "PDF และ version history", meta: `${documentHistory.length} ไฟล์` },
     { id: "warranty", label: "ประกันผลงาน", description: "วันส่งมอบและวันหมดอายุ", meta: `${filledWarrantyDates}/${warrantyDateFields.length}` },
   ];
   const currentStatusLabel = lifecycleStatusOptions.find((option) => option.value === lifecycleForm.current_status)?.label || lifecycleForm.current_status;
@@ -401,6 +503,9 @@ export default function LifecycleWorkspace({
       }
       void mutateDocuments().catch((error: unknown) => {
         console.warn("Document list refresh failed after upload:", error);
+      });
+      void mutateDriveFiles().catch((error: unknown) => {
+        console.warn("Drive file list refresh failed after upload:", error);
       });
       setMessage("อัปโหลดเข้า Drive และบันทึก version history แล้ว");
     } catch (error: unknown) {
@@ -613,18 +718,23 @@ export default function LifecycleWorkspace({
                 </tr>
               </thead>
               <tbody>
-                {documents.length === 0 ? (
+                {driveFilesLoading && documentHistory.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">กำลังโหลดเอกสาร...</td></tr>
+                ) : documentHistory.length === 0 ? (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">ยังไม่มีเอกสาร</td></tr>
                 ) : (
-                  documents.map((document) => (
-                    <tr key={document.document_id} className="border-b border-gray-100">
-                      <td className="px-4 py-3 font-bold text-gray-900">{document.title || "-"}</td>
-                      <td className="px-4 py-3 text-gray-600">{getCategoryLabel(String(document.category || ""))}</td>
-                      <td className="px-4 py-3 text-gray-600">v{document.version_number || "1"}</td>
-                      <td className="px-4 py-3 text-gray-500">{String(document.created_at || "").slice(0, 10) || "-"}</td>
+                  documentHistory.map((document) => (
+                    <tr key={document.id} className="border-b border-gray-100">
                       <td className="px-4 py-3">
-                        {document.drive_url ? (
-                          <a href={String(document.drive_url)} target="_blank" rel="noreferrer" className="font-bold text-orange-600 hover:text-orange-700">
+                        <div className="font-bold text-gray-900">{document.title || "-"}</div>
+                        <div className="mt-0.5 text-xs font-semibold text-gray-400">{document.sourceLabel}</div>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{document.category}</td>
+                      <td className="px-4 py-3 text-gray-600">{document.versionLabel}</td>
+                      <td className="px-4 py-3 text-gray-500">{document.date}</td>
+                      <td className="px-4 py-3">
+                        {document.driveUrl ? (
+                          <a href={document.driveUrl} target="_blank" rel="noreferrer" className="font-bold text-orange-600 hover:text-orange-700">
                             เปิดไฟล์
                           </a>
                         ) : (

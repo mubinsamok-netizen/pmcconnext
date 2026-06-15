@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
-import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { writeAuditLog } from "@/lib/auditLog";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
+import { findAllSupabase, getSupabaseSiteConfig } from "@/lib/supabaseCrud";
+import { getSupabaseTasks } from "@/lib/supabaseReadModel";
+import { isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import {
   VO_TYPE_LABELS,
   addCalendarDays,
@@ -61,8 +64,17 @@ type UploadedVoFile = {
   mime_type: string;
 };
 type SheetPatch = Record<string, string | number | boolean | null | undefined>;
+type VoTableName = keyof typeof VO_TABLE_KEYS;
 
 const VO_LINE_TEST_GROUP_ID = process.env.VO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
+const VO_TABLE_KEYS = {
+  Variation_Orders: "vo_id",
+  VO_Items: "item_id",
+  VO_Documents: "document_id",
+  VO_Payments: "payment_id",
+  VO_Task_Links: "link_id",
+  VO_Finance_Ledger: "ledger_id",
+} as const;
 
 function text(value: unknown) {
   return String(value || "").trim();
@@ -108,6 +120,60 @@ function getDateValue(value?: unknown) {
 
 function parseRows<T>(rows: unknown) {
   return (Array.isArray(rows) ? rows : []) as T[];
+}
+
+function filterProjectRows<T extends SheetRecord>(rows: T[], projectId: string) {
+  return rows.filter((row) => String(row.project_id || "") === projectId);
+}
+
+function mergeRowsById<T extends SheetRecord>(primary: T[], fallback: T[], idColumn: string) {
+  const merged = new Map<string, T>();
+
+  fallback.forEach((row, index) => {
+    const key = String(row[idColumn] || row._rowIndex || `fallback-${index}`);
+    merged.set(key, row);
+  });
+
+  primary.forEach((row, index) => {
+    const key = String(row[idColumn] || row._rowIndex || `primary-${index}`);
+    merged.set(key, row);
+  });
+
+  return Array.from(merged.values());
+}
+
+async function getTaskRows(context: RouteContext) {
+  const projectId = context.project.project_id;
+  const readSheetsTasks = async () => filterProjectRows(await findAllRaw("Tasks", context.siteSheetId), projectId);
+
+  if (!isSupabaseReadEnabled("site")) return readSheetsTasks();
+
+  return readWithSheetsFallback("tasks", async () => {
+    const supabaseTasks = await getSupabaseTasks(projectId);
+    if (!shouldFallbackToSheets()) return supabaseTasks;
+
+    const sheetTasks = await readSheetsTasks();
+    return mergeRowsById(supabaseTasks, sheetTasks, "task_id");
+  }, readSheetsTasks);
+}
+
+async function getMergedVoRows(context: RouteContext, tableName: VoTableName) {
+  const projectId = context.project.project_id;
+  const keyColumn = VO_TABLE_KEYS[tableName];
+  const readSheetsRows = async () => filterProjectRows(await findAllRaw(tableName, context.siteSheetId), projectId);
+
+  if (!isSupabaseReadEnabled("site")) return readSheetsRows();
+
+  const supabaseConfig = getSupabaseSiteConfig(tableName);
+  if (!supabaseConfig) return readSheetsRows();
+
+  return readWithSheetsFallback(tableName, async () => {
+    const supabaseRows = filterProjectRows(await findAllSupabase(supabaseConfig, projectId), projectId);
+    if (!shouldFallbackToSheets()) return supabaseRows;
+
+    const sheetRows = await readSheetsRows();
+    return mergeRowsById(supabaseRows, sheetRows, keyColumn);
+  }, readSheetsRows);
 }
 
 async function fallbackRowIndex(context: RouteContext, tableName: string, keyColumn: string, keyValue: string, currentRowIndex?: string | number) {
@@ -251,22 +317,17 @@ async function uploadSupportingDocumentFiles(context: RouteContext, voId: string
 }
 
 async function getVoData(context: RouteContext) {
-  const rows = await findAllBatch([
-    "Variation_Orders",
-    "VO_Items",
-    "VO_Documents",
-    "VO_Payments",
-    "VO_Task_Links",
-    "Tasks",
-    "VO_Finance_Ledger",
-  ], context.siteSheetId) as unknown as Record<string, SheetRecord[]>;
-  const vos = parseRows<VoRecord>(rows.Variation_Orders);
-  const items = parseRows<VoItemRecord>(rows.VO_Items);
-  const documents = rows.VO_Documents || [];
-  const payments = rows.VO_Payments || [];
-  const taskLinks = rows.VO_Task_Links || [];
-  const tasks = rows.Tasks || [];
-  const ledger = rows.VO_Finance_Ledger || [];
+  const [voRows, itemRows, documents, payments, taskLinks, tasks, ledger] = await Promise.all([
+    getMergedVoRows(context, "Variation_Orders"),
+    getMergedVoRows(context, "VO_Items"),
+    getMergedVoRows(context, "VO_Documents"),
+    getMergedVoRows(context, "VO_Payments"),
+    getMergedVoRows(context, "VO_Task_Links"),
+    getTaskRows(context),
+    getMergedVoRows(context, "VO_Finance_Ledger"),
+  ]);
+  const vos = parseRows<VoRecord>(voRows);
+  const items = parseRows<VoItemRecord>(itemRows);
 
   const projectId = context.project.project_id;
   return {

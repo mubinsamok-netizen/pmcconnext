@@ -8,6 +8,11 @@ import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
+  addCalendarDays,
+  createNextVoId,
+  type VoRecord,
+} from "@/lib/variationOrders";
+import {
   MEMO_TYPE_LABELS,
   buildMemoAcknowledgementLineFlex,
   buildMemoAcknowledgementLineMessage,
@@ -15,6 +20,7 @@ import {
   boolText,
   createMemoAcknowledgementToken,
   createMemoDocumentNo,
+  isTrueText,
   numberValue,
   parseMemoAttachments,
   safeJsonStringify,
@@ -40,6 +46,11 @@ type RouteContext = {
 };
 
 type SheetRecord = Record<string, string | number | undefined>;
+type LinkedVoSummary = {
+  vo_id: string;
+  title?: string;
+  status?: string;
+};
 
 const MEMO_LINE_TEST_GROUP_ID = process.env.MEMO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
 
@@ -141,12 +152,23 @@ async function prepareMemoPdfAssets(memo: MemoRecord, evidence: MemoEvidenceReco
 
 async function getMemoData(context: RouteContext) {
   const [siteRows, auditLogs] = await Promise.all([
-    findAllBatch(["Site_Memos", "Site_Memo_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, SheetRecord[]>>,
+    findAllBatch(["Site_Memos", "Site_Memo_Evidence", "Variation_Orders"], context.siteSheetId) as unknown as Promise<Record<string, SheetRecord[]>>,
     findAllMaster("AuditLogs") as Promise<SheetRecord[]>,
   ]);
   const memoRows = (siteRows.Site_Memos || []) as MemoRecord[];
   const evidenceRows = (siteRows.Site_Memo_Evidence || []) as MemoEvidenceRecord[];
+  const variationOrderRows = (siteRows.Variation_Orders || []) as VoRecord[];
   const projectId = context.project.project_id;
+  const linkedVos = variationOrderRows
+    .filter((vo) => vo.project_id === projectId && textValue(vo.source_type) === "memo" && textValue(vo.source_ref_id))
+    .reduce<Record<string, LinkedVoSummary>>((accumulator, vo) => {
+      accumulator[textValue(vo.source_ref_id)] = {
+        vo_id: textValue(vo.vo_id),
+        title: textValue(vo.title),
+        status: textValue(vo.status),
+      };
+      return accumulator;
+    }, {});
 
   return {
     memos: memoRows
@@ -159,6 +181,7 @@ async function getMemoData(context: RouteContext) {
       .filter((log) => log.project_id === projectId && log.module === "site_memos")
       .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
       .slice(0, 160),
+    linkedVos,
   };
 }
 
@@ -295,6 +318,54 @@ async function handleCreateMemo(body: Record<string, unknown>, context: RouteCon
   });
 
   return NextResponse.json({ success: true, data: result.inserted });
+}
+
+async function handleUpdateMemo(body: Record<string, unknown>, context: RouteContext) {
+  const forbidden = requirePermission(context, "siteMemo.create");
+  if (forbidden) return forbidden;
+
+  const memoId = textValue(body.memo_id);
+  const data = await getMemoData(context);
+  const memo = data.memos.find((item) => item.memo_id === memoId);
+  if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
+
+  const title = textValue(body.title);
+  const detail = textValue(body.detail);
+  if (!title || !detail) return NextResponse.json({ error: "กรุณากรอกเรื่องและรายละเอียด Memo" }, { status: 400 });
+
+  const newAttachments = await uploadMemoFiles(context, memoId, "Attachments", parseUploads(body.attachment_uploads));
+  const existingAttachments = parseMemoAttachments(memo.attachments_json);
+  const hasTimeImpact = boolText(body.has_time_impact);
+  const patch = {
+    memo_type: textValue(body.memo_type) || "customer_notice",
+    related_module: textValue(body.related_module) || "other",
+    related_ref: textValue(body.related_ref),
+    title,
+    event_date: textValue(body.event_date) || todayBangkok(),
+    issue_date: textValue(body.issue_date) || todayBangkok(),
+    detail,
+    requires_customer_ack: boolText(body.requires_customer_ack),
+    has_time_impact: hasTimeImpact,
+    extension_days: hasTimeImpact === "TRUE" ? String(Math.max(0, Math.round(numberValue(body.extension_days)))) : "0",
+    extension_reason: textValue(body.extension_reason),
+    customer_name: textValue(body.customer_name) || String(context.project.client || ""),
+    attachments_json: safeJsonStringify([...existingAttachments, ...newAttachments]),
+    updated_at: new Date().toISOString(),
+  };
+
+  await updateSiteMemo(context, memo, patch);
+  await writeAuditLog({
+    actor: actor(context),
+    projectId: context.project.project_id,
+    module: "site_memos",
+    action: "memo_updated",
+    targetId: memoId,
+    summary: `แก้ไข Memo: ${title}`,
+    before: memo,
+    after: patch,
+  });
+
+  return NextResponse.json({ success: true, data: { ...memo, ...patch } });
 }
 
 async function handleIssuePdf(body: Record<string, unknown>, context: RouteContext, req: Request) {
@@ -537,6 +608,159 @@ async function handleUpdateStatus(body: Record<string, unknown>, context: RouteC
   return NextResponse.json({ success: true, data: { ...memo, status } });
 }
 
+async function handleCreateVoFromMemo(body: Record<string, unknown>, context: RouteContext) {
+  const forbidden = requirePermission(context, "vo.create");
+  if (forbidden) return forbidden;
+
+  const memoId = textValue(body.memo_id);
+  const data = await getMemoData(context);
+  const memo = data.memos.find((item) => item.memo_id === memoId);
+  if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
+  if (textValue(memo.related_module) !== "vo") {
+    return NextResponse.json({ error: "Memo นี้ไม่ได้ตั้งค่าเกี่ยวข้องกับงานเพิ่ม-ลด" }, { status: 400 });
+  }
+
+  const acknowledgedStatuses = new Set(["acknowledged", "extension_approved", "closed"]);
+  if (isTrueText(memo.requires_customer_ack) && !acknowledgedStatuses.has(textValue(memo.status))) {
+    return NextResponse.json({ error: "กรุณาบันทึกลูกค้ารับทราบ Memo ก่อนสร้างงานเพิ่ม-ลด" }, { status: 400 });
+  }
+
+  const voRows = (await findAllBatch(["Variation_Orders"], context.siteSheetId) as unknown as Record<string, SheetRecord[]>).Variation_Orders || [];
+  const existingVo = (voRows as VoRecord[]).find((vo) =>
+    vo.project_id === context.project.project_id &&
+    textValue(vo.source_type) === "memo" &&
+    textValue(vo.source_ref_id) === memoId
+  );
+  if (existingVo?.vo_id) {
+    return NextResponse.json({
+      success: true,
+      existing: true,
+      data: {
+        vo_id: textValue(existingVo.vo_id),
+        title: textValue(existingVo.title),
+        status: textValue(existingVo.status),
+      },
+    });
+  }
+
+  const createdDate = todayBangkok();
+  const voId = createNextVoId(context.project.project_id, createdDate, voRows as VoRecord[]);
+  const attachments = parseMemoAttachments(memo.attachments_json);
+  const description = [
+    textValue(memo.detail),
+    textValue(memo.extension_reason) ? `เหตุผลวันเพิ่ม: ${textValue(memo.extension_reason)}` : "",
+  ].filter(Boolean).join("\n\n");
+  const supportingDocs = [
+    `สร้างจาก Memo: ${textValue(memo.document_no) || memo.memo_id}`,
+    textValue(memo.related_ref) ? `อ้างอิงเดิม: ${textValue(memo.related_ref)}` : "",
+    ...attachments.map((file) => `แนบจาก Memo: ${file.file_name}`),
+  ].filter(Boolean).join("\n");
+  const voPayload = {
+    vo_id: voId,
+    project_id: context.project.project_id,
+    revision_no: "0",
+    original_vo_id: "",
+    vo_type: textValue(body.vo_type) || "VO+",
+    title: textValue(memo.title) || `งานเพิ่ม-ลดจาก ${textValue(memo.document_no) || memo.memo_id}`,
+    description: description || textValue(memo.title),
+    source_type: "memo",
+    source_ref_id: memoId,
+    source_description: textValue(memo.document_no) || textValue(memo.title),
+    subtotal: 0,
+    vat_rate: 7,
+    vat_exempt: "false",
+    withholding_tax: 0,
+    vat_amount: 0,
+    wht_amount: 0,
+    grand_total: 0,
+    net_payable: 0,
+    contract_before: 0,
+    contract_after: 0,
+    approval_deadline: addCalendarDays(createdDate, 14),
+    approval_token: "",
+    approval_url: "",
+    customer_approved_at: "",
+    customer_approved_by: "",
+    customer_approval_note: "",
+    sent_to_customer_at: "",
+    line_group_id: "",
+    line_message: "",
+    created_by_name: context.session.user.name || "",
+    created_by_email: context.session.user.email || "",
+    created_by_role: context.session.user.role || "",
+    status: "draft",
+    client_name: textValue(memo.customer_name) || String(context.project.client || ""),
+    supporting_docs: supportingDocs,
+    linked_tasks_json: "[]",
+    evidence_json: "",
+    rejection_json: "",
+    revision_history_json: "[]",
+    task_plan_status: "not_planned",
+    invoice_no: "",
+    invoice_date: "",
+    due_date: "",
+    amount_due: 0,
+    amount_paid: 0,
+    balance: 0,
+    payment_status: "not_billed",
+    document_refs_json: safeJsonStringify(attachments),
+    notes: `สร้างร่างจาก Memo ${textValue(memo.document_no) || memoId}`,
+    created_at: `${createdDate}T00:00:00+07:00`,
+    extension_days: Math.max(0, Math.round(numberValue(memo.extension_days))),
+  };
+  const itemPayload = {
+    item_id: makeId("VOI"),
+    vo_id: voId,
+    project_id: context.project.project_id,
+    item_no: 1,
+    description: textValue(memo.title) || `งานเพิ่ม-ลดจาก Memo ${memoId}`,
+    unit: "LS",
+    quantity: 1,
+    unit_price: 0,
+    amount: 0,
+  };
+
+  await insert("Variation_Orders", voPayload, context.siteSheetId);
+  await insert("VO_Items", itemPayload, context.siteSheetId);
+  await Promise.all(attachments.map((file, index) => insert("VO_Documents", {
+    document_id: makeId("VOD"),
+    vo_id: voId,
+    project_id: context.project.project_id,
+    document_type: "memo-evidence",
+    document_no: `${voId}-MEMO-${String(index + 1).padStart(2, "0")}`,
+    title: file.file_name || `Memo evidence ${index + 1}`,
+    html_snapshot: "",
+    pdf_file_id: file.file_id,
+    pdf_url: file.file_url,
+    created_by_name: context.session.user.name || "",
+    created_by_email: context.session.user.email || "",
+  }, context.siteSheetId)));
+
+  await Promise.all([
+    writeAuditLog({
+      actor: actor(context),
+      projectId: context.project.project_id,
+      module: "site_memos",
+      action: "vo_draft_created_from_memo",
+      targetId: memoId,
+      summary: `สร้างร่างงานเพิ่ม-ลด ${voId} จาก Memo`,
+      before: memo,
+      after: { vo_id: voId },
+    }),
+    writeAuditLog({
+      actor: actor(context),
+      projectId: context.project.project_id,
+      module: "variation_orders",
+      action: "created_from_memo",
+      targetId: voId,
+      summary: `สร้างร่างงานเพิ่ม-ลดจาก Memo ${textValue(memo.document_no) || memoId}`,
+      after: voPayload,
+    }),
+  ]);
+
+  return NextResponse.json({ success: true, data: voPayload });
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
@@ -552,6 +776,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       data: data.memos,
       evidence: data.evidence,
       audit_logs: data.auditLogs,
+      linked_vos: data.linkedVos,
       line: {
         test_mode: isMemoLineTestMode(),
         target_group_id: lineTargetFor(routeContext),
@@ -574,10 +799,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const action = textValue(body.action);
 
     if (action === "create_memo") return handleCreateMemo(body, routeContext);
+    if (action === "update_memo") return handleUpdateMemo(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, req);
     if (action === "send_acknowledgement") return handleSendAcknowledgement(body, routeContext, req);
     if (action === "acknowledge") return handleAcknowledge(body, routeContext, req);
     if (action === "update_status") return handleUpdateStatus(body, routeContext);
+    if (action === "create_vo_from_memo") return handleCreateVoFromMemo(body, routeContext);
 
     return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });
   } catch (error: unknown) {

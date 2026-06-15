@@ -5,10 +5,11 @@ import { filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { getProjectContext } from "@/lib/siteContext";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
-import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -155,20 +156,8 @@ function daysSince(date: Date) {
 }
 
 function isDoneTask(task: SheetRecord) {
-  const status = String(task.status || "").toLowerCase();
-  return status === "done" || status === "completed" || clampPercent(task.percent_done) >= 100;
-}
-
-function getTaskProgress(task: SheetRecord) {
-  if (isDoneTask(task)) return 100;
-
-  const explicitPercent = clampPercent(task.percent_done);
-  if (explicitPercent > 0) return explicitPercent;
-
-  const status = String(task.status || "").toLowerCase();
-  if (status === "review") return 80;
-  if (status === "in progress") return 50;
-  return 0;
+  const status = String(task.status || "").trim().toLowerCase();
+  return ["closed", "done", "resolved", "cancelled", "completed", "paid", "approved", "ผ่าน", "ปิดงาน", "เสร็จ", "ยกเลิก"].includes(status) || clampPercent(task.percent_done) >= 100;
 }
 
 function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): ProjectHealth {
@@ -191,8 +180,8 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
   const now = new Date();
   now.setHours(0, 0, 0, 0);
 
-  const progressTotal = workTasks.reduce((sum, task) => sum + getTaskProgress(task), 0);
   const completedTasks = workTasks.filter(isDoneTask).length;
+  const progressPercent = workTasks.length ? Math.round((completedTasks / workTasks.length) * 100) : 0;
   const overdueTasks = workTasks.filter((task) => {
     if (isDoneTask(task)) return false;
     const end = parseDate(String(task.planned_end || task.end || ""));
@@ -206,7 +195,7 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
   }, 0);
 
   return {
-    percent_done: String(clampPercent(Math.round(progressTotal / workTasks.length))),
+    percent_done: String(clampPercent(progressPercent)),
     tasks_count: String(workTasks.length),
     completed_tasks: String(completedTasks),
     overdue_tasks: String(overdueTasks.length),
@@ -217,6 +206,22 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
     daily_report_missing_days: "0",
     daily_report_alert: "FALSE",
   };
+}
+
+function mergeRowsById(primary: SheetRecord[], fallback: SheetRecord[], idField: string) {
+  const merged = new Map<string, SheetRecord>();
+
+  fallback.forEach((row, index) => {
+    const key = String(row[idField] || row._rowIndex || `fallback-${index}`);
+    merged.set(key, row);
+  });
+
+  primary.forEach((row, index) => {
+    const key = String(row[idField] || row._rowIndex || `primary-${index}`);
+    merged.set(key, row);
+  });
+
+  return Array.from(merged.values());
 }
 
 function calculateDailyReportHealth(project: SheetRecord, reports: SheetRecord[]) {
@@ -244,16 +249,19 @@ function calculateDailyReportHealth(project: SheetRecord, reports: SheetRecord[]
 }
 
 async function enrichProjectWithHealth(project: SheetRecord) {
-  const siteSheetId = String(project.site_sheet_id || "").trim();
-  if (!siteSheetId) {
+  const projectId = String(project.project_id || "").trim();
+  if (!projectId) {
     return { ...project, ...calculateProjectHealth(project, []) };
   }
 
   try {
-    const rows = await findAllBatch(["Tasks", "Daily_Reports"], siteSheetId) as Record<string, SheetRecord[]>;
-    const tasks = rows.Tasks || [];
+    const { sheetId } = await getProjectContext(projectId);
+    const rows = await findAllBatch(["Tasks", "Daily_Reports"], sheetId) as Record<string, SheetRecord[]>;
+    const tasks = isSupabaseBackend() && shouldFallbackToSheets()
+      ? mergeRowsById(rows.Tasks || [], await findAllRaw("Tasks", sheetId) as SheetRecord[], "task_id")
+      : rows.Tasks || [];
     const dailyReports = rows.Daily_Reports || [];
-    const projectTasks = tasks.filter((task) => task.project_id === project.project_id);
+    const projectTasks = tasks.filter((task) => task.project_id === projectId);
     return {
       ...project,
       ...calculateProjectHealth(project, projectTasks),

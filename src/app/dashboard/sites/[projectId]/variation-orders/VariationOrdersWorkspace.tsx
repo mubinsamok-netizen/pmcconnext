@@ -123,6 +123,12 @@ const tabs = [
   { key: "history", label: "ประวัติ / Print รายเดือน", icon: FileText },
 ];
 
+const PLAN_ELIGIBLE_STATUSES = new Set(["approved", "billed", "partial_payment", "paid", "overdue"]);
+
+function canAddVoToPlan(vo?: VoRecord) {
+  return PLAN_ELIGIBLE_STATUSES.has(asVoStatus(String(vo?.status || "")));
+}
+
 type VoPermissions = {
   create: boolean;
   submitToClient: boolean;
@@ -180,9 +186,26 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const [error, setError] = useState("");
   const [documentHtml, setDocumentHtml] = useState("");
 
-  const selectedVo = useMemo(() => {
+  const selectedVoFromState = useMemo(() => {
     return vos.find((vo) => vo.vo_id === selectedVoId) || vos[0];
   }, [selectedVoId, vos]);
+  const planCandidate = useMemo(() => {
+    return (
+      vos.find((vo) => canAddVoToPlan(vo) && vo.task_plan_status !== "planned") ||
+      vos.find((vo) => canAddVoToPlan(vo))
+    );
+  }, [vos]);
+  const selectedVo = useMemo(() => {
+    if (
+      activeTab === "plan" &&
+      planCandidate &&
+      (!selectedVoFromState || !canAddVoToPlan(selectedVoFromState) || selectedVoFromState.task_plan_status === "planned")
+    ) {
+      return planCandidate;
+    }
+
+    return selectedVoFromState;
+  }, [activeTab, planCandidate, selectedVoFromState]);
   const selectedDocuments = useMemo(() => {
     if (!selectedVo?.vo_id) return [];
     return (data?.documents || []).filter((document) => document.vo_id === selectedVo.vo_id);
@@ -323,7 +346,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     const result = await postAction("add_to_plan", { vo_id: selectedVo.vo_id, plan: planPayload });
     if (result?.success) {
       setPlan(emptyPlan);
-      setActiveTab("pipeline");
+      setActiveTab("history");
     }
   };
 
@@ -337,12 +360,19 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
 
   const printDocument = () => {
     if (!documentHtml) return;
-    printHtml(documentHtml, 900, 1200);
+    const opened = printHtml(documentHtml, 900, 1200);
+    if (opened) {
+      setMessage("เปิดหน้าพิมพ์แล้ว");
+      setError("");
+    }
   };
 
   const printHtml = (html: string, width = 900, height = 1200, targetWindow?: Window | null) => {
-    const win = targetWindow || window.open("", "_blank", `noopener,noreferrer,width=${width},height=${height}`);
-    if (!win) return;
+    const win = targetWindow || window.open("", "_blank", `popup=yes,width=${width},height=${height}`);
+    if (!win) {
+      setError("เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต popup แล้วกด Print อีกครั้ง");
+      return false;
+    }
     win.document.open();
     win.document.write(html);
     win.document.close();
@@ -350,15 +380,25 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
       win.focus();
       win.print();
     }, 400);
+    return true;
   };
 
   const printMonthlyReport = async () => {
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1100,height=800");
+    const printWindow = window.open("", "_blank", "popup=yes,width=1100,height=800");
+    printWindow?.document.open();
     printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานรายเดือน...</body></html>");
     printWindow?.document.close();
     const result = await postAction("generate_monthly_report", { month: reportMonth });
     if (result?.document_html) {
-      printHtml(String(result.document_html), 1100, 800, printWindow);
+      const html = String(result.document_html);
+      setDocumentHtml(html);
+      const opened = printHtml(html, 1100, 800, printWindow);
+      if (opened) {
+        setMessage("เปิดหน้าพิมพ์รายเดือนแล้ว");
+        setError("");
+      } else {
+        setMessage("สร้างรายงานรายเดือนแล้ว กดปุ่ม Print ด้านบนเพื่อเปิดหน้าพิมพ์อีกครั้ง");
+      }
     } else {
       printWindow?.close();
     }
@@ -910,11 +950,24 @@ function PlanSection({
   canAddToPlan: boolean;
 }) {
   const voType = asVoType(String(vo?.vo_type || ""));
+  const canPlanSelectedVo = canAddVoToPlan(vo);
+  const hasPlanTarget = voType === "VO+" ? headings.length > 0 : workTasks.length > 0;
+  const canSubmitPlan = canAddToPlan && canPlanSelectedVo && hasPlanTarget;
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <h3 className="text-lg font-extrabold text-gray-900">เพิ่มเข้าแผนงาน</h3>
       {!vo ? <EmptyText text="เลือก VO ก่อน" /> : (
         <div className="mt-4 space-y-4">
+          {!canPlanSelectedVo ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              เลือก VO ที่อนุมัติแล้วก่อน จึงจะเพิ่มเข้าแผนงานได้
+            </div>
+          ) : null}
+          {canPlanSelectedVo && !hasPlanTarget ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              {voType === "VO+" ? "ยังไม่มีหัวข้อหลักในแผนงาน กรุณาสร้าง H1 ในหน้าแผนงานก่อน" : "ยังไม่มี task ในแผนงานให้เลือก"}
+            </div>
+          ) : null}
           {voType === "VO+" ? (
             <div className="grid gap-4 lg:grid-cols-2">
               <Field label="หัวข้อหลัก">
@@ -956,7 +1009,7 @@ function PlanSection({
             </div>
           )}
           <div className="text-right">
-            <button type="button" onClick={onAddToPlan} disabled={loading || !canAddToPlan || !["approved", "billed", "partial_payment", "paid", "overdue"].includes(String(vo.status || ""))} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={onAddToPlan} disabled={loading || !canSubmitPlan} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50">
               {loading ? <Loader2 size={17} className="animate-spin" /> : <Workflow size={17} />}
               เพิ่มเข้าแผนงาน
             </button>

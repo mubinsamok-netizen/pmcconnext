@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
-import { findAll, insert } from "@/lib/sheetsCrud";
+import { findAllRaw, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
+import { getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
+import { isSupabaseBackend, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 
 function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
@@ -26,9 +28,27 @@ function isPdfFile(fileName: string, mimeType: string) {
   return mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf");
 }
 
-async function getDocumentRows(siteSheetId: string) {
+type DocumentRow = Awaited<ReturnType<typeof getSupabaseProjectDocuments>>[number];
+
+function mergeRowsById(primary: DocumentRow[], fallback: DocumentRow[]) {
+  const merged = new Map<string, DocumentRow>();
+
+  fallback.forEach((row, index) => {
+    const key = String(row.document_id || row._rowIndex || `fallback-${index}`);
+    merged.set(key, row);
+  });
+
+  primary.forEach((row, index) => {
+    const key = String(row.document_id || row._rowIndex || `primary-${index}`);
+    merged.set(key, row);
+  });
+
+  return Array.from(merged.values());
+}
+
+async function getSheetDocumentRows(siteSheetId: string) {
   try {
-    return await findAll("Project_Documents", siteSheetId);
+    return await findAllRaw("Project_Documents", siteSheetId) as DocumentRow[];
   } catch (error: unknown) {
     if (!isSheetsReadQuotaError(error)) throw error;
     console.warn("Project document version lookup skipped because Sheets read quota is temporarily exceeded.");
@@ -36,8 +56,25 @@ async function getDocumentRows(siteSheetId: string) {
   }
 }
 
+async function getDocumentRows(siteSheetId: string, projectId: string) {
+  if (!isSupabaseBackend()) return getSheetDocumentRows(siteSheetId);
+
+  const readSupabase = () => getSupabaseProjectDocuments(projectId);
+  const readSheets = () => getSheetDocumentRows(siteSheetId);
+
+  if (!shouldFallbackToSheets()) return readSupabase();
+
+  return readWithSheetsFallback("project_documents", async () => {
+    const [supabaseRows, sheetRows] = await Promise.all([
+      readSupabase(),
+      readSheets(),
+    ]);
+    return mergeRowsById(supabaseRows, sheetRows);
+  }, readSheets);
+}
+
 function getNextVersion(
-  rows: Awaited<ReturnType<typeof findAll>>,
+  rows: DocumentRow[],
   projectId: string,
   category: string,
   title: string
@@ -59,7 +96,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
-    const rows = await findAll("Project_Documents", context.siteSheetId);
+    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
     const documents = rows
       .filter((row) => row.project_id === context.project.project_id)
       .sort((a, b) => new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime());
@@ -118,7 +155,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         }
 
         const [rows, documentsFolder] = await Promise.all([
-          getDocumentRows(context.siteSheetId),
+          getDocumentRows(context.siteSheetId, context.project.project_id),
           findOrCreateFolder("Project Documents", driveFolderId),
         ]);
         const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);
@@ -158,7 +195,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           return NextResponse.json({ error: "ไม่พบข้อมูลไฟล์จาก Google Drive" }, { status: 400 });
         }
 
-        const rows = await getDocumentRows(context.siteSheetId);
+        const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
         const existing = rows.find((row) => String(row.drive_file_id || "") === driveFileId);
         if (existing) {
           return NextResponse.json({ success: true, data: existing });
@@ -199,7 +236,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const category = String(formData.get("category") || "other");
     const title = String(formData.get("title") || file.name).trim() || file.name;
     const notes = String(formData.get("notes") || "");
-    const rows = await getDocumentRows(context.siteSheetId);
+    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
     const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
 
     const documentsFolder = await findOrCreateFolder("Project Documents", driveFolderId);

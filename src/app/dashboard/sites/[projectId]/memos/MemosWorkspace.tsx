@@ -15,6 +15,7 @@ import {
   Printer,
   Send,
   ShieldCheck,
+  SquarePen,
   Upload,
   X,
 } from "lucide-react";
@@ -45,6 +46,7 @@ type ApiResponse = {
   data?: MemoRecord[];
   evidence?: MemoEvidenceRecord[];
   audit_logs?: Array<Record<string, string | number | undefined>>;
+  linked_vos?: Record<string, { vo_id: string; title?: string; status?: string }>;
   line?: {
     test_mode?: boolean;
     target_group_id?: string;
@@ -73,6 +75,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: ComponentType<{ size?: num
 const memoTypeOptions = Object.entries(MEMO_TYPE_LABELS);
 const relatedOptions = Object.entries(MEMO_RELATED_LABELS);
 const statusOptions = Object.entries(MEMO_STATUS_LABELS);
+const VO_READY_MEMO_STATUSES = new Set(["acknowledged", "extension_approved", "closed"]);
 
 const emptyMemoForm = {
   memo_type: "customer_notice",
@@ -96,6 +99,37 @@ const emptyAckForm = {
   notes: "",
   extension_approved: false,
 };
+
+function dateInputValue(value?: string | number) {
+  return String(value || "").slice(0, 10) || todayBangkok();
+}
+
+function memoToForm(memo: MemoRecord, fallbackCustomer: string) {
+  const hasTimeImpact = isTrueText(memo.has_time_impact);
+  return {
+    memo_type: String(memo.memo_type || "customer_notice"),
+    related_module: String(memo.related_module || "other"),
+    related_ref: String(memo.related_ref || ""),
+    title: String(memo.title || ""),
+    event_date: dateInputValue(memo.event_date),
+    issue_date: dateInputValue(memo.issue_date),
+    detail: String(memo.detail || ""),
+    requires_customer_ack: isTrueText(memo.requires_customer_ack),
+    has_time_impact: hasTimeImpact,
+    extension_days: hasTimeImpact ? String(memo.extension_days || "0") : "0",
+    extension_reason: String(memo.extension_reason || ""),
+    customer_name: String(memo.customer_name || fallbackCustomer || ""),
+  };
+}
+
+function isVoMemo(memo?: MemoRecord) {
+  return String(memo?.related_module || "") === "vo";
+}
+
+function isMemoReadyForVo(memo?: MemoRecord) {
+  if (!memo) return false;
+  return !isTrueText(memo.requires_customer_ack) || VO_READY_MEMO_STATUSES.has(String(memo.status || ""));
+}
 
 function formatDate(value?: string | number) {
   if (!value) return "-";
@@ -246,14 +280,17 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const memos = useMemo(() => data?.data || [], [data?.data]);
   const evidence = useMemo(() => data?.evidence || [], [data?.evidence]);
   const auditLogs = useMemo(() => data?.audit_logs || [], [data?.audit_logs]);
+  const linkedVos = useMemo(() => data?.linked_vos || {}, [data?.linked_vos]);
   const canCreate = hasPermission(userRole, "siteMemo.create");
   const canIssue = hasPermission(userRole, "siteMemo.issue");
   const canAcknowledge = hasPermission(userRole, "siteMemo.acknowledge");
+  const canCreateVo = hasPermission(userRole, "vo.create");
   const [activeTab, setActiveTab] = useState<TabKey>(canCreate ? "create" : "details");
   const [memoForm, setMemoForm] = useState({ ...emptyMemoForm, customer_name: project.client || "" });
   const [ackForm, setAckForm] = useState({ ...emptyAckForm, acknowledged_by: project.client || "" });
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
   const [evidenceFiles, setEvidenceFiles] = useState<File[]>([]);
+  const [editingMemoId, setEditingMemoId] = useState("");
   const [selectedMemoId, setSelectedMemoId] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -322,10 +359,43 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     }
   };
 
+  const resetMemoEditor = () => {
+    setEditingMemoId("");
+    setMemoForm({ ...emptyMemoForm, customer_name: project.client || "" });
+    setAttachmentFiles([]);
+  };
+
+  const startEditMemo = (memo: MemoRecord) => {
+    setSelectedMemoId(memo.memo_id);
+    setEditingMemoId(memo.memo_id);
+    setMemoForm(memoToForm(memo, project.client || ""));
+    setAttachmentFiles([]);
+    setActionError("");
+    setMessage(`กำลังแก้ไข ${memo.document_no || memo.memo_id}`);
+    setActiveTab("create");
+  };
+
   const createMemo = (issuePdf: boolean) => {
     startTransition(async () => {
       try {
         const attachmentUploads = await Promise.all(attachmentFiles.map(fileToUploadPayload));
+        if (editingMemoId) {
+          const updated = await postAction("update_memo", {
+            memo_id: editingMemoId,
+            ...memoForm,
+            attachment_uploads: attachmentUploads,
+          });
+          if (!updated?.success) return;
+          setSelectedMemoId(editingMemoId);
+          if (issuePdf) {
+            await postAction("issue_pdf", { memo_id: editingMemoId });
+          }
+          resetMemoEditor();
+          setMessage(issuePdf ? "บันทึกการแก้ไข Memo และออก PDF ใหม่เรียบร้อยแล้ว" : "บันทึกการแก้ไข Memo เรียบร้อยแล้ว");
+          setActiveTab(issuePdf ? "acknowledge" : "details");
+          return;
+        }
+
         const created = await postAction("create_memo", {
           ...memoForm,
           attachment_uploads: attachmentUploads,
@@ -336,8 +406,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
         if (issuePdf) {
           await postAction("issue_pdf", { memo_id: memoId });
         }
-        setMemoForm({ ...emptyMemoForm, customer_name: project.client || "" });
-        setAttachmentFiles([]);
+        resetMemoEditor();
         setMessage(issuePdf ? "สร้าง Memo และออก PDF เรียบร้อยแล้ว" : "บันทึกร่าง Memo เรียบร้อยแล้ว");
         setActiveTab(issuePdf ? "acknowledge" : "details");
       } catch (uploadError) {
@@ -362,6 +431,17 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
       if (result?.success) {
         const target = result.data?.line_group_id ? ` ไปยังกลุ่ม ${result.data.line_group_id}` : "";
         setMessage(`ส่ง LINE ให้ลูกค้ารับทราบ Memo แล้ว${target}`);
+      }
+    });
+  };
+
+  const createVoFromMemo = (memo: MemoRecord) => {
+    startTransition(async () => {
+      const result = await postAction("create_vo_from_memo", { memo_id: memo.memo_id });
+      const voId = String(result?.data?.vo_id || "");
+      if (result?.success && voId) {
+        setSelectedMemoId(memo.memo_id);
+        setMessage(result.existing ? `Memo นี้มีรายการงานเพิ่ม-ลดแล้ว: ${voId}` : `สร้างร่างงานเพิ่ม-ลดจาก Memo แล้ว: ${voId}`);
       }
     });
   };
@@ -412,6 +492,31 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
 
   const busy = isPending || Boolean(loadingAction);
 
+  const renderVoAction = (memo: MemoRecord, compact = false) => {
+    if (!isVoMemo(memo)) return null;
+    const linkedVo = linkedVos[memo.memo_id];
+    if (linkedVo?.vo_id) {
+      return (
+        <a href={`/dashboard/sites/${encodeURIComponent(project.project_id)}/variation-orders`} className={`inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 font-extrabold text-blue-700 hover:bg-blue-100 ${compact ? "px-3 py-2 text-xs" : "px-3 py-1.5 text-xs"}`}>
+          <ExternalLink size={13} /> เปิด VO {linkedVo.vo_id}
+        </a>
+      );
+    }
+    const readyForVo = isMemoReadyForVo(memo);
+    return (
+      <button
+        type="button"
+        disabled={busy || !canCreateVo || !readyForVo}
+        onClick={() => createVoFromMemo(memo)}
+        title={!readyForVo ? "ต้องบันทึกลูกค้ารับทราบก่อนสร้างงานเพิ่ม-ลด" : undefined}
+        className={`inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 font-extrabold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 ${compact ? "px-3 py-2 text-xs" : "px-3 py-1.5 text-xs"}`}
+      >
+        {loadingAction === "create_vo_from_memo" ? <Loader2 className="animate-spin" size={13} /> : <Plus size={13} />}
+        {readyForVo ? "สร้างร่างงานเพิ่ม-ลด" : "รอลูกค้ารับทราบก่อน"}
+      </button>
+    );
+  };
+
   return (
     <div className="space-y-5">
       <div className="grid gap-3 md:grid-cols-4">
@@ -449,9 +554,18 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
       {activeTab === "create" && (
         <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-            <div className="mb-5 flex items-center gap-2">
+            <div className="mb-5 flex flex-wrap items-center gap-2">
               <FileSignature className="text-orange-600" size={20} />
               <h3 className="text-lg font-extrabold text-gray-900">สร้างบันทึกข้อความ</h3>
+              {editingMemoId ? (
+                <>
+                  <span className="rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-xs font-extrabold text-orange-700">โหมดแก้ไข</span>
+                  <button type="button" onClick={resetMemoEditor} className="ml-auto inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-extrabold text-gray-600 hover:bg-gray-50">
+                    <X size={14} />
+                    ยกเลิกแก้ไข
+                  </button>
+                </>
+              ) : null}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1.5">
@@ -534,12 +648,12 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
               <p className="mt-1 text-sm text-gray-600">บันทึกร่างไว้ก่อน หรือออก PDF ทางการพร้อมโลโก้เพื่อส่งให้ลูกค้าได้ทันที</p>
               <div className="mt-4 grid gap-2">
                 <button type="button" disabled={busy || !canCreate} onClick={() => createMemo(false)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
-                  {loadingAction === "create_memo" ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
-                  บันทึกร่าง
+                  {loadingAction === "create_memo" || loadingAction === "update_memo" ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
+                  {editingMemoId ? "บันทึกการแก้ไข" : "บันทึกร่าง"}
                 </button>
                 <button type="button" disabled={busy || !canCreate || !canIssue} onClick={() => createMemo(true)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-slate-800 disabled:opacity-60">
                   {busy ? <Loader2 className="animate-spin" size={16} /> : <Printer size={16} />}
-                  บันทึกและออก PDF Memo
+                  {editingMemoId ? "บันทึกและออก PDF ใหม่" : "บันทึกและออก PDF Memo"}
                 </button>
               </div>
             </div>
@@ -596,6 +710,10 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                   </span>
                   <span className="text-sm font-bold text-gray-900">{selectedMemo.document_no || selectedMemo.memo_id}</span>
                   <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" disabled={busy || !canCreate} onClick={() => startEditMemo(selectedMemo)} className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-extrabold text-orange-700 hover:bg-orange-100 disabled:opacity-60">
+                      <SquarePen size={13} /> แก้ไข Memo
+                    </button>
+                    {renderVoAction(selectedMemo)}
                     {selectedMemo.pdf_url ? <a href={String(selectedMemo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-bold text-orange-600">เปิด PDF <ExternalLink size={14} /></a> : null}
                     {selectedMemo.pdf_url ? (
                       <button type="button" disabled={busy || !canIssue} onClick={() => issueMemoPdf(selectedMemo.memo_id)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-extrabold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
@@ -703,6 +821,10 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                       <td className="px-4 py-4 text-gray-600">{memo.prepared_by_name || memo.prepared_by_email || "-"}</td>
                       <td className="px-4 py-4">
                         <div className="flex flex-wrap justify-end gap-2">
+                          <button type="button" disabled={busy || !canCreate} onClick={() => startEditMemo(memo)} className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-extrabold text-orange-700 hover:bg-orange-100 disabled:opacity-60">
+                            <SquarePen size={13} /> แก้ไข
+                          </button>
+                          {renderVoAction(memo, true)}
                           {memo.pdf_url ? (
                             <>
                               <a href={String(memo.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white hover:bg-slate-800">
