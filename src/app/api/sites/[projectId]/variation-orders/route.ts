@@ -1464,21 +1464,27 @@ async function handleGenerateMonthlyReport(body: Record<string, unknown>, contex
   if (forbidden) return forbidden;
 
   const month = String(body.month || todayBangkok().slice(0, 7));
+  const isAllScope = String(body.scope || "").toLowerCase() === "all";
+  const generatedAt = new Date().toISOString();
   const { vos } = await getVoData(context);
-  const monthlyVos = vos.filter((vo) => {
+  const reportVos = isAllScope ? vos : vos.filter((vo) => {
     const createdAt = String(vo.created_at || "");
     const invoiceDate = String(vo.invoice_date || "");
     return createdAt.startsWith(month) || invoiceDate.startsWith(month);
   });
+  const scopeLabel = isAllScope ? "ทั้งหมด ณ เวลาที่โหลดข้อมูล" : month;
   const html = buildVoMonthlyReportHtml({
     project: context.project,
-    vos: monthlyVos,
+    vos: reportVos,
     month,
+    scopeLabel,
+    generatedAt,
     preparedBy: context.session.user.name || "",
   });
 
+  const reportKey = isAllScope ? `ALL-${todayBangkok()}` : month;
   const reportVo = {
-    vo_id: `VO-MR-${context.project.project_id}-${month}`,
+    vo_id: `VO-MR-${context.project.project_id}-${reportKey}`,
     project_id: context.project.project_id,
     status: "draft",
   } as VoRecord;
@@ -1486,21 +1492,21 @@ async function handleGenerateMonthlyReport(body: Record<string, unknown>, contex
     context,
     vo: reportVo,
     items: [],
-    documentType: "monthly-report",
-    title: `รายงานงานเพิ่ม-ลดประจำเดือน ${month}`,
+    documentType: isAllScope ? "all-report" : "monthly-report",
+    title: isAllScope ? "รายงานทะเบียนงานเพิ่ม-ลดทั้งหมด" : `รายงานงานเพิ่ม-ลดประจำเดือน ${month}`,
     html,
   });
   await writeAuditLog({
     actor: userActor(context),
     projectId: context.project.project_id,
     module: "variation_orders",
-    action: "monthly_report_generated",
+    action: isAllScope ? "all_report_generated" : "monthly_report_generated",
     targetId: reportVo.vo_id,
-    summary: `สร้างรายงานงานเพิ่ม-ลดประจำเดือน ${month}`,
-    after: { month, count: monthlyVos.length },
+    summary: isAllScope ? "สร้างรายงานทะเบียนงานเพิ่ม-ลดทั้งหมด" : `สร้างรายงานงานเพิ่ม-ลดประจำเดือน ${month}`,
+    after: { month, scope: isAllScope ? "all" : "monthly", generated_at: generatedAt, count: reportVos.length },
   });
 
-  return NextResponse.json({ success: true, data: { month, count: monthlyVos.length }, document_html: html });
+  return NextResponse.json({ success: true, data: { month, scope: isAllScope ? "all" : "monthly", generated_at: generatedAt, count: reportVos.length }, document_html: html });
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {

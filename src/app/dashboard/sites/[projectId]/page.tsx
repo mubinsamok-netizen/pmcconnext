@@ -52,6 +52,7 @@ type PlanningSummary = {
   workTaskCount: number;
   plannedTaskCount: number;
   completedTaskCount: number;
+  averageProgress: number;
   overdueTasks: SiteRecord[];
   dueSoonTasks: SiteRecord[];
   milestoneCount: number;
@@ -146,6 +147,7 @@ const emptyPlanning: PlanningSummary = {
   workTaskCount: 0,
   plannedTaskCount: 0,
   completedTaskCount: 0,
+  averageProgress: 0,
   overdueTasks: [],
   dueSoonTasks: [],
   milestoneCount: 0,
@@ -239,6 +241,10 @@ function dateKey(value?: SiteValue) {
 function numberValue(value?: SiteValue) {
   const parsed = Number(stringValue(value).replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clampPercent(value?: SiteValue) {
+  return Math.max(0, Math.min(100, numberValue(value)));
 }
 
 function formatMoney(value: number) {
@@ -912,6 +918,9 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       workTaskCount: projectTasks.length,
       plannedTaskCount: plannedTasks.length,
       completedTaskCount: completedTasks.length,
+      averageProgress: projectTasks.length
+        ? Math.round(projectTasks.reduce((sum, task) => sum + clampPercent(task.percent_done), 0) / projectTasks.length)
+        : 0,
       overdueTasks,
       dueSoonTasks,
       milestoneCount: projectMilestones.length,
@@ -1239,9 +1248,7 @@ export default async function SiteDashboardPage({
   ]);
   const isForeman = isForemanRole(session?.user?.role);
   const remainingDays = daysUntil(project.end_date);
-  const progressPercent = dashboard.planning.workTaskCount
-    ? Math.round((dashboard.planning.completedTaskCount / dashboard.planning.workTaskCount) * 100)
-    : 0;
+  const progressPercent = dashboard.planning.averageProgress;
   const visibleActions = isForeman ? dashboard.actions.filter((action) => isForemanVisibleHref(action.href)) : dashboard.actions;
   const visibleRecent = isForeman ? dashboard.recent.filter((item) => isForemanVisibleHref(item.href)) : dashboard.recent;
   const visibleCalendarEvents = isForeman ? dashboard.calendarEvents.filter((event) => isForemanVisibleHref(event.href)) : dashboard.calendarEvents;

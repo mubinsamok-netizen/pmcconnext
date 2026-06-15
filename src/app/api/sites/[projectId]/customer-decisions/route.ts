@@ -274,7 +274,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     phase: text(body.phase),
     title: text(body.title),
     decision_before: text(body.decision_before),
-    decision_status: text(body.decision_status) || "ยังไม่ถึงเวลา",
+    decision_status: text(body.decision_status) || "ต้องยืนยัน",
     impact_if_changed: text(body.impact_if_changed),
     result_note: text(body.result_note),
     evidence_note: text(body.evidence_note),

@@ -57,6 +57,45 @@ export function isIsoDate(value?: string | number) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 }
 
+export function toIsoDate(value?: string | number) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+
+  const isoMatch = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const numericValue = Number(text);
+  if (Number.isFinite(numericValue) && numericValue > 0 && numericValue < 100000) {
+    const sheetEpoch = Date.UTC(1899, 11, 30);
+    const parsed = new Date(sheetEpoch + Math.floor(numericValue) * 86400000);
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  const slashMatch = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, first, second, yearValue] = slashMatch;
+    let year = Number(yearValue);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+
+    const firstNumber = Number(first);
+    const secondNumber = Number(second);
+    const isMonthFirst = firstNumber <= 12 && secondNumber > 12;
+    const day = isMonthFirst ? secondNumber : firstNumber;
+    const month = isMonthFirst ? firstNumber : secondNumber;
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+}
+
 export function addDays(date: string, days: number) {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return "";
@@ -84,7 +123,7 @@ export function getLifecycleReminderTargets(projectId: string, lifecycle?: Sheet
   if (!lifecycle) return [];
   const link = `/dashboard/sites/${encodeURIComponent(projectId)}/lifecycle`;
   const targets: ReminderTarget[] = [];
-  const submittedDate = String(lifecycle.permit_submitted_date || "");
+  const submittedDate = toIsoDate(lifecycle.permit_submitted_date);
 
   if (isIsoDate(submittedDate)) {
     targets.push({
@@ -102,7 +141,7 @@ export function getLifecycleReminderTargets(projectId: string, lifecycle?: Sheet
     { key: "temporary_water_expiry_date", title: "ประปาชั่วคราวใกล้หมดอายุ", alertDays: 30 },
     { key: "construction_end_date", title: "ระยะเวลาก่อสร้างใกล้ครบกำหนด", alertDays: 15 },
   ].forEach((item) => {
-    const dueDate = String(lifecycle[item.key] || "");
+    const dueDate = toIsoDate(lifecycle[item.key]);
     if (!isIsoDate(dueDate)) return;
     targets.push({
       key: item.key,
@@ -118,12 +157,12 @@ export function getLifecycleReminderTargets(projectId: string, lifecycle?: Sheet
 
 export function getWarrantyReminderTargets(projectId: string, warranty?: SheetRecord): ReminderTarget[] {
   if (!warranty) return [];
-  const handoverDate = String(warranty.handover_date || "");
+  const handoverDate = toIsoDate(warranty.handover_date);
   const link = `/dashboard/sites/${encodeURIComponent(projectId)}/lifecycle`;
   const targets: ReminderTarget[] = [];
 
   warrantyTypeOptions.forEach((option) => {
-    const explicitExpiryDate = String(warranty[`${option.key}_expiry_date`] || "");
+    const explicitExpiryDate = toIsoDate(warranty[`${option.key}_expiry_date`]);
     const dueDate = isIsoDate(explicitExpiryDate)
       ? explicitExpiryDate
       : isIsoDate(handoverDate)

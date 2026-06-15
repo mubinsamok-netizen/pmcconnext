@@ -38,6 +38,17 @@ type Project = {
   last_daily_report_date?: string;
   daily_report_missing_days?: string;
   daily_report_alert?: string;
+  lifecycle_alerts_count?: string;
+  lifecycle_alerts_json?: string;
+};
+
+type ProjectLifecycleAlert = {
+  key: string;
+  title: string;
+  due_date: string;
+  days_remaining: number;
+  kind: "overdue" | "due_soon";
+  link: string;
 };
 
 type ProjectsResponse = {
@@ -206,6 +217,32 @@ function normalizeEngineerName(value?: string) {
 function getResponsibleName(project: Project, filter: ResponsibilityFilter) {
   if (filter === FILTER_TEAM_ACCESS) return "";
   return filter === FILTER_ARCHITECT ? normalizeEngineerName(project.architect_name) : normalizeEngineerName(project.se_name);
+}
+
+function parseLifecycleAlerts(project: Project) {
+  try {
+    const parsed = JSON.parse(project.lifecycle_alerts_json || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean) as ProjectLifecycleAlert[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function getLifecycleAlertDetail(alert: ProjectLifecycleAlert) {
+  const dueDate = toIsoDate(alert.due_date) || alert.due_date;
+  if (alert.kind === "overdue") {
+    return `${alert.title} หมดอายุแล้ว ${Math.abs(alert.days_remaining)} วัน (${dueDate})`;
+  }
+  if (alert.days_remaining === 0) {
+    return `${alert.title} ครบกำหนดวันนี้ (${dueDate})`;
+  }
+  return `${alert.title} จะถึงกำหนดใน ${alert.days_remaining} วัน (${dueDate})`;
+}
+
+function getLifecycleAlertTone(alerts: ProjectLifecycleAlert[]) {
+  return alerts.some((alert) => alert.kind === "overdue")
+    ? "border-red-200 bg-red-50 text-red-800"
+    : "border-amber-200 bg-amber-50 text-amber-800";
 }
 
 function getUnassignedLabel(filter: ResponsibilityFilter) {
@@ -522,6 +559,9 @@ export default function ProjectsPage() {
           const overdueTasks = getCount(project.overdue_tasks);
           const delayDays = getCount(project.delay_days);
           const dailyReportWarning = getDailyReportWarning(project);
+          const lifecycleAlerts = parseLifecycleAlerts(project);
+          const lifecycleAlertCount = getCount(project.lifecycle_alerts_count);
+          const lifecycleAlertTone = getLifecycleAlertTone(lifecycleAlerts);
 
           return (
             <div
@@ -565,6 +605,22 @@ export default function ProjectsPage() {
                     <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm font-bold text-amber-800">
                       <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                       <span className="leading-6">{dailyReportWarning}</span>
+                    </div>
+                  )}
+
+                  {lifecycleAlerts.length > 0 && (
+                    <div className={`flex items-start gap-2 rounded-2xl border px-3.5 py-3 text-sm font-bold ${lifecycleAlertTone}`}>
+                      <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                      <div className="min-w-0 space-y-1 leading-6">
+                        <div>
+                          แจ้งเตือนรายละเอียดงาน/เอกสาร/ประกัน {lifecycleAlertCount || lifecycleAlerts.length} รายการ
+                        </div>
+                        {lifecycleAlerts.slice(0, 2).map((alert) => (
+                          <div key={alert.key} className="line-clamp-1 text-xs font-extrabold opacity-90">
+                            {getLifecycleAlertDetail(alert)}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>

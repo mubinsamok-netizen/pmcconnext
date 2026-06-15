@@ -154,6 +154,8 @@ type MilestoneForm = {
 type CustomerDecisionForm = {
   decision_id?: string;
   phase: string;
+  use_custom_phase: boolean;
+  custom_phase: string;
   title: string;
   decision_before: string;
   decision_status: string;
@@ -316,9 +318,11 @@ const emptyMilestoneForm: MilestoneForm = {
 
 const emptyDecisionForm: CustomerDecisionForm = {
   phase: CUSTOMER_DECISION_PHASES[0],
+  use_custom_phase: false,
+  custom_phase: "",
   title: "",
   decision_before: "",
-  decision_status: "ยังไม่ถึงเวลา",
+  decision_status: "ต้องยืนยัน",
   impact_if_changed: "",
   result_note: "",
   evidence_note: "",
@@ -327,8 +331,7 @@ const emptyDecisionForm: CustomerDecisionForm = {
   order_index: "",
 };
 
-const DECISION_STATUS_CONFIRMED = "ยืนยันแล้ว";
-const DECISION_STATUSES_WAITING_FOR_CUSTOMER = new Set(["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"]);
+const CUSTOM_DECISION_PHASE_VALUE = "__custom_decision_phase__";
 
 function parseDate(value?: string) {
   if (!value) return null;
@@ -426,13 +429,6 @@ function daysBetween(start?: string, end?: string) {
   const endDate = parseDate(end);
   if (!startDate || !endDate) return "";
   return String(Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1));
-}
-
-function getTaskDuration(task: Pick<Task, "duration_days" | "start" | "end">) {
-  const explicitDuration = Number(task.duration_days || 0);
-  if (Number.isFinite(explicitDuration) && explicitDuration > 0) return explicitDuration;
-  const fallbackDuration = Number(daysBetween(task.start, task.end) || 1);
-  return Number.isFinite(fallbackDuration) && fallbackDuration > 0 ? fallbackDuration : 1;
 }
 
 function getInitialTab(tab?: string | null): ActiveTab {
@@ -848,28 +844,20 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   }, [selectedProjectData?.end_date, selectedProjectData?.start_date, sortedMilestones, visibleTaskRows]);
 
   const stats = useMemo(() => {
-    const done = tasks.filter((task) => task.status === "Done").length;
-    const inProgress = tasks.filter((task) => task.status === "In Progress").length;
-    const late = tasks.filter((task) => {
+    const workTasks = tasks.filter((task) => !isHeadingTask(task));
+    const done = workTasks.filter((task) => task.status === "Done").length;
+    const inProgress = workTasks.filter((task) => task.status === "In Progress").length;
+    const late = workTasks.filter((task) => {
       const end = parseDate(task.end);
       return end && end < new Date() && task.status !== "Done";
     }).length;
-    const durationTotals = tasks.reduce(
-      (acc, task) => {
-        if (isHeadingTask(task)) return acc;
-        const durationDays = getTaskDuration(task);
-        return {
-          progress: acc.progress + durationDays * clamp(Number(task.percent_done || 0)),
-          days: acc.days + durationDays,
-        };
-      },
-      { progress: 0, days: 0 }
-    );
+    const totalProgress = workTasks.reduce((sum, task) => sum + clamp(Number(task.percent_done || 0)), 0);
     return {
+      total: workTasks.length,
       done,
       inProgress,
       late,
-      average: durationTotals.days ? Math.round(durationTotals.progress / durationTotals.days) : 0,
+      average: workTasks.length ? Math.round(totalProgress / workTasks.length) : 0,
     };
   }, [tasks]);
 
@@ -1338,6 +1326,8 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setDecisionForm({
       ...emptyDecisionForm,
       phase: currentDecisionPhase || CUSTOMER_DECISION_PHASES[0],
+      use_custom_phase: !CUSTOMER_DECISION_PHASES.includes(currentDecisionPhase as typeof CUSTOMER_DECISION_PHASES[number]),
+      custom_phase: CUSTOMER_DECISION_PHASES.includes(currentDecisionPhase as typeof CUSTOMER_DECISION_PHASES[number]) ? "" : currentDecisionPhase,
       order_index: String(decisions.length + 1),
     });
     setDecisionEvidenceFiles([]);
@@ -1345,13 +1335,16 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   };
 
   const openEditDecision = (decision: CustomerDecision) => {
+    const hasKnownPhase = CUSTOMER_DECISION_PHASES.includes(decision.phase as typeof CUSTOMER_DECISION_PHASES[number]);
     setMessage("");
     setDecisionForm({
       decision_id: decision.decision_id,
-      phase: decision.phase || CUSTOMER_DECISION_PHASES[0],
+      phase: hasKnownPhase ? decision.phase : CUSTOMER_DECISION_PHASES[0],
+      use_custom_phase: Boolean(decision.phase && !hasKnownPhase),
+      custom_phase: hasKnownPhase ? "" : decision.phase || "",
       title: decision.title || "",
       decision_before: decision.decision_before || "",
-      decision_status: decision.decision_status || "ยังไม่ถึงเวลา",
+      decision_status: decision.decision_status || "ต้องยืนยัน",
       impact_if_changed: decision.impact_if_changed || "",
       result_note: decision.result_note || "",
       evidence_note: decision.evidence_note || "",
@@ -1365,7 +1358,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
   const saveDecision = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!selectedProject || !decisionForm.title) return;
+    const resolvedPhase = (decisionForm.use_custom_phase ? decisionForm.custom_phase : decisionForm.phase).trim();
+    if (!selectedProject || !resolvedPhase || !decisionForm.title.trim()) {
+      setMessage("กรุณากรอกช่วงงานและรายการที่ต้องให้ลูกค้าตัดสินใจ");
+      return;
+    }
 
     setSaving(true);
     setMessage("");
@@ -1375,7 +1372,12 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", ...decisionForm, evidence_uploads: evidenceUploads }),
+        body: JSON.stringify({
+          action: "save",
+          ...decisionForm,
+          phase: resolvedPhase,
+          evidence_uploads: evidenceUploads,
+        }),
       });
 
       if (!res.ok) {
@@ -1384,6 +1386,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       }
 
       await mutateDecisions();
+      setCurrentDecisionPhase(resolvedPhase);
       setShowDecisionForm(false);
       setDecisionEvidenceFiles([]);
       setMessage("บันทึกรายการที่ลูกค้าต้องตัดสินใจเรียบร้อยแล้ว");
@@ -1616,7 +1619,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4 p-5 bg-gray-50 border-y border-gray-100">
-            <SummaryCard label="งานทั้งหมด" value={tasks.length} />
+            <SummaryCard label="งานทั้งหมด" value={stats.total} />
             <SummaryCard label="เสร็จแล้ว" value={stats.done} tone="green" />
             <SummaryCard label="กำลังดำเนินการ" value={stats.inProgress} tone="blue" />
             <SummaryCard label="ล่าช้า" value={stats.late} tone="red" />
@@ -1944,7 +1947,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
             <aside className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               <MilestonePanel milestones={sortedMilestones} onEdit={openEditMilestone} />
-              <OverallStatus stats={stats} totalTasks={tasks.length} />
+              <OverallStatus stats={stats} totalTasks={stats.total} />
             </aside>
           </div>
         </div>
@@ -2255,6 +2258,10 @@ function CustomerDecisionPanel({
   const confirmedCount = decisions.filter((decision) => decision.decision_status === "ยืนยันแล้ว").length;
   const waitingCount = decisions.filter((decision) => ["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"].includes(decision.decision_status || "")).length;
   const overdueCount = decisions.filter((decision) => decision.decision_status === "เลยจุดตัดสินใจ").length;
+  const phaseOptions = Array.from(new Set([
+    ...CUSTOMER_DECISION_PHASES,
+    ...decisions.map((decision) => decision.phase).filter(Boolean),
+  ]));
 
   return (
     <div className="schedule-screen-only space-y-5">
@@ -2273,7 +2280,7 @@ function CustomerDecisionPanel({
                 onChange={(event) => onPhaseChange(event.target.value)}
                 className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-orange-200"
               >
-                {CUSTOMER_DECISION_PHASES.map((phase) => (
+                {phaseOptions.map((phase) => (
                   <option key={phase} value={phase}>{phase}</option>
                 ))}
               </select>
@@ -2297,6 +2304,22 @@ function CustomerDecisionPanel({
         </div>
 
         <div className="p-5">
+          <div className="mb-4 grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm md:grid-cols-5">
+            {[
+              ["1", "เพิ่มรายการ", "เลือกหมวดหรือเขียนเอง"],
+              ["2", "กรอกเรื่อง", "ระบุสิ่งที่ต้องอนุมัติ"],
+              ["3", "ส่ง LINE", "ระบบแนบ PDF และลิงก์อนุมัติ"],
+              ["4", "รอลูกค้า", "ลูกค้ากดอนุมัติจากลิงก์"],
+              ["5", "เก็บหลักฐาน", "สถานะและ audit log ถูกบันทึก"],
+            ].map(([step, title, detail]) => (
+              <div key={step} className="rounded-xl bg-white px-3 py-3 shadow-sm">
+                <div className="text-xs font-black text-blue-500">STEP {step}</div>
+                <div className="mt-1 font-extrabold text-gray-900">{title}</div>
+                <div className="mt-0.5 text-xs font-medium text-gray-500">{detail}</div>
+              </div>
+            ))}
+          </div>
+
           <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -2391,7 +2414,7 @@ function DecisionCard({
             className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-slate-800 disabled:opacity-60"
           >
             <Send size={14} />
-            ส่ง LINE
+            ส่ง LINE ให้ลูกค้า
           </button>
         </div>
       </div>
@@ -2509,7 +2532,7 @@ function DecisionTable({
               <td className="px-5 py-4 text-gray-700">{decision.impact_if_changed}</td>
               <td className="px-5 py-4">
                 <div className="flex items-center justify-center gap-2">
-                  <button disabled={saving} onClick={() => onNotifyLine(decision)} className="rounded-lg bg-slate-950 p-2 text-white hover:bg-slate-800 disabled:opacity-60" title="ส่ง LINE">
+                  <button disabled={saving} onClick={() => onNotifyLine(decision)} className="rounded-lg bg-slate-950 p-2 text-white hover:bg-slate-800 disabled:opacity-60" title="ส่ง LINE ให้ลูกค้า">
                     <Send size={15} />
                   </button>
                   <button onClick={() => onEdit(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600" title="แก้ไข">
@@ -3244,6 +3267,8 @@ function CustomerDecisionModal({
   onEvidenceFilesChange: React.Dispatch<React.SetStateAction<File[]>>;
   existingEvidence: DecisionEvidenceFile[];
 }) {
+  const phaseSelectValue = form.use_custom_phase ? CUSTOM_DECISION_PHASE_VALUE : form.phase;
+
   return (
     <div className="schedule-screen-only fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
       <div className="max-h-[92vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -3260,8 +3285,21 @@ function CustomerDecisionModal({
         <form onSubmit={onSubmit} className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
           <div className="grid gap-4 md:grid-cols-3">
             <Field label="ช่วงงาน / สถานะงาน">
-              <select value={form.phase} onChange={(event) => onChange((prev) => ({ ...prev, phase: event.target.value }))} className="schedule-input">
+              <select
+                value={phaseSelectValue}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  onChange((prev) => ({
+                    ...prev,
+                    use_custom_phase: value === CUSTOM_DECISION_PHASE_VALUE,
+                    phase: value === CUSTOM_DECISION_PHASE_VALUE ? prev.phase : value,
+                    custom_phase: value === CUSTOM_DECISION_PHASE_VALUE ? prev.custom_phase : "",
+                  }));
+                }}
+                className="schedule-input"
+              >
                 {CUSTOMER_DECISION_PHASES.map((phase) => <option key={phase} value={phase}>{phase}</option>)}
+                <option value={CUSTOM_DECISION_PHASE_VALUE}>อื่น ๆ / เขียนเอง</option>
               </select>
             </Field>
             <Field label="สถานะการตัดสินใจ">
@@ -3272,6 +3310,22 @@ function CustomerDecisionModal({
             <Field label="ลำดับ">
               <input value={form.order_index} onChange={(event) => onChange((prev) => ({ ...prev, order_index: event.target.value }))} className="schedule-input" />
             </Field>
+          </div>
+
+          {form.use_custom_phase ? (
+            <Field label="ช่วงงานที่เขียนเอง">
+              <input
+                required
+                value={form.custom_phase}
+                onChange={(event) => onChange((prev) => ({ ...prev, custom_phase: event.target.value }))}
+                className="schedule-input"
+                placeholder="เช่น งานบิวท์อิน, งานระบบไฟ, รายการเฉพาะหน้างาน"
+              />
+            </Field>
+          ) : null}
+
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            Flow แนะนำ: บันทึกรายการนี้ก่อน จากนั้นกด <strong>ส่ง LINE ให้ลูกค้า</strong> ที่การ์ดรายการ ระบบจะออก PDF และสร้างลิงก์ให้ลูกค้ากดอนุมัติเป็นหลักฐาน
           </div>
 
           <Field label="รายการที่ต้องให้ลูกค้าตัดสินใจ">
@@ -3321,15 +3375,6 @@ function CustomerDecisionModal({
                   onChange={(event) => {
                     const nextFiles = Array.from(event.target.files || []);
                     onEvidenceFilesChange((current) => [...current, ...nextFiles].slice(0, 10));
-                    if (nextFiles.length > 0 && DECISION_STATUSES_WAITING_FOR_CUSTOMER.has(form.decision_status)) {
-                      onChange((prev) => ({
-                        ...prev,
-                        decision_status: DECISION_STATUS_CONFIRMED,
-                        decided_at: prev.decided_at || new Date().toISOString().slice(0, 10),
-                        decided_by: prev.decided_by || "ลูกค้า",
-                        result_note: prev.result_note || "ลูกค้ายืนยันตามหลักฐานแนบ",
-                      }));
-                    }
                     event.currentTarget.value = "";
                   }}
                 />

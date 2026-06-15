@@ -119,7 +119,10 @@ function documentShell(title: string, subtitle: string, body: string) {
     .summary td { text-align: right; font-weight: 800; }
     .summary .grand th, .summary .grand td { background: #fff7ed; color: #c2410c; font-size: 11px; }
     .note { margin-top: 4mm; border-left: 3px solid #f97316; padding: 2mm 3mm; background: #fff7ed; color: #7c2d12; }
+    .timestamp-corner { position: absolute; top: 29mm; right: 9mm; width: 58mm; border: 1px solid #fdba74; border-radius: 6px; background: #fff7ed; padding: 2mm 3mm; color: #7c2d12; font-size: 8px; }
+    .timestamp-corner strong { display: block; color: #9a3412; font-size: 9px; }
     .signatures { position: absolute; left: 9mm; right: 9mm; bottom: 9mm; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8mm; }
+    .flow-signatures { position: static; margin-top: 12mm; }
     .sig { text-align: center; color: #111827; }
     .sig .line { border-top: 1px solid #111827; margin: 16mm 0 1.5mm; }
     .sig .role { color: #64748b; font-size: 8.2px; }
@@ -371,11 +374,15 @@ export function buildVoMonthlyReportHtml({
   vos,
   month,
   preparedBy,
+  scopeLabel,
+  generatedAt,
 }: {
   project?: ProjectLike;
   vos: VoRecord[];
   month: string;
   preparedBy?: string;
+  scopeLabel?: string;
+  generatedAt?: string;
 }) {
   const totalPlus = vos.filter((vo) => vo.vo_type === "VO+").reduce((sum, vo) => sum + Number(vo.grand_total || 0), 0);
   const totalMinus = vos.filter((vo) => vo.vo_type === "VO-").reduce((sum, vo) => sum + Number(vo.grand_total || 0), 0);
@@ -386,6 +393,8 @@ export function buildVoMonthlyReportHtml({
     if (Number.isNaN(date.getTime())) return month;
     return new Intl.DateTimeFormat("th-TH", { month: "long", year: "numeric", timeZone: "Asia/Bangkok" }).format(date);
   })();
+  const reportScope = scopeLabel || monthLabel;
+  const generatedStamp = formatThaiDateTime(generatedAt || new Date().toISOString());
 
   const rows = vos.map((vo, index) => {
     const type = asVoType(String(vo.vo_type || ""));
@@ -404,10 +413,15 @@ export function buildVoMonthlyReportHtml({
   }).join("");
 
   const body = `
+    <div class="timestamp-corner">
+      <strong>Timestamp อ้างอิง</strong>
+      โหลดข้อมูลเมื่อ ${escapeHtml(generatedStamp)}<br>
+      ขอบเขตรายงาน: ${escapeHtml(reportScope)}
+    </div>
     <section class="title">
-      <div class="eyebrow">Monthly Variation Order Report</div>
-      <h1>รายงานงานเพิ่ม-ลดประจำเดือน</h1>
-      <div class="subtitle">${escapeHtml(monthLabel)} / ${escapeHtml(project?.name || project?.project_id || "-")}</div>
+      <div class="eyebrow">Variation Order Register Report</div>
+      <h1>รายงานทะเบียนงานเพิ่ม-ลด</h1>
+      <div class="subtitle">${escapeHtml(reportScope)} / ${escapeHtml(project?.name || project?.project_id || "-")}</div>
     </section>
     <div class="grid">
       <div class="box">
@@ -416,6 +430,7 @@ export function buildVoMonthlyReportHtml({
           <tr><th>โครงการ</th><td>${escapeHtml(project?.name || project?.project_id || "-")}</td></tr>
           <tr><th>ลูกค้า</th><td>${escapeHtml(project?.client || "-")}</td></tr>
           <tr><th>จัดทำโดย</th><td>${escapeHtml(preparedBy || "-")}</td></tr>
+          <tr><th>โหลดข้อมูลเมื่อ</th><td>${escapeHtml(generatedStamp)}</td></tr>
         </table>
       </div>
       <div class="box">
@@ -441,16 +456,16 @@ export function buildVoMonthlyReportHtml({
           <th style="width:28mm;">ค้างชำระ</th>
         </tr>
       </thead>
-      <tbody>${rows || `<tr><td colspan="7" style="text-align:center;color:#64748b;">ไม่มี VO ในเดือนนี้</td></tr>`}</tbody>
+      <tbody>${rows || `<tr><td colspan="7" style="text-align:center;color:#64748b;">ไม่มี VO ในขอบเขตรายงานนี้</td></tr>`}</tbody>
     </table>
     <div class="note">
-      รายงานนี้สรุปรายการงานเพิ่ม-ลดตามเดือนที่สร้างเอกสาร เพื่อใช้ประชุมติดตามกับ Owner/ผู้บริหาร
+      รายงานนี้สรุปรายการงานเพิ่ม-ลดตามข้อมูลที่โหลด ณ timestamp ด้านบน เพื่อใช้อ้างอิงในการประชุมหรือตรวจสอบย้อนหลัง
     </div>
-    <section class="signatures">
+    <section class="signatures flow-signatures">
       <div class="sig"><div class="line"></div><strong>ผู้จัดทำ</strong><div class="role">${escapeHtml(preparedBy || "-")}</div></div>
       <div class="sig"><div class="line"></div><strong>Project Manager</strong><div class="role">ตรวจสอบ</div></div>
       <div class="sig"><div class="line"></div><strong>Owner/ผู้บริหาร</strong><div class="role">รับทราบ</div></div>
     </section>
   `;
-  return documentShell(`VO-MR-${project?.project_id || "PROJECT"}-${month}`, "Monthly Report", body);
+  return documentShell(`VO-REG-${project?.project_id || "PROJECT"}-${month}`, "Register Report", body);
 }

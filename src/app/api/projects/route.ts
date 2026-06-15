@@ -6,6 +6,13 @@ import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { getProjectContext } from "@/lib/siteContext";
+import {
+  getAlertState,
+  getLifecycleReminderTargets,
+  getWarrantyReminderTargets,
+  toIsoDate,
+  type ReminderTarget,
+} from "@/lib/projectLifecycle";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
@@ -25,6 +32,17 @@ type ProjectHealth = {
   last_daily_report_date: string;
   daily_report_missing_days: string;
   daily_report_alert: string;
+  lifecycle_alerts_count: string;
+  lifecycle_alerts_json: string;
+};
+
+type ProjectLifecycleAlert = {
+  key: string;
+  title: string;
+  due_date: string;
+  days_remaining: number;
+  kind: "overdue" | "due_soon";
+  link: string;
 };
 
 const DAILY_REPORT_STALE_DAYS = 7;
@@ -174,6 +192,8 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
       last_daily_report_date: "",
       daily_report_missing_days: "0",
       daily_report_alert: "FALSE",
+      lifecycle_alerts_count: "0",
+      lifecycle_alerts_json: "[]",
     };
   }
 
@@ -181,7 +201,9 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
   now.setHours(0, 0, 0, 0);
 
   const completedTasks = workTasks.filter(isDoneTask).length;
-  const progressPercent = workTasks.length ? Math.round((completedTasks / workTasks.length) * 100) : 0;
+  const progressPercent = workTasks.length
+    ? Math.round(workTasks.reduce((sum, task) => sum + clampPercent(task.percent_done), 0) / workTasks.length)
+    : 0;
   const overdueTasks = workTasks.filter((task) => {
     if (isDoneTask(task)) return false;
     const end = parseDate(String(task.planned_end || task.end || ""));
@@ -205,6 +227,8 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
     last_daily_report_date: "",
     daily_report_missing_days: "0",
     daily_report_alert: "FALSE",
+    lifecycle_alerts_count: "0",
+    lifecycle_alerts_json: "[]",
   };
 }
 
@@ -248,6 +272,41 @@ function calculateDailyReportHealth(project: SheetRecord, reports: SheetRecord[]
   };
 }
 
+function lifecycleAlertPriority(alert: ProjectLifecycleAlert) {
+  if (alert.kind === "overdue") return 0;
+  return Math.max(1, alert.days_remaining + 1);
+}
+
+function buildLifecycleAlert(target: ReminderTarget, today: Date): ProjectLifecycleAlert | null {
+  const state = getAlertState(today, target);
+  if (!state) return null;
+
+  return {
+    key: target.key,
+    title: target.title,
+    due_date: toIsoDate(target.dueDate),
+    days_remaining: state.days,
+    kind: state.kind,
+    link: target.link,
+  };
+}
+
+function calculateLifecycleAlerts(projectId: string, lifecycle?: SheetRecord, warranty?: SheetRecord) {
+  const today = new Date();
+  const alerts = [
+    ...getLifecycleReminderTargets(projectId, lifecycle),
+    ...getWarrantyReminderTargets(projectId, warranty),
+  ]
+    .map((target) => buildLifecycleAlert(target, today))
+    .filter((alert): alert is ProjectLifecycleAlert => Boolean(alert))
+    .sort((a, b) => lifecycleAlertPriority(a) - lifecycleAlertPriority(b) || a.due_date.localeCompare(b.due_date));
+
+  return {
+    lifecycle_alerts_count: String(alerts.length),
+    lifecycle_alerts_json: JSON.stringify(alerts.slice(0, 5)),
+  };
+}
+
 async function enrichProjectWithHealth(project: SheetRecord) {
   const projectId = String(project.project_id || "").trim();
   if (!projectId) {
@@ -256,16 +315,19 @@ async function enrichProjectWithHealth(project: SheetRecord) {
 
   try {
     const { sheetId } = await getProjectContext(projectId);
-    const rows = await findAllBatch(["Tasks", "Daily_Reports"], sheetId) as Record<string, SheetRecord[]>;
+    const rows = await findAllBatch(["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"], sheetId) as Record<string, SheetRecord[]>;
     const tasks = isSupabaseBackend() && shouldFallbackToSheets()
       ? mergeRowsById(rows.Tasks || [], await findAllRaw("Tasks", sheetId) as SheetRecord[], "task_id")
       : rows.Tasks || [];
     const dailyReports = rows.Daily_Reports || [];
+    const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
+    const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
     const projectTasks = tasks.filter((task) => task.project_id === projectId);
     return {
       ...project,
       ...calculateProjectHealth(project, projectTasks),
       ...calculateDailyReportHealth(project, dailyReports),
+      ...calculateLifecycleAlerts(projectId, lifecycle, warranty),
     };
   } catch (error: unknown) {
     console.warn(`Failed to calculate progress for ${project.project_id}:`, error);

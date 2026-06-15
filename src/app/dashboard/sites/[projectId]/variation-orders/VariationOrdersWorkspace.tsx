@@ -120,7 +120,7 @@ const emptyPlan = {
 const tabs = [
   { key: "create", label: "กรอก / แนบหลักฐาน", icon: Plus },
   { key: "plan", label: "เข้าแผนงาน", icon: Workflow },
-  { key: "history", label: "ประวัติ / Print รายเดือน", icon: FileText },
+  { key: "history", label: "ประวัติ / Print ทั้งหมด", icon: FileText },
 ];
 
 const PLAN_ELIGIBLE_STATUSES = new Set(["approved", "billed", "partial_payment", "paid", "overdue"]);
@@ -180,7 +180,6 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   });
   const [supportingDocFiles, setSupportingDocFiles] = useState<File[]>([]);
   const [plan, setPlan] = useState(emptyPlan);
-  const [reportMonth, setReportMonth] = useState(todayBangkok().slice(0, 7));
   const [loadingAction, setLoadingAction] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -383,21 +382,21 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     return true;
   };
 
-  const printMonthlyReport = async () => {
+  const printAllReport = async () => {
     const printWindow = window.open("", "_blank", "popup=yes,width=1100,height=800");
     printWindow?.document.open();
-    printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานรายเดือน...</body></html>");
+    printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานทะเบียนงานเพิ่ม-ลดทั้งหมด...</body></html>");
     printWindow?.document.close();
-    const result = await postAction("generate_monthly_report", { month: reportMonth });
+    const result = await postAction("generate_monthly_report", { scope: "all" });
     if (result?.document_html) {
       const html = String(result.document_html);
       setDocumentHtml(html);
       const opened = printHtml(html, 1100, 800, printWindow);
       if (opened) {
-        setMessage("เปิดหน้าพิมพ์รายเดือนแล้ว");
+        setMessage("เปิดหน้าพิมพ์ทะเบียนงานเพิ่ม-ลดทั้งหมดแล้ว");
         setError("");
       } else {
-        setMessage("สร้างรายงานรายเดือนแล้ว กดปุ่ม Print ด้านบนเพื่อเปิดหน้าพิมพ์อีกครั้ง");
+        setMessage("สร้างรายงานทั้งหมดแล้ว กดปุ่ม Print ด้านบนเพื่อเปิดหน้าพิมพ์อีกครั้ง");
       }
     } else {
       printWindow?.close();
@@ -476,14 +475,12 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
             <HistoryPrintSection
               vos={vos}
               auditLogs={data?.audit_logs || []}
-              month={reportMonth}
-              setMonth={setReportMonth}
               selectedVoId={selectedVo?.vo_id || ""}
               onSelect={setSelectedVoId}
               isLoading={isLoading}
-              onPrintMonthly={printMonthlyReport}
+              onPrintAll={printAllReport}
               printing={loadingAction === "generate_monthly_report"}
-              canPrintMonthly={permissions.generateMonthlyReport}
+              canPrintAll={permissions.generateMonthlyReport}
             />
           )}
         </main>
@@ -512,7 +509,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
                   <p>1. วิศวกรกรอกหัวข้องานเพิ่ม-ลด มูลค่า และจำนวนวันเพิ่ม</p>
                   <p>2. แนบไฟล์เอกสาร ใบเสร็จ/บิล และแคปหน้าจอจากลูกค้า แล้วกดบันทึก</p>
                   <p>3. ถ้าต้องใช้แผนงาน ให้ทำต่อใน tab เข้าแผนงานเหมือน workflow เดิม</p>
-                  <p>4. tab ประวัติใช้ดูทะเบียนย้อนหลังและ print รายงานตามเดือน</p>
+                  <p>4. tab ประวัติใช้ดูทะเบียนย้อนหลังและ Print ทั้งหมดพร้อม timestamp เวลาโหลดข้อมูล</p>
                 </>
               )}
             </div>
@@ -1171,41 +1168,30 @@ function FinanceSection({
 function HistoryPrintSection({
   vos,
   auditLogs,
-  month,
-  setMonth,
   selectedVoId,
   onSelect,
   isLoading,
-  onPrintMonthly,
+  onPrintAll,
   printing,
-  canPrintMonthly,
+  canPrintAll,
 }: {
   vos: Array<VoRecord & { items?: VoItemInput[] }>;
   auditLogs: Array<Record<string, string | number | undefined>>;
-  month: string;
-  setMonth: (month: string) => void;
   selectedVoId: string;
   onSelect: (voId: string) => void;
   isLoading: boolean;
-  onPrintMonthly: () => void;
+  onPrintAll: () => void;
   printing: boolean;
-  canPrintMonthly: boolean;
+  canPrintAll: boolean;
 }) {
-  const monthlyVos = useMemo(() => {
-    return vos.filter((vo) => {
-      const createdMonth = String(vo.created_at || "").slice(0, 7);
-      const invoiceMonth = String(vo.invoice_date || "").slice(0, 7);
-      return createdMonth === month || invoiceMonth === month;
-    });
-  }, [month, vos]);
-  const monthlySummary = useMemo(() => {
+  const allSummary = useMemo(() => {
     const approvedStatuses = new Set(["approved", "billed", "partial_payment", "paid", "overdue", "work_unlocked"]);
-    const approvedVos = monthlyVos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
+    const approvedVos = vos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
     const plus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO+").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
     const minus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO-").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
     const days = approvedVos.reduce((sum, vo) => sum + numberValue(vo.extension_days), 0);
     return { plus, minus, net: plus - minus, days, approved: approvedVos.length };
-  }, [monthlyVos]);
+  }, [vos]);
 
   return (
     <section className="space-y-5">
@@ -1213,20 +1199,17 @@ function HistoryPrintSection({
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h3 className="text-lg font-extrabold text-gray-900">ประวัติงานเพิ่ม-ลด</h3>
-            <p className="text-sm text-gray-500">ดูทะเบียนย้อนหลัง เลือกเดือน แล้วกด print เพื่อส่งรายงานภายในหรือแนบประชุม</p>
+            <p className="text-sm text-gray-500">ดูทะเบียนย้อนหลังทั้งหมด แล้วกด Print ทั้งหมดเพื่อออกเอกสารพร้อม timestamp เวลาโหลดข้อมูลสำหรับอ้างอิง</p>
           </div>
           <div className="flex flex-wrap items-end gap-3">
-            <Field label="เดือนที่ต้องการพิมพ์">
-              <input type="month" value={month} onChange={(event) => setMonth(event.target.value)} className="form-input" />
-            </Field>
             <button
               type="button"
-              onClick={onPrintMonthly}
-              disabled={!canPrintMonthly || printing}
+              onClick={onPrintAll}
+              disabled={!canPrintAll || printing}
               className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {printing ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
-              Print รายเดือน
+              Print ทั้งหมด
             </button>
           </div>
         </div>
@@ -1234,13 +1217,13 @@ function HistoryPrintSection({
 
       <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4 grid gap-3 md:grid-cols-5">
-          <Metric label="งานเพิ่มเดือนนี้" value={`${formatMoney(monthlySummary.plus)} บาท`} tone="green" />
-          <Metric label="งานลดเดือนนี้" value={`${formatMoney(monthlySummary.minus)} บาท`} tone="red" />
-          <Metric label="สุทธิเดือนนี้" value={`${formatMoney(monthlySummary.net)} บาท`} tone={monthlySummary.net >= 0 ? "orange" : "red"} />
-          <Metric label="วันเพิ่มเดือนนี้" value={`${formatMoney(monthlySummary.days)} วัน`} tone="sky" />
-          <Metric label="อนุมัติแล้ว" value={`${monthlySummary.approved} รายการ`} />
+          <Metric label="งานเพิ่มทั้งหมด" value={`${formatMoney(allSummary.plus)} บาท`} tone="green" />
+          <Metric label="งานลดทั้งหมด" value={`${formatMoney(allSummary.minus)} บาท`} tone="red" />
+          <Metric label="สุทธิทั้งหมด" value={`${formatMoney(allSummary.net)} บาท`} tone={allSummary.net >= 0 ? "orange" : "red"} />
+          <Metric label="วันเพิ่มทั้งหมด" value={`${formatMoney(allSummary.days)} วัน`} tone="sky" />
+          <Metric label="อนุมัติแล้ว" value={`${allSummary.approved} รายการ`} />
         </div>
-        <PipelineSection vos={monthlyVos} isLoading={isLoading} selectedVoId={selectedVoId} onSelect={onSelect} />
+        <PipelineSection vos={vos} isLoading={isLoading} selectedVoId={selectedVoId} onSelect={onSelect} />
       </div>
 
       <HistoryTable
