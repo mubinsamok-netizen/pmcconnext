@@ -43,7 +43,7 @@ type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
 const TEST_LINE_GROUP_ID = process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
 const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
 const DECISION_STATUS_CONFIRMED = "ยืนยันแล้ว";
-const DECISION_STATUSES_WAITING_FOR_CUSTOMER = new Set(["ต้องยืนยัน", "รอลูกค้า", "ส่งแจ้งเตือนแล้ว"]);
+const DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS = 75_000;
 
 function getLogoDataUrl() {
   try {
@@ -84,20 +84,11 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function shouldConfirmFromEvidence(payload: Record<string, string>, evidenceFiles: unknown[], hasNewEvidence: boolean) {
-  if (payload.decision_status === DECISION_STATUS_CONFIRMED) return true;
-  if (!DECISION_STATUSES_WAITING_FOR_CUSTOMER.has(payload.decision_status)) return false;
-  if (evidenceFiles.length === 0) return false;
-  return hasNewEvidence || Boolean(payload.decided_at || payload.decided_by || payload.result_note || payload.evidence_note);
-}
-
-function applyEvidenceConfirmationDefaults<T extends Record<string, string>>(
+function applyConfirmationDefaults<T extends Record<string, string>>(
   payload: T,
-  context: RouteContext,
-  evidenceFiles: unknown[],
-  hasNewEvidence: boolean
+  context: RouteContext
 ) {
-  if (!shouldConfirmFromEvidence(payload, evidenceFiles, hasNewEvidence)) return payload;
+  if (payload.decision_status !== DECISION_STATUS_CONFIRMED) return payload;
 
   return {
     ...payload,
@@ -124,6 +115,17 @@ function decodeDataUrl(dataUrl?: string) {
     mimeType: match[1],
     buffer: Buffer.from(match[2], "base64"),
   };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
 }
 
 function parseUploads(value: unknown) {
@@ -156,11 +158,15 @@ async function uploadDecisionFiles(context: RouteContext, decisionId: string, up
   const uploaded = await Promise.all(files.map(async (file) => {
     const decoded = decodeDataUrl(file.dataUrl);
     if (!decoded || !file.name) return null;
-    const uploadedFile = await uploadFile(
-      `${Date.now()}-${safeFolderName(file.name)}`,
-      file.type || decoded.mimeType || "application/octet-stream",
-      decoded.buffer,
-      folderId
+    const uploadedFile = await withTimeout(
+      uploadFile(
+        `${Date.now()}-${safeFolderName(file.name)}`,
+        file.type || decoded.mimeType || "application/octet-stream",
+        decoded.buffer,
+        folderId
+      ),
+      DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS,
+      "อัปโหลดหลักฐานไป Google Drive นานเกินไป กรุณาลองแนบไฟล์ใหม่อีกครั้ง"
     );
     return {
       file_id: uploadedFile.id || "",
@@ -298,7 +304,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
       ...uploadedEvidenceFiles,
     ];
     const patch = {
-      ...applyEvidenceConfirmationDefaults(payload, context, nextEvidenceFiles, uploadedEvidenceFiles.length > 0),
+      ...applyConfirmationDefaults(payload, context),
       evidence_files_json: safeJsonStringify(nextEvidenceFiles),
     };
 
@@ -320,7 +326,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
   const nextRows = await getDecisionData(context);
   const createdId = createCustomerDecisionId();
   const nextEvidenceFiles = await uploadDecisionFiles(context, createdId, parseUploads(body.evidence_uploads));
-  const createdPayload = applyEvidenceConfirmationDefaults(payload, context, nextEvidenceFiles, nextEvidenceFiles.length > 0);
+  const createdPayload = applyConfirmationDefaults(payload, context);
   const created = {
     decision_id: createdId,
     ...createdPayload,

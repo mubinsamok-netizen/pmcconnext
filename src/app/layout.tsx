@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Kanit } from "next/font/google";
 import Script from "next/script";
 import { Providers } from "@/components/Providers";
+import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
 const kanit = Kanit({

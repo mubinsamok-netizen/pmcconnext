@@ -569,7 +569,7 @@ export default function ProjectsPage() {
               className="group relative overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-[0_10px_26px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_18px_40px_rgba(15,23,42,0.1)]"
             >
               <Link href={`/dashboard/sites/${project.project_id}`} className="grid min-h-[210px] grid-cols-1 xl:grid-cols-[380px_minmax(420px,1fr)_310px]">
-                <div className="relative min-h-[170px] overflow-hidden bg-slate-50 lg:min-h-full">
+                <div className="relative min-h-[190px] overflow-hidden bg-slate-50 sm:min-h-[230px] xl:min-h-full">
                   <ProjectCover
                     src={coverSrc}
                     alt={project.name || project.project_id}

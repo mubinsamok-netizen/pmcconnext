@@ -18,6 +18,7 @@ import {
   Info,
   LayoutDashboard,
   ListChecks,
+  MapPinned,
   Presentation,
   ShieldCheck,
   StickyNote,
@@ -38,6 +39,7 @@ type SidebarUser = {
 
 const workspaceNavItems = [
   { name: "ไซต์งาน", href: "/dashboard/projects", icon: FolderKanban },
+  { name: "แผนที่ไซต์งาน", href: "/dashboard/site-map", icon: MapPinned },
   { name: "Sales CRM", href: "/dashboard/sales-crm", icon: Presentation },
 ];
 

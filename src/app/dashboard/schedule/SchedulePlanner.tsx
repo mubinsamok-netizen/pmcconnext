@@ -290,6 +290,10 @@ const GANTT_PRINT_LEFT_WIDTH = 410;
 const GANTT_PRINT_CHART_WIDTH = GANTT_PRINT_SVG_WIDTH - GANTT_PRINT_LEFT_WIDTH - 28;
 const GANTT_PRINT_HEADER_HEIGHT = 86;
 const GANTT_PRINT_ROW_HEIGHT = 38;
+const DECISION_SAVE_TIMEOUT_MS = 25000;
+const DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS = 90000;
+const DECISION_EVIDENCE_MAX_FILE_SIZE = 10 * 1024 * 1024;
+const DECISION_EVIDENCE_MAX_TOTAL_SIZE = 25 * 1024 * 1024;
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -706,6 +710,44 @@ async function fileToUploadPayload(file: File) {
     reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
     reader.readAsDataURL(file);
   });
+}
+
+function validateDecisionEvidenceFiles(files: File[]) {
+  const oversized = files.find((file) => file.size > DECISION_EVIDENCE_MAX_FILE_SIZE);
+  if (oversized) {
+    throw new Error(`ไฟล์ "${oversized.name}" ใหญ่เกิน 10 MB กรุณาลดขนาดไฟล์ก่อนแนบ`);
+  }
+
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalSize > DECISION_EVIDENCE_MAX_TOTAL_SIZE) {
+    throw new Error("ไฟล์แนบรวมกันใหญ่เกิน 25 MB กรุณาแนบทีละน้อยเพื่อให้ระบบอัปโหลดได้เสถียร");
+  }
+}
+
+async function postDecisionJson(projectId: string, body: Record<string, unknown>, timeoutMs: number, timeoutMessage: string) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(json.error || "Failed to save customer decision");
+    }
+    return json;
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export default function SchedulePlanner({ projects }: { projects: Project[] }) {
@@ -1364,36 +1406,65 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       return;
     }
 
+    try {
+      validateDecisionEvidenceFiles(decisionEvidenceFiles);
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+      return;
+    }
+
     setSaving(true);
-    setMessage("");
+    setMessage(decisionEvidenceFiles.length > 0 ? "กำลังบันทึกรายการก่อน แล้วจะอัปโหลดหลักฐานต่อให้" : "");
 
     try {
-      const evidenceUploads = await Promise.all(decisionEvidenceFiles.map(fileToUploadPayload));
-      const res = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "save",
-          ...decisionForm,
-          phase: resolvedPhase,
-          evidence_uploads: evidenceUploads,
-        }),
-      });
-
-      if (!res.ok) {
-        const json = await res.json();
-        throw new Error(json.error || "Failed to save customer decision");
-      }
+      const evidenceFilesToUpload = [...decisionEvidenceFiles];
+      const decisionPayload = {
+        action: "save",
+        ...decisionForm,
+        phase: resolvedPhase,
+      };
+      const json = await postDecisionJson(selectedProject, {
+        ...decisionPayload,
+        evidence_uploads: [],
+      }, DECISION_SAVE_TIMEOUT_MS, "บันทึกรายการนานเกินไป กรุณาลองใหม่อีกครั้ง");
 
       await mutateDecisions();
       setCurrentDecisionPhase(resolvedPhase);
       setShowDecisionForm(false);
       setDecisionEvidenceFiles([]);
+      const savedDecisionId = String(json.data?.decision_id || decisionForm.decision_id || "");
+      if (evidenceFilesToUpload.length > 0 && savedDecisionId) {
+        setSaving(false);
+        setMessage("บันทึกรายการแล้ว กำลังอัปโหลดหลักฐานต่อเบื้องหลัง...");
+        void uploadDecisionEvidenceInBackground(selectedProject, savedDecisionId, evidenceFilesToUpload, decisionPayload);
+        return;
+      }
+
       setMessage("บันทึกรายการที่ลูกค้าต้องตัดสินใจเรียบร้อยแล้ว");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const uploadDecisionEvidenceInBackground = async (
+    projectId: string,
+    decisionId: string,
+    files: File[],
+    decisionPayload: Record<string, unknown>
+  ) => {
+    try {
+      const evidenceUploads = await Promise.all(files.map(fileToUploadPayload));
+      await postDecisionJson(projectId, {
+        ...decisionPayload,
+        decision_id: decisionId,
+        evidence_uploads: evidenceUploads,
+      }, DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS, "อัปโหลดหลักฐานนานเกินไป รายการถูกบันทึกแล้ว แต่ไฟล์ยังไม่สำเร็จ กรุณาแนบใหม่ภายหลัง");
+      await mutateDecisions();
+      setMessage("บันทึกรายการและอัปโหลดหลักฐานเรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(`${getErrorMessage(error)} (รายการถูกบันทึกแล้ว สามารถแก้ไขรายการเพื่อแนบหลักฐานใหม่ได้)`);
     }
   };
 
@@ -2307,10 +2378,10 @@ function CustomerDecisionPanel({
           <div className="mb-4 grid gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm md:grid-cols-5">
             {[
               ["1", "เพิ่มรายการ", "เลือกหมวดหรือเขียนเอง"],
-              ["2", "กรอกเรื่อง", "ระบุสิ่งที่ต้องอนุมัติ"],
-              ["3", "ส่ง LINE", "ระบบแนบ PDF และลิงก์อนุมัติ"],
-              ["4", "รอลูกค้า", "ลูกค้ากดอนุมัติจากลิงก์"],
-              ["5", "เก็บหลักฐาน", "สถานะและ audit log ถูกบันทึก"],
+              ["2", "สร้าง PDF", "ออกเอกสารให้ลูกค้าดู"],
+              ["3", "ส่ง LINE", "แนบ PDF และลิงก์อนุมัติ"],
+              ["4", "บันทึกผล", "เติมผู้ยืนยันและหลักฐาน"],
+              ["5", "PDF สมบูรณ์", "สร้างใหม่พร้อมหลักฐานครบ"],
             ].map(([step, title, detail]) => (
               <div key={step} className="rounded-xl bg-white px-3 py-3 shadow-sm">
                 <div className="text-xs font-black text-blue-500">STEP {step}</div>
@@ -2391,6 +2462,8 @@ function DecisionCard({
   onIssuePdf: (decision: CustomerDecision) => void;
 }) {
   const evidenceCount = parseDecisionEvidence(decision.evidence_files_json).length;
+  const hasPdf = Boolean(decision.pdf_url);
+  const sendDisabled = saving || !hasPdf;
 
   return (
     <article className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition hover:border-orange-200 hover:shadow-md">
@@ -2409,12 +2482,13 @@ function DecisionCard({
           </div>
           <button
             type="button"
-            disabled={saving}
+            disabled={sendDisabled}
             onClick={() => onNotifyLine(decision)}
+            title={hasPdf ? "ส่ง LINE ให้ลูกค้า" : "กรุณาสร้าง PDF ก่อนส่ง LINE"}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-slate-800 disabled:opacity-60"
           >
             <Send size={14} />
-            ส่ง LINE ให้ลูกค้า
+            {hasPdf ? "ส่ง LINE ให้ลูกค้า" : "รอสร้าง PDF"}
           </button>
         </div>
       </div>
@@ -2428,7 +2502,7 @@ function DecisionCard({
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
             <div className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">หลักฐาน / PDF</div>
             <div className="mt-1 text-sm font-bold text-gray-900">
-              {evidenceCount} ไฟล์{decision.pdf_url ? ` / ${decision.document_no || "PDF ออกแล้ว"}` : ""}
+              {evidenceCount} ไฟล์{hasPdf ? ` / ${decision.document_no || "PDF ออกแล้ว"}` : " / ยังไม่สร้าง PDF"}
             </div>
           </div>
         </div>
@@ -2448,11 +2522,11 @@ function DecisionCard({
         <div className="flex flex-wrap gap-2 pt-1">
           <button type="button" onClick={() => onEdit(decision)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50">
             <Edit3 size={14} />
-            แก้ไข/บันทึกผล
+            บันทึกผล/หลักฐาน
           </button>
           <button type="button" onClick={() => onIssuePdf(decision)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50">
             <FileText size={14} />
-            ออก PDF
+            {hasPdf ? "สร้าง PDF ใหม่" : "สร้าง PDF"}
           </button>
           {decision.pdf_url ? (
             <a href={String(decision.pdf_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800">
@@ -2514,45 +2588,49 @@ function DecisionTable({
                 ยังไม่มีรายการที่ลูกค้าต้องตัดสินใจ
               </td>
             </tr>
-          ) : decisions.map((decision) => (
-            <tr key={decision.decision_id} className="align-top hover:bg-orange-50/30">
-              <td className="px-5 py-4 font-bold text-gray-900">{decision.phase}</td>
-              <td className="px-5 py-4">
-                <div className="font-extrabold text-gray-950">{decision.title}</div>
-                {decision.result_note ? <div className="mt-1 text-xs text-gray-500">ผลตัดสินใจ: {decision.result_note}</div> : null}
-                {decision.evidence_note ? <div className="mt-1 text-xs text-gray-500">หลักฐาน: {decision.evidence_note}</div> : null}
-                <div className="mt-1 text-xs text-gray-400">ไฟล์แนบ {parseDecisionEvidence(decision.evidence_files_json).length} ไฟล์</div>
-              </td>
-              <td className="px-5 py-4 text-gray-700">{decision.decision_before}</td>
-              <td className="px-5 py-4">
-                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-extrabold ${getDecisionStatusClass(decision.decision_status)}`}>
-                  {decision.decision_status || "ยังไม่ถึงเวลา"}
-                </span>
-              </td>
-              <td className="px-5 py-4 text-gray-700">{decision.impact_if_changed}</td>
-              <td className="px-5 py-4">
-                <div className="flex items-center justify-center gap-2">
-                  <button disabled={saving} onClick={() => onNotifyLine(decision)} className="rounded-lg bg-slate-950 p-2 text-white hover:bg-slate-800 disabled:opacity-60" title="ส่ง LINE ให้ลูกค้า">
-                    <Send size={15} />
-                  </button>
-                  <button onClick={() => onEdit(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600" title="แก้ไข">
-                    <Edit3 size={15} />
-                  </button>
-                  <button disabled={saving} onClick={() => onIssuePdf(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60" title="ออก PDF">
-                    <FileText size={15} />
-                  </button>
-                  {decision.pdf_url ? (
-                    <a href={String(decision.pdf_url)} target="_blank" rel="noreferrer" className="rounded-lg p-2 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600" title="เปิด PDF">
-                      <ExternalLink size={15} />
-                    </a>
-                  ) : null}
-                  <button onClick={() => onDelete(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600" title="ลบ">
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          ) : decisions.map((decision) => {
+            const hasPdf = Boolean(decision.pdf_url);
+
+            return (
+              <tr key={decision.decision_id} className="align-top hover:bg-orange-50/30">
+                <td className="px-5 py-4 font-bold text-gray-900">{decision.phase}</td>
+                <td className="px-5 py-4">
+                  <div className="font-extrabold text-gray-950">{decision.title}</div>
+                  {decision.result_note ? <div className="mt-1 text-xs text-gray-500">ผลตัดสินใจ: {decision.result_note}</div> : null}
+                  {decision.evidence_note ? <div className="mt-1 text-xs text-gray-500">หลักฐาน: {decision.evidence_note}</div> : null}
+                  <div className="mt-1 text-xs text-gray-400">ไฟล์แนบ {parseDecisionEvidence(decision.evidence_files_json).length} ไฟล์{hasPdf ? ` / ${decision.document_no || "PDF ออกแล้ว"}` : " / ยังไม่สร้าง PDF"}</div>
+                </td>
+                <td className="px-5 py-4 text-gray-700">{decision.decision_before}</td>
+                <td className="px-5 py-4">
+                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-extrabold ${getDecisionStatusClass(decision.decision_status)}`}>
+                    {decision.decision_status || "ยังไม่ถึงเวลา"}
+                  </span>
+                </td>
+                <td className="px-5 py-4 text-gray-700">{decision.impact_if_changed}</td>
+                <td className="px-5 py-4">
+                  <div className="flex items-center justify-center gap-2">
+                    <button disabled={saving || !hasPdf} onClick={() => onNotifyLine(decision)} className="rounded-lg bg-slate-950 p-2 text-white hover:bg-slate-800 disabled:opacity-60" title={hasPdf ? "ส่ง LINE ให้ลูกค้า" : "กรุณาสร้าง PDF ก่อนส่ง LINE"}>
+                      <Send size={15} />
+                    </button>
+                    <button onClick={() => onEdit(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600" title="บันทึกผล/หลักฐาน">
+                      <Edit3 size={15} />
+                    </button>
+                    <button disabled={saving} onClick={() => onIssuePdf(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60" title={hasPdf ? "สร้าง PDF ใหม่" : "สร้าง PDF"}>
+                      <FileText size={15} />
+                    </button>
+                    {decision.pdf_url ? (
+                      <a href={String(decision.pdf_url)} target="_blank" rel="noreferrer" className="rounded-lg p-2 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600" title="เปิด PDF">
+                        <ExternalLink size={15} />
+                      </a>
+                    ) : null}
+                    <button onClick={() => onDelete(decision)} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600" title="ลบ">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -3268,14 +3346,17 @@ function CustomerDecisionModal({
   existingEvidence: DecisionEvidenceFile[];
 }) {
   const phaseSelectValue = form.use_custom_phase ? CUSTOM_DECISION_PHASE_VALUE : form.phase;
+  const isResultMode = Boolean(form.decision_id);
 
   return (
     <div className="schedule-screen-only fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
       <div className="max-h-[92vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-gray-100 p-5">
           <div>
-            <h3 className="text-lg font-bold text-gray-900">{form.decision_id ? "แก้ไขรายการต้องตัดสินใจ" : "เพิ่มรายการต้องตัดสินใจ"}</h3>
-            <p className="mt-1 text-sm text-gray-500">ใช้บันทึกว่าลูกค้าต้องยืนยันเรื่องใดก่อนผ่านช่วงงานนั้น</p>
+            <h3 className="text-lg font-bold text-gray-900">{isResultMode ? "บันทึกผล/หลักฐานการตัดสินใจ" : "เพิ่มรายการต้องตัดสินใจ"}</h3>
+            <p className="mt-1 text-sm text-gray-500">
+              {isResultMode ? "เติมผลที่ลูกค้ายืนยัน พร้อมแนบหลักฐานประกอบหลังคุย LINE" : "สร้างรายการตั้งต้นเพื่อออก PDF และส่งให้ลูกค้าตัดสินใจ"}
+            </p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
@@ -3325,7 +3406,15 @@ function CustomerDecisionModal({
           ) : null}
 
           <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-            Flow แนะนำ: บันทึกรายการนี้ก่อน จากนั้นกด <strong>ส่ง LINE ให้ลูกค้า</strong> ที่การ์ดรายการ ระบบจะออก PDF และสร้างลิงก์ให้ลูกค้ากดอนุมัติเป็นหลักฐาน
+            {isResultMode ? (
+              <>
+                Flow แนะนำ: บันทึกผู้ยืนยัน วันที่ ผลการตัดสินใจ และหลักฐาน จากนั้นกด <strong>สร้าง PDF ใหม่</strong> ที่การ์ดรายการเพื่อออกเอกสารฉบับสมบูรณ์
+              </>
+            ) : (
+              <>
+                Flow แนะนำ: บันทึกรายการนี้ก่อน จากนั้นกด <strong>สร้าง PDF</strong> แล้วค่อยกด <strong>ส่ง LINE ให้ลูกค้า</strong> ที่การ์ดรายการ
+              </>
+            )}
           </div>
 
           <Field label="รายการที่ต้องให้ลูกค้าตัดสินใจ">
@@ -3341,32 +3430,38 @@ function CustomerDecisionModal({
             </Field>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="ผู้ยืนยัน">
-              <input value={form.decided_by} onChange={(event) => onChange((prev) => ({ ...prev, decided_by: event.target.value }))} className="schedule-input" placeholder="เช่น คุณกัน / คุณฝน" />
-            </Field>
-            <Field label="วันที่ยืนยัน">
-              <input type="date" value={form.decided_at} onChange={(event) => onChange((prev) => ({ ...prev, decided_at: event.target.value }))} className="schedule-input" />
-            </Field>
-          </div>
+          {isResultMode ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="ผู้ยืนยัน">
+                  <input value={form.decided_by} onChange={(event) => onChange((prev) => ({ ...prev, decided_by: event.target.value }))} className="schedule-input" placeholder="เช่น คุณกัน / คุณฝน" />
+                </Field>
+                <Field label="วันที่ยืนยัน">
+                  <input type="date" value={form.decided_at} onChange={(event) => onChange((prev) => ({ ...prev, decided_at: event.target.value }))} className="schedule-input" />
+                </Field>
+              </div>
 
-          <Field label="ผลการตัดสินใจ / หมายเหตุ">
-            <textarea value={form.result_note} onChange={(event) => onChange((prev) => ({ ...prev, result_note: event.target.value }))} className="min-h-[86px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" />
-          </Field>
+              <Field label="ผลการตัดสินใจ / หมายเหตุ">
+                <textarea value={form.result_note} onChange={(event) => onChange((prev) => ({ ...prev, result_note: event.target.value }))} className="min-h-[86px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" />
+              </Field>
 
-          <Field label="หลักฐานอ้างอิง">
-            <textarea value={form.evidence_note} onChange={(event) => onChange((prev) => ({ ...prev, evidence_note: event.target.value }))} className="min-h-[76px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" placeholder="เช่น ลูกค้าตอบใน LINE วันที่..., แนบรูปตัวอย่าง, เลขเอกสาร..." />
-          </Field>
+              <Field label="หลักฐานอ้างอิง">
+                <textarea value={form.evidence_note} onChange={(event) => onChange((prev) => ({ ...prev, evidence_note: event.target.value }))} className="min-h-[76px] w-full resize-none rounded-lg border border-gray-200 px-4 py-2 outline-none focus:ring-2 focus:ring-orange-200" placeholder="เช่น ลูกค้าตอบใน LINE วันที่..., แนบรูปตัวอย่าง, เลขเอกสาร..." />
+              </Field>
+            </>
+          ) : null}
 
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <div className="font-bold text-gray-900">แนบหลักฐาน</div>
-                <p className="mt-1 text-xs font-medium text-gray-500">รองรับรูปภาพ แคปหน้าจอ LINE หรือไฟล์เอกสารประกอบ</p>
+                <div className="font-bold text-gray-900">{isResultMode ? "แนบหลักฐาน" : "แนบรูปภาพประกอบ"}</div>
+                <p className="mt-1 text-xs font-medium text-gray-500">
+                  {isResultMode ? "รองรับรูปภาพ แคปหน้าจอ LINE หรือไฟล์เอกสารประกอบ" : "ใช้แนบรูปภาพประกอบรายการก่อนสร้าง PDF ส่งให้ลูกค้าตัดสินใจ"}
+                </p>
               </div>
               <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
                 <Upload size={16} />
-                เลือกไฟล์
+                {isResultMode ? "เลือกไฟล์หลักฐาน" : "เลือกไฟล์ประกอบ"}
                 <input
                   type="file"
                   multiple
@@ -3381,7 +3476,7 @@ function CustomerDecisionModal({
               </label>
             </div>
 
-            {existingEvidence.length > 0 ? (
+            {isResultMode && existingEvidence.length > 0 ? (
               <div className="mt-4 rounded-lg bg-white p-3">
                 <div className="text-xs font-extrabold text-gray-500">ไฟล์ที่แนบแล้ว</div>
                 <div className="mt-2 grid gap-2">
@@ -3416,7 +3511,7 @@ function CustomerDecisionModal({
             <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100">ยกเลิก</button>
             <button type="submit" disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700 disabled:opacity-70">
               {saving && <Loader2 size={16} className="animate-spin" />}
-              บันทึก
+              {isResultMode ? "บันทึกผล/หลักฐาน" : "บันทึกรายการ"}
             </button>
           </div>
         </form>
