@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, FileText, Loader2 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { formatBangkokDate, formatBangkokDateTime } from "@/lib/bangkokDateTime";
 
 type MemoAckData = {
   project: {
@@ -27,18 +28,6 @@ type MemoAckData = {
     evidence_count?: number;
   };
 };
-
-function formatDate(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value.includes("T") ? value : `${value}T00:00:00+07:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "2-digit", month: "long", year: "numeric" });
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-}
 
 export default function PublicMemoAcknowledgementClient({ projectId, token }: { projectId: string; token: string }) {
   const endpoint = `/api/memo-acknowledgement/${encodeURIComponent(projectId)}/${encodeURIComponent(token)}`;
@@ -149,8 +138,8 @@ export default function PublicMemoAcknowledgementClient({ projectId, token }: { 
         </section>
 
         <section className="grid gap-4 px-5 py-5 sm:px-8 md:grid-cols-3">
-          <Info label="วันที่แจ้ง" value={formatDate(memo?.issue_date)} />
-          <Info label="วันที่เกิดเหตุ/อ้างอิง" value={formatDate(memo?.event_date)} />
+          <Info label="วันที่แจ้ง" value={formatBangkokDate(memo?.issue_date)} />
+          <Info label="วันที่เกิดเหตุ/อ้างอิง" value={formatBangkokDate(memo?.event_date)} />
           <Info label="สถานะ" value={isAcknowledged ? "รับทราบแล้ว" : "รอลูกค้ารับทราบ"} />
         </section>
 
@@ -168,7 +157,7 @@ export default function PublicMemoAcknowledgementClient({ projectId, token }: { 
                 <CheckCircle2 size={22} /> รับทราบเรียบร้อยแล้ว
               </div>
               <p className="mt-2 text-sm font-semibold text-emerald-800">
-                ผู้รับทราบ: {memo?.acknowledged_by || "-"} | เวลา: {formatDateTime(memo?.acknowledged_date)}
+                ผู้รับทราบ: {memo?.acknowledged_by || "-"} | เวลา: {formatBangkokDateTime(memo?.acknowledged_date)}
               </p>
               {memo?.acknowledgement_note ? <p className="mt-2 text-sm text-emerald-700">{memo.acknowledgement_note}</p> : null}
             </div>

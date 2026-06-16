@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
@@ -246,7 +247,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           documentNo: text(nextMemo.document_no),
           title: text(nextMemo.title),
           acknowledgedBy,
-          acknowledgedAt: new Date(acknowledgedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }),
+          acknowledgedAt: formatBangkokDateTime(acknowledgedAt),
           pdfUrl: text(nextMemo.pdf_url),
         })], lineGroupId).catch((error) => console.warn("Failed to notify LINE after memo acknowledgement:", error));
       }

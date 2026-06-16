@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, FileText, Loader2, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 import { VO_TYPE_LABELS, asVoType, formatMoney, formatThaiDate } from "@/lib/variationOrders";
 
 type VoItem = {
@@ -39,11 +40,6 @@ type ApprovalData = {
     items: VoItem[];
   };
 };
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-}
 
 export default function PublicVariationOrderApprovalClient({ projectId, token }: { projectId: string; token: string }) {
   const endpoint = `/api/variation-order-approval/${encodeURIComponent(projectId)}/${encodeURIComponent(token)}`;
@@ -223,7 +219,7 @@ export default function PublicVariationOrderApprovalClient({ projectId, token }:
                   </div>
                   <p className="mt-2 text-sm font-semibold text-emerald-800">
                     ผู้อนุมัติ: {vo?.customer_approved_by || "-"}<br />
-                    เวลา: {formatDateTime(vo?.customer_approved_at)}
+                    เวลา: {formatBangkokDateTime(vo?.customer_approved_at)}
                   </p>
                 </div>
               ) : (

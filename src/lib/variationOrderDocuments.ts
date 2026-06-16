@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 import {
   VO_STATUS_LABELS,
   VO_TYPE_LABELS,
@@ -57,17 +58,7 @@ function nl2br(value?: string | number | null) {
 }
 
 function formatThaiDateTime(value?: string | number | null) {
-  if (!value) return "-";
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("th-TH", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Asia/Bangkok",
-  }).format(date);
+  return formatBangkokDateTime(value);
 }
 
 function numberCell(value?: string | number) {

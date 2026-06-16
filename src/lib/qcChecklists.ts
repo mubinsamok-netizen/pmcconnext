@@ -1,3 +1,5 @@
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+
 export type QcChecklistRecord = Record<string, string | number | undefined> & {
   _rowIndex?: number;
   qc_id: string;
@@ -1307,9 +1309,7 @@ export function buildQcApprovedLineFlex({
   approvedAt: string;
   pdfUrl?: string;
 }) {
-  const approvedDate = approvedAt
-    ? new Date(approvedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })
-    : "-";
+  const approvedDate = formatBangkokDateTime(approvedAt);
 
   return {
     type: "flex",

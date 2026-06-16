@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 
 type ApprovalData = {
   project: {
@@ -25,11 +26,6 @@ type ApprovalData = {
     pdf_url?: string;
   };
 };
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-}
 
 export default function PublicDefectApprovalClient({ projectId, token }: { projectId: string; token: string }) {
   const endpoint = `/api/defect-approval/${encodeURIComponent(projectId)}/${encodeURIComponent(token)}`;
@@ -152,7 +148,7 @@ export default function PublicDefectApprovalClient({ projectId, token }: { proje
                 <CheckCircle2 size={22} /> ยอมรับงานแก้ไขเรียบร้อยแล้ว
               </div>
               <p className="mt-2 text-sm font-semibold text-emerald-800">
-                ผู้ยอมรับ: {round?.acknowledged_by || "-"} | เวลา: {formatDateTime(round?.acknowledged_date)}
+                ผู้ยอมรับ: {round?.acknowledged_by || "-"} | เวลา: {formatBangkokDateTime(round?.acknowledged_date)}
               </p>
               {round?.acknowledgement_note ? <p className="mt-2 text-sm text-emerald-700">{round.acknowledgement_note}</p> : null}
             </div>

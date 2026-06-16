@@ -1,4 +1,6 @@
 ﻿export type VoType = "VO+" | "VO-" | "VO0";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+
 export type VoStatus =
   | "draft"
   | "pending_approval"
@@ -496,7 +498,7 @@ export function buildVoApprovedLineFlex({
           flexInfoRow("รายการ", title || "-"),
           flexInfoRow("มูลค่า", `${formatMoney(total)} บาท`),
           flexInfoRow("ผู้อนุมัติ", approvedBy || "-"),
-          flexInfoRow("เวลา", approvedAt ? new Date(approvedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "-"),
+          flexInfoRow("เวลา", formatBangkokDateTime(approvedAt)),
           {
             type: "box",
             layout: "vertical",

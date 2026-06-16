@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 
 export type DefectStatus =
   | "draft"
@@ -325,7 +326,7 @@ export function buildDefectApprovedLineFlex({
   acknowledgedAt: string;
   pdfUrl?: string;
 }) {
-  const approvedDate = acknowledgedAt ? new Date(acknowledgedAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "-";
+  const approvedDate = formatBangkokDateTime(acknowledgedAt);
   return {
     type: "flex",
     altText: `ลูกค้ายอมรับงานแก้ไข Defect แล้ว | ${projectName || projectId} | ${title}`,

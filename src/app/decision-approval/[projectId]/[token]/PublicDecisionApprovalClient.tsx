@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 
 type ApprovalData = {
   project: {
@@ -26,11 +27,6 @@ type ApprovalData = {
     pdf_url?: string;
   };
 };
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-}
 
 export default function PublicDecisionApprovalClient({ projectId, token }: { projectId: string; token: string }) {
   const endpoint = `/api/decision-approval/${encodeURIComponent(projectId)}/${encodeURIComponent(token)}`;
@@ -160,7 +156,7 @@ export default function PublicDecisionApprovalClient({ projectId, token }: { pro
                 <CheckCircle2 size={22} /> ยืนยันเรียบร้อยแล้ว
               </div>
               <p className="mt-2 text-sm font-semibold text-emerald-800">
-                ผู้ยืนยัน: {decision?.decided_by || "-"} | เวลา: {formatDateTime(decision?.decided_at)}
+                ผู้ยืนยัน: {decision?.decided_by || "-"} | เวลา: {formatBangkokDateTime(decision?.decided_at)}
               </p>
               {decision?.result_note ? <p className="mt-2 text-sm text-emerald-700">{decision.result_note}</p> : null}
             </div>

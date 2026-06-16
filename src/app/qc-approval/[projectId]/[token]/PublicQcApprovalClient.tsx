@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
+import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
 import { QC_RESULT_LABELS, type QcChecklistItem } from "@/lib/qcChecklists";
 
 type ApprovalData = {
@@ -38,11 +39,6 @@ function resultClass(result?: string) {
   if (result === "fail") return "border-red-200 bg-red-50 text-red-700";
   if (result === "repair") return "border-orange-200 bg-orange-50 text-orange-700";
   return "border-slate-200 bg-slate-50 text-slate-600";
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
 }
 
 export default function PublicQcApprovalClient({ projectId, token }: { projectId: string; token: string }) {
@@ -221,7 +217,7 @@ export default function PublicQcApprovalClient({ projectId, token }: { projectId
                 <CheckCircle2 size={22} /> อนุมัติเรียบร้อยแล้ว
               </div>
               <p className="mt-2 text-sm font-semibold text-emerald-800">
-                ผู้อนุมัติ: {checklist?.customer_approved_by || "-"} | เวลา: {formatDateTime(checklist?.customer_approved_at)}
+                ผู้อนุมัติ: {checklist?.customer_approved_by || "-"} | เวลา: {formatBangkokDateTime(checklist?.customer_approved_at)}
               </p>
               {checklist?.customer_approval_note ? <p className="mt-2 text-sm text-emerald-700">{checklist.customer_approval_note}</p> : null}
             </div>
