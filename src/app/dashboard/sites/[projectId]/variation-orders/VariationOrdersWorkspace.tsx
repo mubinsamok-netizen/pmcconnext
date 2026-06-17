@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import Image from "next/image";
 import {
   Banknote,
   CheckCircle2,
@@ -87,7 +88,7 @@ const emptyCreateForm: CreateForm = {
   source_type: "client_request",
   source_ref_id: "",
   source_description: "",
-  vat_exempt: false,
+  vat_exempt: true,
   withholding_tax: "0",
   supporting_docs: "",
   approval_deadline_days: "14",
@@ -184,6 +185,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [documentHtml, setDocumentHtml] = useState("");
+  const [printDialogOpen, setPrintDialogOpen] = useState(false);
 
   const selectedVoFromState = useMemo(() => {
     return vos.find((vo) => vo.vo_id === selectedVoId) || vos[0];
@@ -274,6 +276,8 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     const result = await postAction(editingVoId ? "update_vo" : "create_vo", {
       ...(editingVoId ? { vo_id: editingVoId } : {}),
       ...createForm,
+      vat_exempt: true,
+      withholding_tax: "0",
       items: [
         {
           item_no: 1,
@@ -382,25 +386,16 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     return true;
   };
 
-  const printAllReport = async () => {
-    const printWindow = window.open("", "_blank", "popup=yes,width=1100,height=800");
-    printWindow?.document.open();
-    printWindow?.document.write("<!doctype html><html><head><meta charset=\"utf-8\" /><title>กำลังสร้างรายงาน</title></head><body style=\"font-family:Arial,sans-serif;padding:24px;\">กำลังสร้างรายงานทะเบียนงานเพิ่ม-ลดทั้งหมด...</body></html>");
-    printWindow?.document.close();
-    const result = await postAction("generate_monthly_report", { scope: "all" });
-    if (result?.document_html) {
-      const html = String(result.document_html);
-      setDocumentHtml(html);
-      const opened = printHtml(html, 1100, 800, printWindow);
-      if (opened) {
-        setMessage("เปิดหน้าพิมพ์ทะเบียนงานเพิ่ม-ลดทั้งหมดแล้ว");
-        setError("");
-      } else {
-        setMessage("สร้างรายงานทั้งหมดแล้ว กดปุ่ม Print ด้านบนเพื่อเปิดหน้าพิมพ์อีกครั้ง");
-      }
-    } else {
-      printWindow?.close();
-    }
+  const openPrintPreview = () => {
+    setPrintDialogOpen(true);
+    setMessage("");
+    setError("");
+  };
+
+  const printVariationOrders = () => {
+    document.body.classList.add("printing-variation-orders");
+    window.print();
+    window.setTimeout(() => document.body.classList.remove("printing-variation-orders"), 250);
   };
 
   return (
@@ -478,8 +473,8 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               selectedVoId={selectedVo?.vo_id || ""}
               onSelect={setSelectedVoId}
               isLoading={isLoading}
-              onPrintAll={printAllReport}
-              printing={loadingAction === "generate_monthly_report"}
+              onPrintAll={openPrintPreview}
+              printing={false}
               canPrintAll={permissions.generateMonthlyReport}
             />
           )}
@@ -516,6 +511,37 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
           </section>
         </aside>
       </div>
+
+      {printDialogOpen && (
+        <div className="variation-orders-print-dialog fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto max-w-6xl rounded-2xl bg-white shadow-2xl">
+            <div className="variation-orders-print-controls flex items-center justify-between border-b border-gray-100 p-5">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">Print Preview</h3>
+                <p className="text-sm text-gray-500">ตัวอย่างเอกสารทะเบียนงานเพิ่ม-ลดก่อนพิมพ์</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPrintDialogOpen(false)}
+                  className="rounded-xl border border-gray-200 px-4 py-2 font-semibold text-gray-700 transition hover:bg-gray-50"
+                >
+                  ปิด
+                </button>
+                <button
+                  type="button"
+                  onClick={printVariationOrders}
+                  className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-semibold text-white transition hover:bg-orange-700"
+                >
+                  <Printer size={17} />
+                  พิมพ์เอกสาร
+                </button>
+              </div>
+            </div>
+            <VariationOrdersPrintDocument project={project} vos={vos} summary={stats} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -627,11 +653,11 @@ function CreateSection({
       <div className="mb-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h3 className="text-lg font-extrabold text-gray-900">{editingVoId ? `แก้ไขงานเพิ่ม-ลด ${editingVoId}` : "กรอกงานเพิ่ม-ลด / แนบหลักฐาน"}</h3>
+            <h3 className="text-lg font-extrabold text-gray-900">{editingVoId ? `แก้ไขใบแนบหลักฐาน ${editingVoId}` : "บันทึกงานเพิ่ม-ลดแบบแนบหลักฐาน"}</h3>
             <p className="text-sm text-gray-500">
               {editingVoId
                 ? "แก้ไขข้อมูลก่อนลูกค้าอนุมัติได้ หากส่ง LINE ไปแล้วให้กดส่งอีกครั้งหลังบันทึก เพื่อให้ลูกค้าเห็นข้อมูลล่าสุด"
-                : "วิศวกรนำเอกสารที่ทำจากข้างนอกมาแนบในระบบ พร้อมบันทึกยอดเงินและจำนวนวันเพิ่มเพื่อสรุปภาพรวมไซต์"}
+                : "กรอกเฉพาะหัวข้องาน ยอดตามหลักฐาน วันเพิ่ม และแนบไฟล์อ้างอิง ระบบจะไม่บวก VAT หรือ WHT ให้อัตโนมัติ"}
             </p>
           </div>
           {editingVoId && onCancelEdit ? (
@@ -642,6 +668,19 @@ function CreateSection({
           ) : null}
         </div>
       </div>
+      <div className="mb-5 rounded-2xl border border-orange-100 bg-orange-50 p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-xs font-extrabold uppercase tracking-wide text-orange-600">Evidence-first VO</div>
+            <div className="mt-1 text-sm font-bold text-gray-900">ใช้เป็นใบสรุปงานเพิ่ม/งานลดจากหลักฐานที่แนบ ไม่ใช่เอกสารภาษี</div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs font-bold text-orange-800 sm:grid-cols-3">
+            <span className="rounded-lg bg-white px-3 py-2">ไม่คิด VAT</span>
+            <span className="rounded-lg bg-white px-3 py-2">ไม่คิด WHT</span>
+            <span className="rounded-lg bg-white px-3 py-2">แนบหลักฐานเอง</span>
+          </div>
+        </div>
+      </div>
       <div className="grid gap-4 lg:grid-cols-3">
         <Field label="ประเภทงาน">
           <select value={form.vo_type} onChange={(event) => setForm({ ...form, vo_type: event.target.value })} className="form-input bg-white">
@@ -650,13 +689,13 @@ function CreateSection({
             <option value="VO0">งานสับเปลี่ยน</option>
           </select>
         </Field>
-        <Field label="หัวข้อ">
-          <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" />
+        <Field label="ชื่องาน / รายการหลัก">
+          <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" placeholder="เช่น เปลี่ยนแปลงแบบ, งานโครงสร้าง, งานเพิ่มจากลูกค้า" />
         </Field>
-        <Field label="เลขที่เอกสาร / ใบเสร็จ / อ้างอิง">
-          <input value={form.source_ref_id} onChange={(event) => setForm({ ...form, source_ref_id: event.target.value })} className="form-input" placeholder="เช่น VO-001, ใบเสร็จ, เลขที่แชท" />
+        <Field label="อ้างอิงหลักฐาน">
+          <input value={form.source_ref_id} onChange={(event) => setForm({ ...form, source_ref_id: event.target.value })} className="form-input" placeholder="เช่น เลขใบเสนอราคา, ใบเสร็จ, แชท LINE" />
         </Field>
-        <Field label="มูลค่า (บาท)">
+        <Field label="ยอดตามหลักฐาน (บาท)">
           <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} className="form-input" inputMode="decimal" placeholder="0.00" />
         </Field>
         <Field label="จำนวนวันเพิ่ม">
@@ -672,14 +711,14 @@ function CreateSection({
         </Field>
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Field label="รายละเอียด / เหตุผล">
-          <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={4} className="form-input resize-none" />
+        <Field label="เหตุผล / รายละเอียดสั้น ๆ">
+          <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={4} className="form-input resize-none" placeholder="สรุปว่าทำไมต้องเพิ่ม/ลดงานนี้ และลูกค้ารับทราบจากช่องทางไหน" />
         </Field>
-        <Field label="หลักฐาน / หมายเหตุ">
+        <Field label="หลักฐานแนบ / หมายเหตุ">
           <div className="space-y-3">
             <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" placeholder="อธิบายว่าแนบอะไร เช่น ใบเสร็จ, บิล, แคปหน้าจอ LINE, รูปหน้างาน" />
-            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-3">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-orange-100 bg-white px-3 py-2 text-sm font-bold text-orange-700 hover:bg-orange-50">
+            <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/60 p-4">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-orange-700">
                 <Paperclip size={16} />
                 แนบไฟล์หลักฐาน
                 <input
@@ -693,11 +732,11 @@ function CreateSection({
                   }}
                 />
               </label>
-              <p className="mt-2 text-xs font-semibold text-gray-500">รองรับรูปแคปหน้าจอ, PDF, Word, Excel และเอกสารอ้างอิงจากภายนอก</p>
+              <p className="mt-2 text-xs font-semibold text-orange-800">แนบรูปแคปหน้าจอ, PDF, Word, Excel หรือรูปหน้างานได้หลายไฟล์</p>
               {supportingDocFiles.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {supportingDocFiles.map((file, index) => (
-                    <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-600">
+                    <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm">
                       <span className="truncate">{file.name}</span>
                       <button type="button" onClick={() => removeSupportingFile(index)} className="font-bold text-red-600">ลบ</button>
                     </div>
@@ -710,7 +749,7 @@ function CreateSection({
       </div>
       <div className="mt-5 grid gap-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 text-sm sm:grid-cols-3">
         <div>
-          <p className="font-bold text-gray-500">ยอดที่บันทึก</p>
+          <p className="font-bold text-gray-500">ยอดตามหลักฐาน</p>
           <p className="mt-1 text-xl font-extrabold text-gray-950">{formatMoney(form.amount)} บาท</p>
         </div>
         <div>
@@ -718,8 +757,8 @@ function CreateSection({
           <p className="mt-1 text-xl font-extrabold text-sky-700">{formatMoney(form.extension_days)} วัน</p>
         </div>
         <div>
-          <p className="font-bold text-gray-500">การนำไปคิดยอดรวม</p>
-          <p className="mt-1 text-sm font-bold text-gray-700">{form.status === "approved" ? "นับใน dashboard ทันที" : "ยังไม่นับจนกว่าจะอนุมัติ"}</p>
+          <p className="font-bold text-gray-500">ภาษี</p>
+          <p className="mt-1 text-sm font-bold text-gray-700">ไม่บวก VAT / WHT</p>
         </div>
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
@@ -1239,6 +1278,152 @@ function HistoryPrintSection({
         ]}
       />
     </section>
+  );
+}
+
+function VariationOrdersPrintDocument({
+  project,
+  vos,
+  summary,
+}: {
+  project: Project;
+  vos: Array<VoRecord & { items?: VoItemInput[] }>;
+  summary: {
+    count: number;
+    pending: number;
+    approved: number;
+    addAmount: number;
+    deductAmount: number;
+    netAmount: number;
+    extensionDays: number;
+  };
+}) {
+  const printedAt = new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "long",
+    timeStyle: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date());
+  const paid = vos.reduce((sum, vo) => sum + numberValue(vo.amount_paid), 0);
+  const outstanding = vos.reduce((sum, vo) => sum + numberValue(vo.balance), 0);
+
+  return (
+    <div className="variation-orders-print-document bg-white p-8 text-gray-950">
+      <div className="mb-6 flex items-center gap-5 border-b-2 border-gray-950 pb-5">
+        <Image src="/logo.png" alt="Pichayamongkol Construction" width={180} height={56} className="h-14 w-auto object-contain" />
+        <div className="min-w-0">
+          <h1 className="text-2xl font-black leading-tight text-gray-950">Variation Order Register Report</h1>
+          <p className="mt-1 text-sm text-gray-600">Pichayamongkol Construction Co., Ltd.</p>
+          <p className="text-sm text-gray-600">รายงานทะเบียนงานเพิ่ม-ลด | พิมพ์วันที่ {printedAt}</p>
+        </div>
+        <div className="ml-auto rounded-xl border border-gray-200 px-4 py-3 text-right">
+          <div className="text-xs font-semibold text-gray-500">โครงการ</div>
+          <div className="font-bold text-gray-950">{project.name || project.project_id}</div>
+          <div className="text-xs font-semibold text-gray-500">{project.client || "-"}</div>
+        </div>
+      </div>
+
+      <div className="mb-5 grid grid-cols-4 gap-3">
+        <VoPrintMetric label="VO ทั้งหมด" value={`${summary.count} รายการ`} />
+        <VoPrintMetric label="งานเพิ่มรวม" value={`${formatMoney(summary.addAmount)} บาท`} />
+        <VoPrintMetric label="งานลดรวม" value={`${formatMoney(summary.deductAmount)} บาท`} />
+        <VoPrintMetric label="สุทธิ" value={`${formatMoney(summary.netAmount)} บาท`} />
+        <VoPrintMetric label="วันเพิ่มรวม" value={`${formatMoney(summary.extensionDays)} วัน`} />
+        <VoPrintMetric label="รออนุมัติ" value={`${summary.pending} รายการ`} />
+        <VoPrintMetric label="อนุมัติแล้ว" value={`${summary.approved} รายการ`} />
+        <VoPrintMetric label="คงเหลือรับชำระ" value={`${formatMoney(outstanding)} บาท`} />
+      </div>
+
+      <div className="mb-5 grid grid-cols-3 gap-3 text-xs">
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="font-bold text-gray-500">เลขที่โครงการ</div>
+          <div className="mt-1 font-extrabold text-gray-950">{project.project_id}</div>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="font-bold text-gray-500">เลขที่สัญญา</div>
+          <div className="mt-1 font-extrabold text-gray-950">{project.contract_no || "-"}</div>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="font-bold text-gray-500">รับชำระแล้ว</div>
+          <div className="mt-1 font-extrabold text-gray-950">{formatMoney(paid)} บาท</div>
+        </div>
+      </div>
+
+      <table className="w-full border-collapse text-[11px]">
+        <thead>
+          <tr className="bg-gray-950 text-white">
+            <th className="w-10 border border-gray-300 px-2 py-2 text-left">#</th>
+            <th className="w-40 border border-gray-300 px-2 py-2 text-left">VO No.</th>
+            <th className="w-24 border border-gray-300 px-2 py-2 text-left">ประเภท</th>
+            <th className="border border-gray-300 px-2 py-2 text-left">ชื่องาน / รายละเอียด</th>
+            <th className="w-28 border border-gray-300 px-2 py-2 text-right">มูลค่า</th>
+            <th className="w-28 border border-gray-300 px-2 py-2 text-left">สถานะ</th>
+            <th className="w-24 border border-gray-300 px-2 py-2 text-right">วันเพิ่ม</th>
+            <th className="w-32 border border-gray-300 px-2 py-2 text-left">แผนงาน</th>
+            <th className="w-28 border border-gray-300 px-2 py-2 text-left">วันที่บันทึก</th>
+          </tr>
+        </thead>
+        <tbody>
+          {vos.length === 0 ? (
+            <tr>
+              <td colSpan={9} className="border border-gray-300 px-3 py-8 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td>
+            </tr>
+          ) : (
+            vos.map((vo, index) => {
+              const type = asVoType(String(vo.vo_type || ""));
+              const status = asVoStatus(String(vo.status || ""));
+              const createdAt = String(vo.created_at || "").slice(0, 10);
+
+              return (
+                <tr key={vo.vo_id} className="break-inside-avoid">
+                  <td className="border border-gray-300 px-2 py-2 align-top font-bold">{index + 1}</td>
+                  <td className="border border-gray-300 px-2 py-2 align-top">
+                    <div className="font-bold text-gray-950">{vo.vo_id}</div>
+                    <div className="text-gray-500">{String(vo.source_ref_id || "-")}</div>
+                  </td>
+                  <td className="border border-gray-300 px-2 py-2 align-top font-bold">{VO_TYPE_LABELS[type]}</td>
+                  <td className="whitespace-pre-line border border-gray-300 px-2 py-2 align-top">
+                    <div className="font-bold text-gray-950">{vo.title || "-"}</div>
+                    {vo.description ? <div className="mt-1 text-gray-600">{vo.description}</div> : null}
+                    {vo.customer_approved_by ? <div className="mt-1 text-gray-500">ผู้อนุมัติ: {vo.customer_approved_by}</div> : null}
+                  </td>
+                  <td className="border border-gray-300 px-2 py-2 text-right align-top font-bold">{formatMoney(vo.grand_total)}</td>
+                  <td className="border border-gray-300 px-2 py-2 align-top font-bold">{VO_STATUS_LABELS[status]}</td>
+                  <td className="border border-gray-300 px-2 py-2 text-right align-top font-bold">{formatMoney(vo.extension_days)}</td>
+                  <td className="border border-gray-300 px-2 py-2 align-top">
+                    {vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : "ยังไม่เพิ่มเข้าแผน"}
+                  </td>
+                  <td className="border border-gray-300 px-2 py-2 align-top">{formatThaiDate(createdAt)}</td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+
+      <div className="mt-8 grid grid-cols-3 gap-8 text-center text-xs text-gray-600">
+        <div>
+          <div className="mb-8 border-b border-gray-400" />
+          ผู้จัดทำ
+        </div>
+        <div>
+          <div className="mb-8 border-b border-gray-400" />
+          Project Manager
+        </div>
+        <div>
+          <div className="mb-8 border-b border-gray-400" />
+          ผู้อนุมัติ
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VoPrintMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+      <div className="text-base font-black text-gray-950">{value}</div>
+      <div className="text-[10px] font-semibold text-gray-500">{label}</div>
+    </div>
   );
 }
 

@@ -482,8 +482,8 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
   const calculation = calculateVoTotals({
     items: itemInputs,
     tax: {
-      vat_exempt: Boolean(body.vat_exempt),
-      withholding_tax: String(body.withholding_tax || "0"),
+      vat_exempt: true,
+      withholding_tax: "0",
       vat_rate: 7,
     },
   });
@@ -652,8 +652,8 @@ async function handleUpdateVo(body: Record<string, unknown>, context: RouteConte
   const calculation = calculateVoTotals({
     items: itemInputs,
     tax: {
-      vat_exempt: Boolean(body.vat_exempt),
-      withholding_tax: String(body.withholding_tax || vo.withholding_tax || "0"),
+      vat_exempt: true,
+      withholding_tax: "0",
       vat_rate: 7,
     },
   });

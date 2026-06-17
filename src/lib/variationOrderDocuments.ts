@@ -109,6 +109,15 @@ function documentShell(title: string, subtitle: string, body: string) {
     .summary th { text-align: left; background: #f8fafc; }
     .summary td { text-align: right; font-weight: 800; }
     .summary .grand th, .summary .grand td { background: #fff7ed; color: #c2410c; font-size: 11px; }
+    .quick-summary { display: grid; grid-template-columns: 1.1fr 0.9fr 0.9fr; gap: 3mm; margin: 4mm 0; }
+    .quick-card { border: 1px solid #d1d5db; border-radius: 6px; background: #f8fafc; padding: 3mm; min-height: 18mm; }
+    .quick-card .label { color: #64748b; font-size: 8px; font-weight: 800; }
+    .quick-card .value { margin-top: 1mm; color: #111827; font-size: 14px; font-weight: 900; }
+    .quick-card .hint { margin-top: 0.5mm; color: #64748b; font-size: 8px; }
+    .evidence-box { margin-top: 4mm; border: 1px solid #fdba74; border-radius: 6px; background: #fff7ed; padding: 3mm; }
+    .evidence-box h2 { margin: 0 0 2mm; color: #9a3412; font-size: 10px; }
+    .evidence-list { margin: 0; padding-left: 5mm; color: #7c2d12; }
+    .evidence-list li { margin: 0.8mm 0; }
     .note { margin-top: 4mm; border-left: 3px solid #f97316; padding: 2mm 3mm; background: #fff7ed; color: #7c2d12; }
     .timestamp-corner { position: absolute; top: 29mm; right: 9mm; width: 58mm; border: 1px solid #fdba74; border-radius: 6px; background: #fff7ed; padding: 2mm 3mm; color: #7c2d12; font-size: 8px; }
     .timestamp-corner strong { display: block; color: #9a3412; font-size: 9px; }
@@ -176,11 +185,10 @@ function renderItems(items: VoItemRecord[]) {
       <thead>
         <tr>
           <th style="width:11mm;">ลำดับ</th>
-          <th>รายการ</th>
+          <th>รายการตามหลักฐาน</th>
           <th style="width:22mm;">จำนวน</th>
           <th style="width:20mm;">หน่วย</th>
-          <th style="width:27mm;">ราคาต่อหน่วย</th>
-          <th style="width:27mm;">จำนวนเงิน</th>
+          <th style="width:32mm;">ยอดตามหลักฐาน</th>
         </tr>
       </thead>
       <tbody>
@@ -190,11 +198,10 @@ function renderItems(items: VoItemRecord[]) {
             <td>${escapeHtml(item.description || "-")}</td>
             <td class="num">${escapeHtml(item.quantity || "0")}</td>
             <td>${escapeHtml(item.unit || "-")}</td>
-            ${numberCell(item.unit_price)}
             ${numberCell(item.amount)}
           </tr>
         `).join("")}
-        ${items.length === 0 ? `<tr><td colspan="6" style="text-align:center;color:#64748b;">ไม่มีรายการ</td></tr>` : ""}
+        ${items.length === 0 ? `<tr><td colspan="5" style="text-align:center;color:#64748b;">ไม่มีรายการ</td></tr>` : ""}
       </tbody>
     </table>
   `;
@@ -203,25 +210,65 @@ function renderItems(items: VoItemRecord[]) {
 function renderSummary(vo: VoRecord) {
   return `
     <table class="summary">
-      <tr><th>Subtotal</th><td>${formatMoney(vo.subtotal)}</td></tr>
-      <tr><th>VAT</th><td>${formatMoney(vo.vat_amount)}</td></tr>
-      <tr class="grand"><th>Grand Total</th><td>${formatMoney(vo.grand_total)}</td></tr>
-      <tr><th>WHT</th><td>${formatMoney(vo.wht_amount)}</td></tr>
-      <tr><th>Net Payable</th><td>${formatMoney(vo.net_payable)}</td></tr>
+      <tr class="grand"><th>ยอดตามหลักฐาน</th><td>${formatMoney(vo.grand_total)} บาท</td></tr>
     </table>
+  `;
+}
+
+function renderEvidence(input: DocumentInput) {
+  const { vo } = input;
+  const documentRefs = safeJsonParse<Array<Record<string, string | number>>>(vo.document_refs_json, []);
+  const fileLines = documentRefs
+    .map((file) => String(file.file_name || file.name || file.original_name || "").trim())
+    .filter(Boolean);
+  const noteLines = String(vo.supporting_docs || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const lines = [...noteLines, ...fileLines];
+
+  return `
+    <section class="evidence-box">
+      <h2>หลักฐานแนบ / หมายเหตุ</h2>
+      ${lines.length > 0 ? `
+        <ul class="evidence-list">
+          ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+        </ul>
+      ` : `<div style="color:#9a3412;">แนบหลักฐานในระบบแล้ว หรือรอแนบเพิ่มเติม</div>`}
+    </section>
   `;
 }
 
 export function buildVoSheetHtml(input: DocumentInput) {
   const { vo, items } = input;
+  const voType = asVoType(String(vo.vo_type || ""));
+  const status = asVoStatus(String(vo.status || ""));
   const body = `
     <section class="title">
-      <div class="eyebrow">Variation Order Sheet</div>
+      <div class="eyebrow">Evidence Variation Sheet</div>
       <h1>ใบงานเพิ่ม-ลด</h1>
-      <div class="subtitle">${escapeHtml(vo.title || "-")}</div>
+      <div class="subtitle">สรุปรายการและหลักฐานแนบสำหรับบันทึกงานไซต์</div>
     </section>
     ${renderCommonInfo(input)}
-    <div class="note"><strong>รายละเอียด:</strong><br>${nl2br(vo.description || "-")}</div>
+    <section class="quick-summary">
+      <div class="quick-card">
+        <div class="label">ชื่องาน</div>
+        <div class="value">${escapeHtml(vo.title || "-")}</div>
+        <div class="hint">${escapeHtml(VO_TYPE_LABELS[voType])} / ${escapeHtml(VO_STATUS_LABELS[status])}</div>
+      </div>
+      <div class="quick-card">
+        <div class="label">ยอดตามหลักฐาน</div>
+        <div class="value">${formatMoney(vo.grand_total)} บาท</div>
+        <div class="hint">ไม่คิด VAT / WHT</div>
+      </div>
+      <div class="quick-card">
+        <div class="label">จำนวนวันเพิ่ม</div>
+        <div class="value">${formatMoney(vo.extension_days)} วัน</div>
+        <div class="hint">ใช้สำหรับประกอบแผนงาน</div>
+      </div>
+    </section>
+    <div class="note"><strong>เหตุผล / รายละเอียด:</strong><br>${nl2br(vo.description || "-")}</div>
+    ${renderEvidence(input)}
     ${renderItems(items)}
     ${renderSummary(vo)}
     <section class="signatures">
