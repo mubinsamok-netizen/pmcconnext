@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
+  buildDefectAcknowledgementLineFlex,
   buildDefectApprovalLineFlex,
   buildDefectReportHtml,
   createDefectApprovalToken,
@@ -452,7 +453,7 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
 
   const lockedAt = new Date().toISOString();
   await updateDefectRound(context, round, {
-    status: "acknowledged",
+    status: "in_progress",
     acknowledged_by: acknowledgedBy,
     acknowledged_channel: channel,
     acknowledged_date: acknowledgedDate,
@@ -470,14 +471,68 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
     after: { acknowledgedBy, channel, acknowledgedDate, evidenceCount: evidenceUploads.length, lockedAt },
   });
 
-  return NextResponse.json({ success: true, data: { round_id: roundId, status: "acknowledged", evidence: evidenceUploads } });
+  return NextResponse.json({ success: true, data: { round_id: roundId, status: "in_progress", evidence: evidenceUploads } });
+}
+
+async function handleSendCustomerAcknowledgement(req: Request, body: Record<string, unknown>, context: RouteContext, roundId: string) {
+  const data = await getDefectData(context);
+  const round = data.rounds.find((item) => item.round_id === roundId);
+  if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
+  if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้บันทึกการรับทราบแล้ว" }, { status: 400 });
+  if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนส่งลิงก์รับทราบรายการ" }, { status: 400 });
+
+  const items = data.items.filter((item) => item.round_id === roundId);
+  if (items.length === 0) return NextResponse.json({ error: "ต้องมีรายการ Defect อย่างน้อย 1 รายการก่อนส่งให้ลูกค้ารับทราบ" }, { status: 400 });
+
+  const acknowledgementToken = text(round.approval_token) || createDefectApprovalToken();
+  const acknowledgementOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
+  if (!acknowledgementOrigin) return NextResponse.json({ error: "ไม่พบ URL ระบบสำหรับสร้างลิงก์รับทราบ" }, { status: 400 });
+  const acknowledgementUrl = `${acknowledgementOrigin}/defect-acknowledgement/${encodeURIComponent(context.project.project_id)}/${encodeURIComponent(acknowledgementToken)}`;
+  const targetLineGroupId = lineTargetFor(context);
+  const lineMessage = [
+    "ขอให้ลูกค้ารับทราบรายการ Defect",
+    `โครงการ: ${round.project_name || context.project.name || context.project.project_id}`,
+    `รายการ: ${round.title || round.document_no || roundId}`,
+    `จำนวน Defect: ${items.length} รายการ`,
+    `เปิดลิงก์เพื่อรับทราบรายการ: ${acknowledgementUrl}`,
+  ].join("\n");
+
+  await sendLineMessages([buildDefectAcknowledgementLineFlex({
+    projectName: text(round.project_name || context.project.name),
+    projectId: context.project.project_id,
+    documentNo: text(round.document_no),
+    title: text(round.title || "Defect list"),
+    itemCount: items.length,
+    pdfUrl: text(round.pdf_url),
+    acknowledgementUrl,
+  })], targetLineGroupId);
+
+  const patch = {
+    approval_token: acknowledgementToken,
+    approval_url: acknowledgementUrl,
+    line_group_id: targetLineGroupId,
+    line_message: lineMessage,
+  };
+  await updateDefectRound(context, round, patch);
+  await writeAuditLog({
+    actor: actor(context),
+    projectId: context.project.project_id,
+    module: "defects",
+    action: "sent_customer_acknowledgement",
+    targetId: roundId,
+    summary: `ส่ง LINE ให้ลูกค้ารับทราบรายการ Defect: ${round.document_no || roundId}`,
+    before: round,
+    after: { ...patch, test_mode: isDefectLineTestMode() },
+  });
+
+  return NextResponse.json({ success: true, data: { ...patch, test_mode: isDefectLineTestMode() } });
 }
 
 async function handleSendCustomerApproval(req: Request, body: Record<string, unknown>, context: RouteContext, roundId: string) {
   const data = await getDefectData(context);
   const round = data.rounds.find((item) => item.round_id === roundId);
   if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
-  if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้ล็อกหรือรับทราบแล้ว" }, { status: 400 });
+  if (["acknowledged", "closed"].includes(text(round.status))) return NextResponse.json({ error: "รอบตรวจนี้รับงานแก้ไขหรือปิดงานแล้ว" }, { status: 400 });
   if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนส่งให้ลูกค้ารับงานแก้ไข" }, { status: 400 });
 
   const items = data.items.filter((item) => item.round_id === roundId);
@@ -606,6 +661,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     if (action === "add_item") return handleAddItem(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, roundId);
     if (action === "acknowledge") return handleAcknowledge(body, routeContext, roundId);
+    if (action === "send_customer_acknowledgement") return handleSendCustomerAcknowledgement(req, body, routeContext, roundId);
     if (action === "send_customer_approval") return handleSendCustomerApproval(req, body, routeContext, roundId);
     if (action === "update_item_status") return handleUpdateItemStatus(body, routeContext);
 

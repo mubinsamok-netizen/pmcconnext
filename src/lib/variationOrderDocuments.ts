@@ -259,7 +259,7 @@ export function buildVoSheetHtml(input: DocumentInput) {
       <div class="quick-card">
         <div class="label">ยอดตามหลักฐาน</div>
         <div class="value">${formatMoney(vo.grand_total)} บาท</div>
-        <div class="hint">ไม่คิด VAT / WHT</div>
+        <div class="hint">อ้างอิงจากเอกสารแนบ</div>
       </div>
       <div class="quick-card">
         <div class="label">จำนวนวันเพิ่ม</div>

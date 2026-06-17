@@ -37,6 +37,9 @@ type DefectRound = Record<string, string | number | undefined> & {
   sent_to_customer_at?: string;
   line_group_id?: string;
   line_message?: string;
+  acknowledged_by?: string;
+  acknowledged_date?: string;
+  acknowledgement_note?: string;
 };
 
 type DefectItem = Record<string, string | number | undefined> & {
@@ -85,7 +88,7 @@ type TabKey = "rounds" | "items" | "document" | "acknowledgement" | "tracking";
 const ROUND_STATUS_LABELS: Record<string, string> = {
   draft: "ร่าง",
   issued: "ออกเอกสารแล้ว",
-  acknowledged: "ลูกค้ารับทราบแล้ว",
+  acknowledged: "ลูกค้ายอมรับงานแก้ไขแล้ว",
   in_progress: "กำลังแก้ไข",
   ready_for_recheck: "แก้เสร็จรอตรวจซ้ำ",
   closed: "ปิดงาน",
@@ -410,6 +413,11 @@ export function DefectsWorkspace({
   const roundItems = selectedRound ? items.filter((item) => item.round_id === selectedRound.round_id) : [];
   const roundEvidence = selectedRound ? evidence.filter((item) => item.round_id === selectedRound.round_id) : [];
   const locked = Boolean(selectedRound?.locked_at || selectedRound?.status === "acknowledged" || selectedRound?.status === "closed");
+  const finalAccepted = Boolean(selectedRound?.status === "acknowledged" || selectedRound?.status === "closed");
+  const acknowledgementUrl = String(selectedRound?.approval_url || "").includes("/defect-acknowledgement/")
+    ? String(selectedRound?.approval_url || "")
+    : "";
+  const customerListAcknowledged = Boolean(selectedRound?.locked_at || selectedRound?.acknowledged_date || roundEvidence.length > 0);
   const openItems = roundItems.filter((item) => !["passed", "closed"].includes(String(item.status || "")));
   const readyForCustomerApproval = roundItems.length > 0 && roundItems.every((item) => ["fixed", "passed", "closed"].includes(String(item.status || "")));
 
@@ -493,6 +501,21 @@ export function DefectsWorkspace({
     await mutate();
     setActiveTab("tracking");
     setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
+  }
+
+  async function sendCustomerAcknowledgement() {
+    if (!selectedRound) return;
+    setMessage("");
+    const payload = await postAction({
+      action: "send_customer_acknowledgement",
+      round_id: selectedRound.round_id,
+      origin: window.location.origin,
+    });
+    await mutate();
+    setActiveTab("acknowledgement");
+    setMessage(payload.data?.test_mode
+      ? `ส่ง LINE ทดสอบให้ลูกค้ารับทราบรายการไปยังกลุ่ม ${payload.data.line_group_id} แล้ว`
+      : "ส่ง LINE ให้ลูกค้ารับทราบรายการแล้ว");
   }
 
   async function sendCustomerApproval() {
@@ -767,35 +790,70 @@ export function DefectsWorkspace({
           {activeTab === "acknowledgement" && (
             <div className="grid gap-5 xl:grid-cols-[460px_minmax(0,1fr)]">
               {selectedRound?.pdf_url && !locked ? (
-                <form action={(formData) => run(acknowledge, formData)} className="rounded-lg border border-gray-200 p-4">
-                  <SectionHeader icon={MessageSquareText} title="แนบหลักฐานลูกค้ารับทราบ" description="แนบแคปหน้าจอแชทที่ลูกค้าตอบรับ แล้วระบบจะล็อกรอบตรวจนี้" />
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-                    <select name="channel" defaultValue="LINE" className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200">
-                      <option value="LINE">LINE</option>
-                      <option value="WhatsApp">WhatsApp</option>
-                      <option value="Email">Email</option>
-                      <option value="Other">อื่น ๆ</option>
-                    </select>
-                    <input name="acknowledged_date" type="date" defaultValue={todayInputValue()} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
-                    <input name="acknowledged_by" defaultValue={clientName || ""} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="ผู้ที่ตอบรับในแชท" />
-                    <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
-                      <Upload size={16} />
-                      แคปหน้าจอแชท
-                      <input id="defect-ack-evidence" type="file" accept="image/*" multiple className="sr-only" />
-                    </label>
-                    <textarea name="notes" rows={2} className="md:col-span-2 xl:col-span-1 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="หมายเหตุ เช่น ลูกค้าตอบว่า รับทราบตามเอกสาร" />
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-orange-200 bg-orange-50 p-4">
+                    <SectionHeader icon={MessageSquareText} title="ส่งลิงก์ให้ลูกค้ารับทราบรายการ" description="ระบบจะส่งเข้ากลุ่ม LINE ที่ล็อกไว้ของโครงการ ลูกค้ากดรับทราบแล้วรอบนี้จะถูกล็อกเป็นหลักฐาน" />
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row xl:flex-col">
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() => startTransition(() => { sendCustomerAcknowledgement().catch((err) => setMessage(err instanceof Error ? err.message : "ส่ง LINE ไม่สำเร็จ")); })}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-orange-700 disabled:opacity-60"
+                      >
+                        <MessageSquareText size={16} />
+                        ส่ง LINE รับทราบรายการ
+                      </button>
+                      {acknowledgementUrl ? (
+                        <a href={acknowledgementUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-lg border border-orange-200 bg-white px-4 py-2 text-sm font-bold text-orange-700 hover:bg-orange-100">
+                          <FileText size={16} />
+                          เปิดลิงก์รับทราบ
+                        </a>
+                      ) : null}
+                    </div>
+                    {acknowledgementUrl ? <p className="mt-3 break-all text-xs font-semibold text-orange-800">{acknowledgementUrl}</p> : null}
                   </div>
-                  <button disabled={isPending} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60">
-                    <ShieldCheck size={16} />
-                    บันทึกลูกค้ารับทราบและล็อกเอกสาร
-                  </button>
-                </form>
+
+                  <form action={(formData) => run(acknowledge, formData)} className="rounded-lg border border-gray-200 p-4">
+                    <SectionHeader icon={ShieldCheck} title="แนบหลักฐานแทนลิงก์" description="ใช้กรณีลูกค้าตอบในแชทอยู่แล้ว แนบรูปแล้วระบบจะล็อกรอบตรวจนี้เหมือนกัน" />
+                    <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+                      <select name="channel" defaultValue="LINE" className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200">
+                        <option value="LINE">LINE</option>
+                        <option value="WhatsApp">WhatsApp</option>
+                        <option value="Email">Email</option>
+                        <option value="Other">อื่น ๆ</option>
+                      </select>
+                      <input name="acknowledged_date" type="date" defaultValue={todayInputValue()} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
+                      <input name="acknowledged_by" defaultValue={clientName || ""} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="ผู้ที่ตอบรับในแชท" />
+                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+                        <Upload size={16} />
+                        แคปหน้าจอแชท
+                        <input id="defect-ack-evidence" type="file" accept="image/*" multiple className="sr-only" />
+                      </label>
+                      <textarea name="notes" rows={2} className="md:col-span-2 xl:col-span-1 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="หมายเหตุ เช่น ลูกค้าตอบว่า รับทราบตามเอกสาร" />
+                    </div>
+                    <button disabled={isPending} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60">
+                      <ShieldCheck size={16} />
+                      บันทึกลูกค้ารับทราบและล็อกเอกสาร
+                    </button>
+                  </form>
+                </div>
               ) : (
                 <div className="rounded-lg border border-gray-200 p-4">
                   <SectionHeader icon={ShieldCheck} title="หลักฐานรับทราบ" description="รอบที่ล็อกแล้วจะแสดงหลักฐานด้านขวา หากยังไม่มี PDF ให้ไปแท็บเอกสารก่อน" />
                   <div className="mt-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-600">
                     {locked ? "รอบตรวจนี้บันทึกการรับทราบแล้ว" : "ต้องออก PDF ก่อนจึงจะแนบหลักฐานรับทราบได้"}
                   </div>
+                  {customerListAcknowledged && selectedRound?.acknowledged_by ? (
+                    <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
+                      รับทราบโดย {selectedRound.acknowledged_by} {selectedRound.acknowledged_date ? `เมื่อ ${selectedRound.acknowledged_date}` : ""}
+                    </div>
+                  ) : null}
+                  {acknowledgementUrl ? (
+                    <a href={acknowledgementUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
+                      <FileText size={16} />
+                      เปิดลิงก์รับทราบ
+                    </a>
+                  ) : null}
                 </div>
               )}
 
@@ -833,7 +891,7 @@ export function DefectsWorkspace({
                   <button
                     type="button"
                     onClick={() => startTransition(() => { sendCustomerApproval().catch((err) => setMessage(err instanceof Error ? err.message : "ส่ง LINE ไม่สำเร็จ")); })}
-                    disabled={!selectedRound?.pdf_url || !readyForCustomerApproval || locked || isPending}
+                    disabled={!selectedRound?.pdf_url || !readyForCustomerApproval || finalAccepted || isPending}
                     title={!selectedRound?.pdf_url ? "ต้องออก PDF ก่อน" : !readyForCustomerApproval ? "ต้องอัปเดต defect เป็นแก้เสร็จ/ผ่านครบก่อน" : ""}
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >

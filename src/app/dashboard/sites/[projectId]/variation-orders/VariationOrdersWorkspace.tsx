@@ -657,7 +657,7 @@ function CreateSection({
             <p className="text-sm text-gray-500">
               {editingVoId
                 ? "แก้ไขข้อมูลก่อนลูกค้าอนุมัติได้ หากส่ง LINE ไปแล้วให้กดส่งอีกครั้งหลังบันทึก เพื่อให้ลูกค้าเห็นข้อมูลล่าสุด"
-                : "กรอกเฉพาะหัวข้องาน ยอดตามหลักฐาน วันเพิ่ม และแนบไฟล์อ้างอิง ระบบจะไม่บวก VAT หรือ WHT ให้อัตโนมัติ"}
+                : "กรอกเฉพาะหัวข้องาน ยอดตามหลักฐาน วันเพิ่ม และแนบไฟล์อ้างอิงสำหรับเก็บเป็นหลักฐานไซต์งาน"}
             </p>
           </div>
           {editingVoId && onCancelEdit ? (
@@ -672,12 +672,12 @@ function CreateSection({
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-xs font-extrabold uppercase tracking-wide text-orange-600">Evidence-first VO</div>
-            <div className="mt-1 text-sm font-bold text-gray-900">ใช้เป็นใบสรุปงานเพิ่ม/งานลดจากหลักฐานที่แนบ ไม่ใช่เอกสารภาษี</div>
+            <div className="mt-1 text-sm font-bold text-gray-900">ใช้เป็นใบสรุปงานเพิ่ม/งานลดจากหลักฐานที่แนบ สำหรับอ้างอิงในไซต์งาน</div>
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs font-bold text-orange-800 sm:grid-cols-3">
-            <span className="rounded-lg bg-white px-3 py-2">ไม่คิด VAT</span>
-            <span className="rounded-lg bg-white px-3 py-2">ไม่คิด WHT</span>
-            <span className="rounded-lg bg-white px-3 py-2">แนบหลักฐานเอง</span>
+            <span className="rounded-lg bg-white px-3 py-2">ยอดตามหลักฐาน</span>
+            <span className="rounded-lg bg-white px-3 py-2">ไฟล์อ้างอิง</span>
+            <span className="rounded-lg bg-white px-3 py-2">บันทึกไซต์งาน</span>
           </div>
         </div>
       </div>
@@ -757,8 +757,8 @@ function CreateSection({
           <p className="mt-1 text-xl font-extrabold text-sky-700">{formatMoney(form.extension_days)} วัน</p>
         </div>
         <div>
-          <p className="font-bold text-gray-500">ภาษี</p>
-          <p className="mt-1 text-sm font-bold text-gray-700">ไม่บวก VAT / WHT</p>
+          <p className="font-bold text-gray-500">รูปแบบเอกสาร</p>
+          <p className="mt-1 text-sm font-bold text-gray-700">ใบสรุปหลักฐาน</p>
         </div>
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-end gap-3">

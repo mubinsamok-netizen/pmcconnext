@@ -103,7 +103,7 @@ const LOGO_PATH = path.join(process.cwd(), "public", "logo.png");
 export const DEFECT_ROUND_STATUS_LABELS: Record<string, string> = {
   draft: "ร่าง",
   issued: "ออกเอกสารแล้ว",
-  acknowledged: "ลูกค้ารับทราบแล้ว",
+  acknowledged: "ลูกค้ายอมรับงานแก้ไขแล้ว",
   in_progress: "กำลังแก้ไข",
   ready_for_recheck: "แก้เสร็จรอตรวจซ้ำ",
   closed: "ปิดงาน",
@@ -296,6 +296,90 @@ export function buildDefectApprovalLineFlex({
             style: "primary",
             color: "#0f766e",
             action: { type: "uri", label: "ยอมรับการแก้ไข", uri: approvalUrl },
+          },
+          ...(pdfUrl ? [{
+            type: "button",
+            style: "primary",
+            color: "#111827",
+            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+          }] : []),
+        ],
+      },
+    },
+  };
+}
+
+export function buildDefectAcknowledgementLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  itemCount,
+  pdfUrl,
+  acknowledgementUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo?: string;
+  title: string;
+  itemCount: number;
+  pdfUrl?: string;
+  acknowledgementUrl: string;
+}) {
+  return {
+    type: "flex",
+    altText: `Defect acknowledgement | ${projectName || projectId} | ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#f97316",
+        paddingAll: "18px",
+        paddingBottom: "16px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT DEFECT LIST", color: "#ffedd5", weight: "bold", size: "xs" },
+          { type: "text", text: "ยืนยันรับทราบรายการ Defect", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#fff7ed", size: "sm", margin: "xs", wrap: true },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
+          defectLineRow("รายการ", title || "-"),
+          defectLineRow("จำนวน Defect", `${itemCount} รายการ`),
+          { type: "separator", margin: "md", color: "#e5e7eb" },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            margin: "md",
+            backgroundColor: "#fff7ed",
+            cornerRadius: "8px",
+            paddingAll: "10px",
+            contents: [
+              { type: "text", text: "ขั้นตอนนี้", color: "#c2410c", size: "xs", weight: "bold" },
+              { type: "text", text: "กรุณาตรวจรายการและกดยืนยันรับทราบ เพื่อให้ทีมงานเริ่มติดตามการแก้ไขตามรายการนี้", color: "#7c2d12", size: "sm", wrap: true },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "8px",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#f97316",
+            action: { type: "uri", label: "รับทราบรายการ", uri: acknowledgementUrl },
           },
           ...(pdfUrl ? [{
             type: "button",
