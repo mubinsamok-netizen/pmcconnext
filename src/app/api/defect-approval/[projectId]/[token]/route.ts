@@ -53,7 +53,7 @@ function publicPayload(project: PublicProject, round: DefectRoundRecord) {
       acknowledged_by: round.acknowledged_by || "",
       acknowledged_date: round.acknowledged_date || "",
       acknowledgement_note: round.acknowledgement_note || "",
-      pdf_url: round.pdf_url || "",
+      pdf_url: round.tracking_pdf_url || round.pdf_url || "",
     },
   };
 }
@@ -124,7 +124,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           title: text(context.round.title || "Defect close"),
           acknowledgedBy,
           acknowledgedAt,
-          pdfUrl: text(context.round.pdf_url),
+          pdfUrl: text(context.round.tracking_pdf_url || context.round.pdf_url),
         })], lineGroupId).catch((error) => console.warn("Failed to notify LINE after defect approval:", error));
       }
     }

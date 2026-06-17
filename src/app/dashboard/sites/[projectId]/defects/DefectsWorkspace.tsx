@@ -32,6 +32,8 @@ type DefectRound = Record<string, string | number | undefined> & {
   open_count?: string | number;
   extension_days?: string | number;
   pdf_url?: string;
+  tracking_pdf_url?: string;
+  tracking_pdf_issued_at?: string;
   locked_at?: string;
   approval_url?: string;
   sent_to_customer_at?: string;
@@ -74,13 +76,6 @@ type UploadPayload = {
   name: string;
   type: string;
   dataUrl: string;
-};
-
-type DefectPhoto = {
-  file_id?: string;
-  file_name?: string;
-  file_url?: string;
-  mime_type?: string;
 };
 
 type TabKey = "rounds" | "items" | "document" | "acknowledgement" | "tracking";
@@ -157,167 +152,6 @@ function parsePhotoCount(value?: string | number) {
   } catch {
     return 0;
   }
-}
-
-function parsePhotoRefs(value?: string | number) {
-  if (!value) return [] as DefectPhoto[];
-  try {
-    const parsed = JSON.parse(String(value));
-    return Array.isArray(parsed) ? parsed.filter(Boolean) as DefectPhoto[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function escapeHtml(value?: string | number | null) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function photoSrc(photo: DefectPhoto, baseUrl: string) {
-  if (photo.file_id) return `${baseUrl}/api/drive/files/${encodeURIComponent(photo.file_id)}`;
-  return photo.file_url || "";
-}
-
-function formatPrintDate(value?: string | number) {
-  if (!value) return "-";
-  const date = new Date(String(value).includes("T") ? String(value) : `${String(value)}T00:00:00+07:00`);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("th-TH", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Asia/Bangkok",
-  }).format(date);
-}
-
-function buildTrackingReportHtml({
-  round,
-  items,
-  projectName,
-  clientName,
-  baseUrl,
-}: {
-  round: DefectRound;
-  items: DefectItem[];
-  projectName: string;
-  clientName?: string;
-  baseUrl: string;
-}) {
-  const openCount = items.filter((item) => !["passed", "closed"].includes(String(item.status || ""))).length;
-  const fixedCount = items.filter((item) => ["fixed", "passed", "closed"].includes(String(item.status || ""))).length;
-  const itemSections = items.map((item) => {
-    const beforePhotos = parsePhotoRefs(item.before_photos_json).slice(0, 2);
-    const afterPhotos = parsePhotoRefs(item.after_photos_json).slice(0, 2);
-    const renderPhotos = (photos: DefectPhoto[], label: string) => photos.length
-      ? photos.map((photo) => {
-          const src = photoSrc(photo, baseUrl);
-          return src ? `
-            <figure class="photo">
-              <img src="${escapeHtml(src)}" alt="${escapeHtml(photo.file_name || label)}">
-              <figcaption>${escapeHtml(label)}${photo.file_name ? `: ${escapeHtml(photo.file_name)}` : ""}</figcaption>
-            </figure>
-          ` : "";
-        }).join("")
-      : `<div class="photo empty">${escapeHtml(label)}: ยังไม่มีรูป</div>`;
-
-    return `
-      <section class="item">
-        <div class="item-head">
-          <div>
-            <div class="item-no">#${escapeHtml(item.item_no || "-")} ${escapeHtml(item.zone || "-")}</div>
-            <h3>${escapeHtml(item.description || "-")}</h3>
-          </div>
-          <span class="status">${escapeHtml(statusLabel(item.status))}</span>
-        </div>
-        <div class="meta">
-          <div><strong>หมวด:</strong> ${escapeHtml(item.discipline || "-")}</div>
-          <div><strong>ผู้รับผิดชอบ:</strong> ${escapeHtml(item.owner || "-")}</div>
-          <div><strong>กำหนดแก้:</strong> ${escapeHtml(formatPrintDate(item.due_date))}</div>
-          <div><strong>สาเหตุ:</strong> ${escapeHtml(item.cause || "-")}</div>
-        </div>
-        <div class="repair-note"><strong>บันทึกการแก้ไข:</strong> ${escapeHtml(item.repair_note || item.remarks || "-")}</div>
-        <div class="photos">
-          ${renderPhotos(beforePhotos, "ก่อนแก้")}
-          ${renderPhotos(afterPhotos, "หลังแก้")}
-        </div>
-      </section>
-    `;
-  }).join("");
-
-  return `<!doctype html>
-<html lang="th">
-<head>
-  <meta charset="utf-8" />
-  <base href="${escapeHtml(baseUrl.replace(/\/$/, "") + "/")}">
-  <title>${escapeHtml(round.document_no || round.title || "Defect Follow-up")}</title>
-  <style>
-    @page { size: A4 portrait; margin: 12mm; }
-    * { box-sizing: border-box; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-    body { margin: 0; background: #f3f4f6; color: #111827; font-family: "Sarabun", "Noto Sans Thai", Tahoma, Arial, sans-serif; }
-    .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 12mm; }
-    .header { display: grid; grid-template-columns: 112px 1fr; gap: 14px; align-items: center; border-bottom: 2px solid #111827; padding-bottom: 10px; }
-    .header img { width: 104px; height: auto; display: block; }
-    .company { font-size: 10px; color: #475569; line-height: 1.45; }
-    h1 { margin: 2px 0 4px; font-size: 19px; line-height: 1.25; color: #111827; }
-    .subtitle { font-size: 11px; color: #64748b; }
-    .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 12px; }
-    .box { border: 1px solid #d1d5db; padding: 7px; font-size: 10px; min-height: 40px; }
-    .box strong { display: block; font-size: 14px; color: #111827; margin-top: 2px; }
-    .item { margin-top: 12px; break-inside: avoid; border: 1px solid #d1d5db; padding: 8px; }
-    .item-head { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
-    .item-no { font-size: 10px; font-weight: 800; color: #f97316; }
-    h3 { margin: 2px 0 0; font-size: 13px; }
-    .status { height: fit-content; white-space: nowrap; border: 1px solid #fed7aa; background: #fff7ed; color: #c2410c; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 900; }
-    .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px; margin-top: 7px; font-size: 10.5px; color: #334155; }
-    .repair-note { margin-top: 7px; border: 1px solid #e5e7eb; background: #f8fafc; padding: 6px; min-height: 28px; font-size: 10.5px; line-height: 1.45; }
-    .photos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; margin-top: 8px; }
-    .photo { margin: 0; border: 1px solid #e5e7eb; padding: 5px; }
-    .photo img { width: 100%; height: 54mm; object-fit: contain; background: #f8fafc; display: block; }
-    .photo figcaption, .photo.empty { margin-top: 4px; color: #475569; font-size: 9.5px; line-height: 1.35; }
-    .photo.empty { min-height: 28mm; display: grid; place-items: center; border-style: dashed; margin: 0; }
-    .footer { margin-top: 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; text-align: center; font-size: 10px; }
-    .sign-line { height: 34px; border-bottom: 1px solid #111827; margin-bottom: 6px; }
-    @media print {
-      body { background: #fff; }
-      .page { width: auto; min-height: auto; margin: 0; padding: 0; }
-    }
-  </style>
-</head>
-<body>
-  <main class="page">
-    <header class="header">
-      <img src="${escapeHtml(baseUrl.replace(/\/$/, "") + "/logo.png")}" alt="Pichayamongkol Construction">
-      <div>
-        <div class="company">Pichayamongkol Construction Co., Ltd.</div>
-        <h1>รายงานติดตามการแก้ไข Defect / Defect Follow-up Report</h1>
-        <div class="subtitle">${escapeHtml(projectName)} | ${escapeHtml(round.document_no || round.title || "-")}</div>
-      </div>
-    </header>
-    <section class="summary">
-      <div class="box">ลูกค้า<strong>${escapeHtml(clientName || round.client_name || "-")}</strong></div>
-      <div class="box">วันที่ตรวจ<strong>${escapeHtml(formatPrintDate(round.inspection_date))}</strong></div>
-      <div class="box">รายการทั้งหมด<strong>${items.length}</strong></div>
-      <div class="box">คงค้าง<strong>${openCount}</strong></div>
-      <div class="box">แก้ไขแล้ว/ผ่าน<strong>${fixedCount}</strong></div>
-      <div class="box">จำนวนวันที่ต้องบวก<strong>${escapeHtml(round.extension_days || 0)} วัน</strong></div>
-      <div class="box">ผู้ตรวจ<strong>${escapeHtml(round.inspector_name || "-")}</strong></div>
-      <div class="box">วันที่พิมพ์<strong>${escapeHtml(formatPrintDate(new Date().toISOString()))}</strong></div>
-      <div class="box">สถานะรอบ<strong>${escapeHtml(statusLabel(round.status))}</strong></div>
-    </section>
-    ${itemSections || "<section class=\"item\">ไม่มีรายการ Defect</section>"}
-    <section class="footer">
-      <div><div class="sign-line"></div>ผู้จัดทำ / วิศวกร</div>
-      <div><div class="sign-line"></div>ผู้ตรวจสอบ</div>
-      <div><div class="sign-line"></div>ลูกค้ารับทราบ</div>
-    </section>
-  </main>
-</body>
-</html>`;
 }
 
 async function filesToUploads(files: FileList | null, maxFiles = 4): Promise<UploadPayload[]> {
@@ -529,8 +363,8 @@ export function DefectsWorkspace({
     await mutate();
     setActiveTab("tracking");
     setMessage(payload.data?.test_mode
-      ? `ส่ง LINE ทดสอบให้ลูกค้ารับงานแก้ไขไปยังกลุ่ม ${payload.data.line_group_id} แล้ว`
-      : "ส่ง LINE ให้ลูกค้ารับงานแก้ไขแล้ว");
+      ? `ส่ง LINE ทดสอบให้ลูกค้ารับรองงานแก้ไขไปยังกลุ่ม ${payload.data.line_group_id} แล้ว`
+      : "ส่ง LINE ให้ลูกค้ารับรองงานแก้ไขแล้ว");
   }
 
   async function updateItem(formData: FormData) {
@@ -551,15 +385,12 @@ export function DefectsWorkspace({
     setMessage("อัปเดตรายการแล้ว");
   }
 
-  function printTrackingReport() {
+  async function issueTrackingPdf() {
     if (!selectedRound) return;
-    openPrintDialog(buildTrackingReportHtml({
-      round: selectedRound,
-      items: roundItems,
-      projectName,
-      clientName,
-      baseUrl: window.location.origin,
-    }));
+    setMessage("");
+    await postAction({ action: "issue_tracking_pdf", round_id: selectedRound.round_id });
+    await mutate();
+    setMessage("สร้าง PDF รายงานติดตามการแก้ไขแล้ว");
   }
 
   function run(action: (formData: FormData) => Promise<void>, formData: FormData) {
@@ -863,40 +694,49 @@ export function DefectsWorkspace({
 
           {activeTab === "tracking" && (
             <div className="space-y-4">
-              <div className="flex flex-col gap-3 rounded-lg border border-orange-200 bg-orange-50 p-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <div className="flex items-center gap-2 font-bold text-orange-800">
-                    <Printer size={18} />
-                    พิมพ์รายงานแจ้งผลการแก้ไขให้ลูกค้า
+                  <div className="flex items-center gap-2 font-bold text-slate-900">
+                    <FileCheck2 size={18} />
+                    PDF รายงานติดตามการแก้ไข
                   </div>
-                  <p className="mt-1 text-sm text-orange-700">
-                    รายงานนี้รวมสถานะล่าสุด ผู้รับผิดชอบ บันทึกการแก้ไข และรูปก่อน/หลังแก้ของรอบตรวจนี้
+                  <p className="mt-1 text-sm text-slate-600">
+                    สร้างรายงานติดตามล่าสุดจากสถานะ ผู้รับผิดชอบ บันทึกการแก้ไข และรูปก่อน/หลังแก้ ก่อนส่งให้ลูกค้ารับรองงานแก้ไข
                   </p>
+                  {selectedRound?.tracking_pdf_url ? (
+                    <a href={String(selectedRound.tracking_pdf_url)} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-xs font-bold text-blue-700 hover:text-blue-800">
+                      <FileText size={14} />
+                      เปิด PDF รายงานติดตามล่าสุด
+                    </a>
+                  ) : (
+                    <p className="mt-2 text-xs font-bold text-slate-500">ยังไม่มี PDF รายงานติดตามล่าสุด</p>
+                  )}
                   {selectedRound?.sent_to_customer_at ? (
                     <p className="mt-2 text-xs font-bold text-emerald-700">
-                      ส่งให้ลูกค้ารับงานแก้ไขแล้ว: {new Date(String(selectedRound.sent_to_customer_at)).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
+                      ส่งให้ลูกค้ารับรองงานแก้ไขแล้ว: {new Date(String(selectedRound.sent_to_customer_at)).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })}
                     </p>
                   ) : null}
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row md:flex-col lg:flex-row">
                   <button
                     type="button"
-                    onClick={printTrackingReport}
-                    disabled={!selectedRound || roundItems.length === 0}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => startTransition(() => { issueTrackingPdf().catch((err) => setMessage(err instanceof Error ? err.message : "สร้าง PDF รายงานติดตามไม่สำเร็จ")); })}
+                    disabled={!selectedRound?.pdf_url || roundItems.length === 0 || isPending}
+                    title={!selectedRound?.pdf_url ? "ต้องออก PDF รายการ Defect ก่อน" : ""}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Printer size={16} />
-                    Print แจ้งลูกค้า
+                    <FileCheck2 size={16} />
+                    สร้าง PDF ติดตาม
                   </button>
                   <button
                     type="button"
                     onClick={() => startTransition(() => { sendCustomerApproval().catch((err) => setMessage(err instanceof Error ? err.message : "ส่ง LINE ไม่สำเร็จ")); })}
-                    disabled={!selectedRound?.pdf_url || !readyForCustomerApproval || finalAccepted || isPending}
-                    title={!selectedRound?.pdf_url ? "ต้องออก PDF ก่อน" : !readyForCustomerApproval ? "ต้องอัปเดต defect เป็นแก้เสร็จ/ผ่านครบก่อน" : ""}
+                    disabled={!selectedRound?.tracking_pdf_url || !readyForCustomerApproval || finalAccepted || isPending}
+                    title={!selectedRound?.tracking_pdf_url ? "ต้องสร้าง PDF รายงานติดตามก่อน" : !readyForCustomerApproval ? "ต้องอัปเดต defect เป็นแก้เสร็จ/ผ่านครบก่อน" : ""}
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <MessageSquareText size={16} />
-                    ส่งให้ลูกค้ารับงาน
+                    ส่งให้ลูกค้ารับรองงานแก้ไข
                   </button>
                 </div>
               </div>

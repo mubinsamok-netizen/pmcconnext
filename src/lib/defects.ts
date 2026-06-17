@@ -41,6 +41,9 @@ export type DefectRoundRecord = Record<string, string | number | undefined> & {
   status?: string;
   extension_days?: string | number;
   pdf_url?: string;
+  tracking_pdf_file_id?: string;
+  tracking_pdf_url?: string;
+  tracking_pdf_issued_at?: string;
   issued_at?: string;
   acknowledged_by?: string;
   acknowledged_channel?: string;
@@ -251,13 +254,13 @@ export function buildDefectApprovalLineFlex({
       header: {
         type: "box",
         layout: "vertical",
-        backgroundColor: "#0f172a",
+        backgroundColor: "#111827",
         paddingAll: "18px",
         paddingBottom: "16px",
         contents: [
-          { type: "text", text: "PMC CONNEXT DEFECT CLOSE", color: "#7dd3fc", weight: "bold", size: "xs" },
+          { type: "text", text: "PMC CONNEXT DEFECT CLOSE", color: "#cbd5e1", weight: "bold", size: "xs" },
           { type: "text", text: "ขอรับรองงานแก้ไข Defect", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
-          { type: "text", text: documentNo || projectId, color: "#fef3c7", size: "sm", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#e5e7eb", size: "sm", margin: "xs", wrap: true },
         ],
       },
       body: {
@@ -280,7 +283,7 @@ export function buildDefectApprovalLineFlex({
             paddingAll: "10px",
             contents: [
               { type: "text", text: "สถานะ", color: "#15803d", size: "xs", weight: "bold" },
-              { type: "text", text: "ทีมงานบันทึกงานแก้ไขเสร็จแล้ว กรุณาตรวจสอบและกดรับทราบ/ยอมรับการแก้ไข", color: "#166534", size: "sm", wrap: true },
+              { type: "text", text: "ทีมงานบันทึกรายงานติดตามการแก้ไขแล้ว กรุณาตรวจสอบและกดยอมรับงานแก้ไข", color: "#166534", size: "sm", wrap: true },
             ],
           },
         ],
@@ -294,14 +297,14 @@ export function buildDefectApprovalLineFlex({
           {
             type: "button",
             style: "primary",
-            color: "#0f766e",
+            color: "#111827",
             action: { type: "uri", label: "ยอมรับการแก้ไข", uri: approvalUrl },
           },
           ...(pdfUrl ? [{
             type: "button",
             style: "primary",
-            color: "#111827",
-            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+            color: "#475569",
+            action: { type: "uri", label: "เปิดรายงานติดตาม", uri: pdfUrl },
           }] : []),
         ],
       },
@@ -335,13 +338,13 @@ export function buildDefectAcknowledgementLineFlex({
       header: {
         type: "box",
         layout: "vertical",
-        backgroundColor: "#f97316",
+        backgroundColor: "#111827",
         paddingAll: "18px",
         paddingBottom: "16px",
         contents: [
-          { type: "text", text: "PMC CONNEXT DEFECT LIST", color: "#ffedd5", weight: "bold", size: "xs" },
+          { type: "text", text: "PMC CONNEXT DEFECT LIST", color: "#cbd5e1", weight: "bold", size: "xs" },
           { type: "text", text: "ยืนยันรับทราบรายการ Defect", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
-          { type: "text", text: documentNo || projectId, color: "#fff7ed", size: "sm", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#e5e7eb", size: "sm", margin: "xs", wrap: true },
         ],
       },
       body: {
@@ -359,12 +362,12 @@ export function buildDefectAcknowledgementLineFlex({
             layout: "vertical",
             spacing: "xs",
             margin: "md",
-            backgroundColor: "#fff7ed",
+            backgroundColor: "#f8fafc",
             cornerRadius: "8px",
             paddingAll: "10px",
             contents: [
-              { type: "text", text: "ขั้นตอนนี้", color: "#c2410c", size: "xs", weight: "bold" },
-              { type: "text", text: "กรุณาตรวจรายการและกดยืนยันรับทราบ เพื่อให้ทีมงานเริ่มติดตามการแก้ไขตามรายการนี้", color: "#7c2d12", size: "sm", wrap: true },
+              { type: "text", text: "ขั้นตอนนี้", color: "#334155", size: "xs", weight: "bold" },
+              { type: "text", text: "กรุณาตรวจรายการและกดยืนยันรับทราบ เพื่อให้ทีมงานเริ่มติดตามการแก้ไขตามรายการนี้", color: "#475569", size: "sm", wrap: true },
             ],
           },
         ],
@@ -378,13 +381,13 @@ export function buildDefectAcknowledgementLineFlex({
           {
             type: "button",
             style: "primary",
-            color: "#f97316",
+            color: "#111827",
             action: { type: "uri", label: "รับทราบรายการ", uri: acknowledgementUrl },
           },
           ...(pdfUrl ? [{
             type: "button",
             style: "primary",
-            color: "#111827",
+            color: "#475569",
             action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
           }] : []),
         ],
@@ -451,7 +454,7 @@ export function buildDefectApprovedLineFlex({
             type: "button",
             style: "primary",
             color: "#111827",
-            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+            action: { type: "uri", label: "เปิดรายงานติดตาม", uri: pdfUrl },
           }],
         },
       } : {}),
@@ -788,6 +791,122 @@ export function buildDefectReportHtml(snapshot: DefectReportSnapshot) {
     </tr>
   </table>
 
+  <div class="footer-note">Generated by PMC CONNEXT | ${escapeHtml(docNo)} | ${escapeHtml(formatThaiDateTime(snapshot.generated_at))}</div>
+</body>
+</html>`;
+}
+
+function renderFollowUpPhoto(photo: DefectPhotoRef | undefined, fallback: string) {
+  if (!photo?.data_url) return `<div class="follow-photo empty">${escapeHtml(fallback)}: ยังไม่มีรูป</div>`;
+  return `
+    <figure class="follow-photo">
+      <img src="${photo.data_url}" alt="${escapeHtml(photo.file_name || fallback)}">
+      <figcaption>${escapeHtml(fallback)}${photo.file_name ? `: ${escapeHtml(photo.file_name)}` : ""}</figcaption>
+    </figure>
+  `;
+}
+
+function renderFollowUpItems(snapshot: DefectReportSnapshot) {
+  if (snapshot.items.length === 0) return `<section class="item">ไม่มีรายการ Defect</section>`;
+
+  return snapshot.items.map((item, index) => {
+    const beforePhotos = item.before_photos.slice(0, 2);
+    const afterPhotos = item.after_photos.slice(0, 2);
+    return `
+      <section class="item">
+        <div class="item-head">
+          <div>
+            <div class="item-no">#${escapeHtml(item.item_no || index + 1)} ${escapeHtml(item.zone || "-")}</div>
+            <h3>${escapeHtml(item.description || "-")}</h3>
+          </div>
+          <span class="status">${escapeHtml(labelFor(DEFECT_ITEM_STATUS_LABELS, item.status))}</span>
+        </div>
+        <div class="meta">
+          <div><strong>หมวด:</strong> ${escapeHtml(labelFor(DEFECT_DISCIPLINE_LABELS, item.discipline))}</div>
+          <div><strong>ผู้รับผิดชอบ:</strong> ${escapeHtml(item.owner || "-")}</div>
+          <div><strong>กำหนดแก้:</strong> ${escapeHtml(formatThaiDate(item.due_date))}</div>
+          <div><strong>สาเหตุ:</strong> ${escapeHtml(item.cause || "-")}</div>
+        </div>
+        <div class="repair-note"><strong>บันทึกการแก้ไข:</strong> ${nl2br(item.repair_note || item.remarks || "-")}</div>
+        <div class="photos">
+          ${renderFollowUpPhoto(beforePhotos[0], "ก่อนแก้")}
+          ${renderFollowUpPhoto(afterPhotos[0], "หลังแก้")}
+        </div>
+      </section>
+    `;
+  }).join("");
+}
+
+export function buildDefectFollowUpReportHtml(snapshot: DefectReportSnapshot) {
+  const logoDataUrl = getLogoDataUrl();
+  const round = snapshot.round;
+  const docNo = String(round.document_no || "DRAFT");
+  const openCount = snapshot.items.filter((item) => !["passed", "closed"].includes(String(item.status || ""))).length;
+  const fixedCount = snapshot.items.filter((item) => ["fixed", "passed", "closed"].includes(String(item.status || ""))).length;
+  const projectName = String(round.project_name || snapshot.project.name || snapshot.project.project_id || "-");
+  const clientName = String(round.client_name || snapshot.project.client || "-");
+
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700;800&display=swap');
+    @page { size: A4 portrait; margin: 12mm; @bottom-right { content: "Page " counter(page) " / " counter(pages); font-size: 8px; color: #64748b; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #111827; font-family: "Kanit", "Sarabun", "Noto Sans Thai", "Tahoma", "Arial", sans-serif; font-size: 9.4px; line-height: 1.36; }
+    .doc-header { display: grid; grid-template-columns: 112px 1fr; gap: 12px; align-items: center; border-bottom: 2px solid #111827; padding-bottom: 8px; margin-bottom: 10px; }
+    .doc-header img { width: 104px; height: auto; display: block; }
+    .company-name { margin: 0; font-size: 16px; line-height: 1.1; font-weight: 800; }
+    .company-address { margin-top: 3px; color: #475569; font-size: 8.4px; }
+    h1 { margin: 5px 0 2px; font-size: 16px; line-height: 1.2; font-weight: 800; }
+    .subtitle { color: #475569; font-size: 8.8px; }
+    .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 10px 0 12px; }
+    .box { border: 1px solid #d1d5db; padding: 6px; font-size: 8.2px; min-height: 38px; }
+    .box strong { display: block; margin-top: 2px; font-size: 12px; color: #111827; }
+    .item { margin-top: 10px; break-inside: avoid; border: 1px solid #d1d5db; padding: 8px; }
+    .item-head { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+    .item-no { color: #475569; font-size: 9px; font-weight: 800; }
+    h3 { margin: 2px 0 0; font-size: 12.5px; }
+    .status { height: fit-content; white-space: nowrap; border: 1px solid #cbd5e1; background: #f8fafc; color: #0f172a; border-radius: 999px; padding: 4px 8px; font-size: 9px; font-weight: 900; }
+    .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px; margin-top: 7px; font-size: 9.5px; color: #334155; }
+    .repair-note { margin-top: 7px; border: 1px solid #e5e7eb; background: #f8fafc; padding: 6px; min-height: 28px; font-size: 9.5px; line-height: 1.45; }
+    .photos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; margin-top: 8px; }
+    .follow-photo { margin: 0; border: 1px solid #e5e7eb; padding: 5px; min-height: 55mm; }
+    .follow-photo img { width: 100%; height: 50mm; object-fit: contain; background: #f8fafc; display: block; }
+    .follow-photo figcaption, .follow-photo.empty { margin-top: 4px; color: #475569; font-size: 8.5px; line-height: 1.35; }
+    .follow-photo.empty { min-height: 55mm; display: grid; place-items: center; border-style: dashed; }
+    .footer { margin-top: 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; text-align: center; font-size: 9px; page-break-inside: avoid; }
+    .sign-line { height: 32px; border-bottom: 1px solid #111827; margin-bottom: 6px; }
+    .footer-note { margin-top: 8px; color: #64748b; font-size: 7.6px; text-align: right; }
+  </style>
+</head>
+<body>
+  <header class="doc-header">
+    ${logoDataUrl ? `<img src="${logoDataUrl}" alt="Pichayamongkol Construction Co., Ltd.">` : "<div></div>"}
+    <div>
+      <div class="company-name">Pichayamongkol Construction Co., Ltd.</div>
+      <div class="company-address">276/1 Soi Phuttha Bucha 36, Bang Mot, Thung Khru, Bangkok 10140</div>
+      <h1>รายงานติดตามการแก้ไข Defect / Defect Follow-up Report</h1>
+      <div class="subtitle">${escapeHtml(projectName)} | เลขที่เอกสาร: ${escapeHtml(docNo)}</div>
+    </div>
+  </header>
+  <section class="summary">
+    <div class="box">ลูกค้า<strong>${escapeHtml(clientName)}</strong></div>
+    <div class="box">วันที่ตรวจ<strong>${escapeHtml(formatThaiDate(round.inspection_date))}</strong></div>
+    <div class="box">รายการทั้งหมด<strong>${snapshot.items.length}</strong></div>
+    <div class="box">คงค้าง<strong>${openCount}</strong></div>
+    <div class="box">แก้ไขแล้ว/ผ่าน<strong>${fixedCount}</strong></div>
+    <div class="box">จำนวนวันที่ต้องบวก<strong>${escapeHtml(round.extension_days || 0)} วัน</strong></div>
+    <div class="box">ผู้ตรวจ<strong>${escapeHtml(round.inspector_name || "-")}</strong></div>
+    <div class="box">วันที่ออกรายงาน<strong>${escapeHtml(formatThaiDate(snapshot.generated_at))}</strong></div>
+  </section>
+  ${renderFollowUpItems(snapshot)}
+  <section class="footer">
+    <div><div class="sign-line"></div>ผู้จัดทำ / วิศวกร</div>
+    <div><div class="sign-line"></div>ผู้ตรวจสอบ</div>
+    <div><div class="sign-line"></div>ลูกค้ารับรองงานแก้ไข</div>
+  </section>
   <div class="footer-note">Generated by PMC CONNEXT | ${escapeHtml(docNo)} | ${escapeHtml(formatThaiDateTime(snapshot.generated_at))}</div>
 </body>
 </html>`;

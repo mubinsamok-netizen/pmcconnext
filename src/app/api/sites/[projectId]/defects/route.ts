@@ -3,6 +3,7 @@ import { writeAuditLog } from "@/lib/auditLog";
 import {
   buildDefectAcknowledgementLineFlex,
   buildDefectApprovalLineFlex,
+  buildDefectFollowUpReportHtml,
   buildDefectReportHtml,
   createDefectApprovalToken,
   createDefectDocumentNo,
@@ -418,6 +419,58 @@ async function handleIssuePdf(_body: Record<string, unknown>, context: RouteCont
   });
 }
 
+async function handleIssueTrackingPdf(_body: Record<string, unknown>, context: RouteContext, roundId: string) {
+  const data = await getDefectData(context);
+  const round = data.rounds.find((item) => item.round_id === roundId);
+  if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
+  if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF รายการ Defect ก่อนสร้างรายงานติดตาม" }, { status: 400 });
+
+  const items = data.items
+    .filter((item) => item.round_id === roundId)
+    .sort((a, b) => Number(a.item_no || 0) - Number(b.item_no || 0));
+  if (items.length === 0) return NextResponse.json({ error: "ไม่มีรายการ Defect สำหรับสร้างรายงานติดตาม" }, { status: 400 });
+
+  const issuedAt = new Date().toISOString();
+  const documentNo = text(round.document_no) || createDefectDocumentNo(context.project.project_id, text(round.inspection_date) || todayBangkok(), data.rounds);
+  const roundForSnapshot = {
+    ...round,
+    document_no: documentNo,
+    tracking_pdf_issued_at: issuedAt,
+  };
+  const snapshot = await buildSnapshot(context, roundForSnapshot, items);
+  const html = buildDefectFollowUpReportHtml(snapshot);
+
+  const roundFolderId = await getDefectRoundFolder(context, roundId);
+  if (!roundFolderId) return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
+  const pdfFolder = await findOrCreateFolder("PDF", roundFolderId);
+  const fileStamp = issuedAt.slice(0, 19).replace(/[-:T]/g, "");
+  const pdfBuffer = await renderHtmlToPdfBuffer(html, `${documentNo}-FOLLOW-UP`);
+  const uploaded = await uploadFile(`${documentNo}-FOLLOW-UP-${fileStamp}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || roundFolderId);
+  const trackingPdfUrl = uploaded.webViewLink || uploaded.webContentLink || "";
+
+  const patch = {
+    tracking_pdf_file_id: uploaded.id || "",
+    tracking_pdf_url: trackingPdfUrl,
+    tracking_pdf_issued_at: issuedAt,
+  };
+  await updateDefectRound(context, round, patch);
+  await writeAuditLog({
+    actor: actor(context),
+    projectId: context.project.project_id,
+    module: "defects",
+    action: "tracking_pdf_issued",
+    targetId: roundId,
+    summary: `สร้าง PDF รายงานติดตามการแก้ไข Defect: ${documentNo}`,
+    before: round,
+    after: patch,
+  });
+
+  return NextResponse.json({
+    success: true,
+    data: { round_id: roundId, ...patch },
+  });
+}
+
 async function handleAcknowledge(body: Record<string, unknown>, context: RouteContext, roundId: string) {
   const data = await getDefectData(context);
   const round = data.rounds.find((item) => item.round_id === roundId);
@@ -539,6 +592,10 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
   if (!defectRoundReadyForCustomer(items)) {
     return NextResponse.json({ error: "ต้องอัปเดตรายการ defect เป็นแก้เสร็จ/ผ่านครบก่อนส่งให้ลูกค้ารับงาน" }, { status: 400 });
   }
+  const finalReportUrl = text(round.tracking_pdf_url);
+  if (!finalReportUrl) {
+    return NextResponse.json({ error: "กรุณาสร้าง PDF รายงานติดตามการแก้ไขก่อนส่งให้ลูกค้ารับรองงานแก้ไข" }, { status: 400 });
+  }
 
   const approvalToken = text(round.approval_token) || createDefectApprovalToken();
   const approvalOrigin = getPublicAppOrigin({ request: req, origin: body.origin });
@@ -550,6 +607,7 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
     `โครงการ: ${round.project_name || context.project.name || context.project.project_id}`,
     `รายการ: ${round.title || round.document_no || roundId}`,
     `จำนวน Defect: ${items.length} รายการ`,
+    `รายงานติดตาม: ${finalReportUrl}`,
     `เปิดลิงก์เพื่อยอมรับการแก้ไข: ${approvalUrl}`,
   ].join("\n");
 
@@ -559,7 +617,7 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
     documentNo: text(round.document_no),
     title: text(round.title || "Defect close"),
     itemCount: items.length,
-    pdfUrl: text(round.pdf_url),
+    pdfUrl: finalReportUrl,
     approvalUrl,
   })], targetLineGroupId);
 
@@ -567,6 +625,7 @@ async function handleSendCustomerApproval(req: Request, body: Record<string, unk
     status: "ready_for_recheck",
     approval_token: approvalToken,
     approval_url: approvalUrl,
+    tracking_pdf_url: finalReportUrl,
     sent_to_customer_at: new Date().toISOString(),
     line_group_id: targetLineGroupId,
     line_message: lineMessage,
@@ -660,6 +719,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     if (action === "create_round") return handleCreateRound(body, routeContext);
     if (action === "add_item") return handleAddItem(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, roundId);
+    if (action === "issue_tracking_pdf") return handleIssueTrackingPdf(body, routeContext, roundId);
     if (action === "acknowledge") return handleAcknowledge(body, routeContext, roundId);
     if (action === "send_customer_acknowledgement") return handleSendCustomerAcknowledgement(req, body, routeContext, roundId);
     if (action === "send_customer_approval") return handleSendCustomerApproval(req, body, routeContext, roundId);

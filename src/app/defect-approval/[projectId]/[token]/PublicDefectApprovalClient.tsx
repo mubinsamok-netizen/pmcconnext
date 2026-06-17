@@ -173,7 +173,7 @@ export default function PublicDefectApprovalClient({ projectId, token }: { proje
           {error ? <div className="mt-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div> : null}
           {round?.pdf_url ? (
             <a href={round.pdf_url} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-2 text-sm font-black text-slate-700 hover:text-orange-600">
-              <ExternalLink size={16} /> เปิด PDF Defect
+              <ExternalLink size={16} /> เปิดรายงานติดตามการแก้ไข
             </a>
           ) : null}
         </section>
