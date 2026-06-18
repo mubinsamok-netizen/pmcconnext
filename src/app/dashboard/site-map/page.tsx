@@ -391,7 +391,7 @@ export default function SiteMapPage() {
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <div className="text-xs font-black uppercase tracking-wide text-orange-600">Site Map</div>
-            <h2 className="truncate text-2xl font-black text-slate-950">แผนที่ไซต์งานทั้งหมด</h2>
+            <h2 className="truncate text-2xl font-black text-slate-950">แผนที่ไซต์งาน</h2>
           </div>
           <div className="grid gap-2 sm:grid-cols-2 xl:w-[720px] xl:grid-cols-[1fr_210px_180px]">
             <label className="relative sm:col-span-2 xl:col-span-1">

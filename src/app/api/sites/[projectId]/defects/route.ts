@@ -50,6 +50,31 @@ function text(value: unknown) {
   return String(value || "").trim();
 }
 
+function withTrackingPdfMetadata(
+  snapshotJson: unknown,
+  metadata: { fileId: string; url: string; issuedAt: string }
+) {
+  let snapshot: Record<string, unknown> = {};
+
+  try {
+    const parsed = typeof snapshotJson === "string" ? JSON.parse(snapshotJson) : snapshotJson;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      snapshot = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Preserve PDF tracking even when a legacy snapshot cannot be parsed.
+  }
+
+  return safeJsonStringify({
+    ...snapshot,
+    tracking_pdf: {
+      file_id: metadata.fileId,
+      url: metadata.url,
+      issued_at: metadata.issuedAt,
+    },
+  });
+}
+
 function numberValue(value: unknown) {
   const numeric = Number(String(value || "").replace(/,/g, "").trim());
   return Number.isFinite(numeric) ? numeric : 0;
@@ -447,11 +472,22 @@ async function handleIssueTrackingPdf(_body: Record<string, unknown>, context: R
   const pdfBuffer = await renderHtmlToPdfBuffer(html, `${documentNo}-FOLLOW-UP`);
   const uploaded = await uploadFile(`${documentNo}-FOLLOW-UP-${fileStamp}.pdf`, "application/pdf", pdfBuffer, pdfFolder.id || roundFolderId);
   const trackingPdfUrl = uploaded.webViewLink || uploaded.webContentLink || "";
+  if (!trackingPdfUrl) {
+    return NextResponse.json({ error: "อัปโหลด PDF แล้วแต่ไม่พบลิงก์สำหรับเปิดไฟล์" }, { status: 502 });
+  }
 
-  const patch = {
+  const trackingPdfPatch = {
     tracking_pdf_file_id: uploaded.id || "",
     tracking_pdf_url: trackingPdfUrl,
     tracking_pdf_issued_at: issuedAt,
+  };
+  const patch = {
+    ...trackingPdfPatch,
+    snapshot_json: withTrackingPdfMetadata(round.snapshot_json, {
+      fileId: uploaded.id || "",
+      url: trackingPdfUrl,
+      issuedAt,
+    }),
   };
   await updateDefectRound(context, round, patch);
   await writeAuditLog({
@@ -462,12 +498,12 @@ async function handleIssueTrackingPdf(_body: Record<string, unknown>, context: R
     targetId: roundId,
     summary: `สร้าง PDF รายงานติดตามการแก้ไข Defect: ${documentNo}`,
     before: round,
-    after: patch,
+    after: trackingPdfPatch,
   });
 
   return NextResponse.json({
     success: true,
-    data: { round_id: roundId, ...patch },
+    data: { round_id: roundId, ...trackingPdfPatch },
   });
 }
 

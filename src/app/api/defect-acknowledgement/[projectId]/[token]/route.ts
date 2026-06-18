@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
+  buildDefectListAcknowledgedLineFlex,
   todayBangkok,
   type DefectItemRecord,
   type DefectRoundRecord,
 } from "@/lib/defects";
+import { sendLineMessages } from "@/lib/line";
 import { findAll, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 import { makeId } from "@/lib/siteApi";
@@ -159,6 +161,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         before: context.round,
         after: patch,
       });
+
+      const lineGroupId = text(context.round.line_group_id) || text(context.project.line_group_id);
+      if (lineGroupId) {
+        await sendLineMessages([buildDefectListAcknowledgedLineFlex({
+          projectName: text(context.round.project_name || context.project.name),
+          projectId: context.project.project_id,
+          documentNo: text(context.round.document_no),
+          title: text(context.round.title || "Defect list"),
+          acknowledgedBy,
+          acknowledgedAt: lockedAt,
+          pdfUrl: text(context.round.pdf_url),
+        })], lineGroupId).catch((error) => console.warn("Failed to notify LINE after defect acknowledgement:", error));
+      }
     }
 
     return NextResponse.json({

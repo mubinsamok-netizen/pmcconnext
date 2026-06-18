@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { getAppRole } from "@/lib/roles";
-import { canAccessSiteSegment, isForemanRole } from "@/lib/siteAccess";
+import { canAccessSiteSegment } from "@/lib/siteAccess";
 
 type SidebarUser = {
   name?: string | null;
@@ -102,10 +102,8 @@ export default function Sidebar({
 
   const isSiteMode = Boolean(siteId);
   const isAdmin = getAppRole(user?.role) === "Admin";
-  const isForeman = isForemanRole(user?.role);
   const visibleWorkspaceNavItems = workspaceNavItems.filter((item) => {
     if (item.href === "/dashboard/sales-crm") return isAdmin;
-    if (isForeman) return item.href === "/dashboard/projects";
     return true;
   });
   const visibleSiteNavItems = siteNavItems.filter((item) => canAccessSiteSegment(user?.role, item.segment));

@@ -462,6 +462,85 @@ export function buildDefectApprovedLineFlex({
   };
 }
 
+export function buildDefectListAcknowledgedLineFlex({
+  projectName,
+  projectId,
+  documentNo,
+  title,
+  acknowledgedBy,
+  acknowledgedAt,
+  pdfUrl,
+}: {
+  projectName: string;
+  projectId: string;
+  documentNo?: string;
+  title: string;
+  acknowledgedBy: string;
+  acknowledgedAt: string;
+  pdfUrl?: string;
+}) {
+  const acknowledgedTime = formatBangkokDateTime(acknowledgedAt);
+  return {
+    type: "flex",
+    altText: `ลูกค้ารับทราบรายการ Defect แล้ว | ${projectName || projectId} | ${title}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#111827",
+        paddingAll: "18px",
+        paddingBottom: "16px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT DEFECT ACKNOWLEDGED", color: "#cbd5e1", weight: "bold", size: "xs" },
+          { type: "text", text: "ลูกค้ารับทราบรายการแล้ว", color: "#ffffff", weight: "bold", size: "lg", margin: "xs", wrap: true },
+          { type: "text", text: documentNo || projectId, color: "#e5e7eb", size: "sm", margin: "xs", wrap: true },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "xs",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
+          defectLineRow("รายการ", title || "-"),
+          defectLineRow("ผู้รับทราบ", acknowledgedBy || "-"),
+          defectLineRow("เวลา", acknowledgedTime),
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            margin: "md",
+            backgroundColor: "#f0fdf4",
+            cornerRadius: "8px",
+            paddingAll: "10px",
+            contents: [
+              { type: "text", text: "สถานะ", color: "#15803d", size: "xs", weight: "bold" },
+              { type: "text", text: "ทีมงานเริ่มติดตามการแก้ไขตามรายการนี้ได้แล้ว", color: "#166534", size: "sm", wrap: true },
+            ],
+          },
+        ],
+      },
+      ...(pdfUrl ? {
+        footer: {
+          type: "box",
+          layout: "vertical",
+          spacing: "xs",
+          paddingAll: "8px",
+          contents: [{
+            type: "button",
+            style: "primary",
+            color: "#475569",
+            action: { type: "uri", label: "เปิด PDF Defect", uri: pdfUrl },
+          }],
+        },
+      } : {}),
+    },
+  };
+}
+
 function defectLineRow(label: string, value: string) {
   return {
     type: "box",

@@ -474,6 +474,25 @@ function nullableJsonText(value: unknown) {
   return JSON.stringify(value);
 }
 
+function defectTrackingPdfFields(snapshot: unknown) {
+  try {
+    const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    const tracking = (parsed as Record<string, unknown>).tracking_pdf;
+    if (!tracking || typeof tracking !== "object" || Array.isArray(tracking)) return {};
+
+    const metadata = tracking as Record<string, unknown>;
+    return {
+      tracking_pdf_file_id: text(metadata.file_id),
+      tracking_pdf_url: text(metadata.url),
+      tracking_pdf_issued_at: timestampText(metadata.issued_at),
+    };
+  } catch {
+    return {};
+  }
+}
+
 function sheetRowFromSupabase(
   row: SupabaseRow,
   keyColumn: string,
@@ -1189,46 +1208,49 @@ export async function getSupabaseDefectRounds(projectId?: string | null) {
 
   const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_rounds", params);
 
-  return rows.map((row) => sheetRowFromSupabase(row, "round_id", [
-    "round_id",
-    "project_id",
-    "document_no",
-    "revision_no",
-    "title",
-    "inspection_date",
-    "inspector_name",
-    "inspector_email",
-    "client_name",
-    "project_name",
-    "project_location",
-    "status",
-    "item_count",
-    "open_count",
-    "acknowledged_by",
-    "acknowledged_channel",
-    "acknowledged_date",
-    "acknowledgement_note",
-    "pdf_file_id",
-    "pdf_url",
-    "issued_at",
-    "issued_by_name",
-    "issued_by_email",
-    "locked_at",
-    "snapshot_json",
-    "notes",
-    "created_at",
-    "updated_at",
-    "extension_days",
-    "approval_token",
-    "approval_url",
-    "sent_to_customer_at",
-    "line_group_id",
-    "line_message",
-  ], {
-    dateFields: ["inspection_date", "acknowledged_date"],
-    timestampFields: ["issued_at", "locked_at", "created_at", "updated_at", "sent_to_customer_at"],
-    nullableJsonFields: ["snapshot_json"],
-    columnMap: { snapshot_json: "snapshot" },
+  return rows.map((row) => ({
+    ...sheetRowFromSupabase(row, "round_id", [
+      "round_id",
+      "project_id",
+      "document_no",
+      "revision_no",
+      "title",
+      "inspection_date",
+      "inspector_name",
+      "inspector_email",
+      "client_name",
+      "project_name",
+      "project_location",
+      "status",
+      "item_count",
+      "open_count",
+      "acknowledged_by",
+      "acknowledged_channel",
+      "acknowledged_date",
+      "acknowledgement_note",
+      "pdf_file_id",
+      "pdf_url",
+      "issued_at",
+      "issued_by_name",
+      "issued_by_email",
+      "locked_at",
+      "snapshot_json",
+      "notes",
+      "created_at",
+      "updated_at",
+      "extension_days",
+      "approval_token",
+      "approval_url",
+      "sent_to_customer_at",
+      "line_group_id",
+      "line_message",
+    ], {
+      dateFields: ["inspection_date", "acknowledged_date"],
+      timestampFields: ["issued_at", "locked_at", "created_at", "updated_at", "sent_to_customer_at"],
+      nullableJsonFields: ["snapshot_json"],
+      columnMap: { snapshot_json: "snapshot" },
+    }),
+    ...defectTrackingPdfFields(row.snapshot),
   }));
 }
 
