@@ -4,7 +4,7 @@ import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { findAllRaw, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
-import { isSupabaseBackend, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend, readWithSheetsFallback } from "@/lib/supabaseRest";
 
 function safeFolderName(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "Other";
@@ -30,22 +30,6 @@ function isPdfFile(fileName: string, mimeType: string) {
 
 type DocumentRow = Awaited<ReturnType<typeof getSupabaseProjectDocuments>>[number];
 
-function mergeRowsById(primary: DocumentRow[], fallback: DocumentRow[]) {
-  const merged = new Map<string, DocumentRow>();
-
-  fallback.forEach((row, index) => {
-    const key = String(row.document_id || row._rowIndex || `fallback-${index}`);
-    merged.set(key, row);
-  });
-
-  primary.forEach((row, index) => {
-    const key = String(row.document_id || row._rowIndex || `primary-${index}`);
-    merged.set(key, row);
-  });
-
-  return Array.from(merged.values());
-}
-
 async function getSheetDocumentRows(siteSheetId: string) {
   try {
     return await findAllRaw("Project_Documents", siteSheetId) as DocumentRow[];
@@ -62,15 +46,7 @@ async function getDocumentRows(siteSheetId: string, projectId: string) {
   const readSupabase = () => getSupabaseProjectDocuments(projectId);
   const readSheets = () => getSheetDocumentRows(siteSheetId);
 
-  if (!shouldFallbackToSheets()) return readSupabase();
-
-  return readWithSheetsFallback("project_documents", async () => {
-    const [supabaseRows, sheetRows] = await Promise.all([
-      readSupabase(),
-      readSheets(),
-    ]);
-    return mergeRowsById(supabaseRows, sheetRows);
-  }, readSheets);
+  return readWithSheetsFallback("project_documents", readSupabase, readSheets);
 }
 
 function getNextVersion(

@@ -133,8 +133,8 @@ test("editing a Memo reads only memos and returns the saved record after audit s
   assert.deepEqual(writes, ["update", "audit"]);
 });
 
-for (const legacyOnly of [false, true]) {
-  test(`editing a VO preserves totals and items using only two table groups (legacy=${legacyOnly})`, async () => {
+for (const databaseFails of [false, true]) {
+  test(`editing a VO preserves totals and items using only two table groups (fallback=${databaseFails})`, async () => {
     const reads = [];
     const writes = [];
     const tables = {
@@ -144,7 +144,8 @@ for (const legacyOnly of [false, true]) {
     const read = async (table, backend) => {
       assert.ok(Object.hasOwn(tables, table), `Unnecessary table read: ${table}`);
       reads.push(`${backend}:${table}`);
-      return backend === "supabase" && legacyOnly ? [] : tables[table];
+      if (backend === "supabase" && databaseFails) throw new Error("Supabase unavailable");
+      return tables[table];
     };
     const helpers = loadTs("src/lib/variationOrders.ts", {
       "@/lib/bangkokDateTime": {}, "@/lib/lineFlexTheme": {},
@@ -162,7 +163,6 @@ for (const legacyOnly of [false, true]) {
       },
       "@/lib/supabaseRest": {
         isSupabaseReadEnabled: () => true,
-        shouldFallbackToSheets: () => legacyOnly,
         readWithSheetsFallback: async (_label, primary, fallback) => {
           try { return await primary(); } catch { return fallback(); }
         },
@@ -189,6 +189,6 @@ for (const legacyOnly of [false, true]) {
     assert.deepEqual(writes.map((write) => write.table), ["Variation_Orders", "VO_Items", "audit"]);
     assert.equal(writes[1].id, "ITEM-1");
     assert.equal(writes[1].patch.amount, 300);
-    assert.equal(reads.length, legacyOnly ? 4 : 2);
+    assert.equal(reads.length, databaseFails ? 4 : 2);
   });
 }

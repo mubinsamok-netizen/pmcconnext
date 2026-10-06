@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
@@ -21,22 +21,6 @@ async function findTaskRowIndex(sheetId: string, projectId: string | null, taskI
 function filterProjectTasks<T extends Record<string, string | number | undefined>>(tasks: T[], projectId?: string | null) {
   if (!projectId) return tasks;
   return tasks.filter((task) => String(task.project_id || "") === projectId);
-}
-
-function mergeTaskRows<T extends Record<string, string | number | undefined>>(primary: T[], fallback: T[]) {
-  const merged = new Map<string, T>();
-
-  fallback.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `fallback-${index}`);
-    merged.set(key, task);
-  });
-
-  primary.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `primary-${index}`);
-    merged.set(key, task);
-  });
-
-  return Array.from(merged.values());
 }
 
 function getTaskDeleteTargets<T extends Record<string, string | number | undefined>>(tasks: T[], taskId: string, rowIndex: string) {
@@ -80,13 +64,8 @@ export async function GET(req: Request) {
     };
 
     if (isSupabaseReadEnabled("site")) {
-      const tasks = await readWithSheetsFallback("tasks", async () => {
-        const supabaseTasks = await getSupabaseTasks(projectId);
-        if (!shouldFallbackToSheets()) return supabaseTasks;
-
-        const sheetTasks = await readSheetsTasks();
-        return mergeTaskRows(supabaseTasks, sheetTasks);
-      }, readSheetsTasks);
+      // Sheets is a fallback for failed reads, not a required second data source.
+      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
       return NextResponse.json({ success: true, data: tasks });
     }
 
@@ -130,11 +109,7 @@ export async function POST(req: Request) {
     const existingTasks = order_index
       ? []
       : isSupabaseReadEnabled("site")
-        ? await readWithSheetsFallback("tasks", async () => {
-          const supabaseTasks = await getSupabaseTasks(project_id);
-          if (!shouldFallbackToSheets()) return supabaseTasks;
-          return mergeTaskRows(supabaseTasks, await readSheetsTasks());
-        }, readSheetsTasks)
+        ? await readWithSheetsFallback("tasks", () => getSupabaseTasks(project_id), readSheetsTasks)
         : await readSheetsTasks();
     const nextOrder = existingTasks.length + 1;
 
@@ -204,11 +179,7 @@ export async function DELETE(req: Request) {
     const readSheetsTasks = async () => filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
     const tasks = taskId
       ? isSupabaseReadEnabled("site")
-        ? await readWithSheetsFallback("tasks", async () => {
-          const supabaseTasks = await getSupabaseTasks(projectId);
-          if (!shouldFallbackToSheets()) return supabaseTasks;
-          return mergeTaskRows(supabaseTasks, await readSheetsTasks());
-        }, readSheetsTasks)
+        ? await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks)
         : await readSheetsTasks()
       : await readSheetsTasks();
     const targets = getTaskDeleteTargets(tasks, taskId, rowIndex);

@@ -9,7 +9,7 @@ import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/li
 import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllSupabase, getSupabaseSiteConfig } from "@/lib/supabaseCrud";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
-import { isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import {
   VO_TYPE_LABELS,
   addCalendarDays,
@@ -77,18 +77,9 @@ type CustomerItemDecision = {
   note?: string;
 };
 type SheetPatch = Record<string, string | number | boolean | null | undefined>;
-type VoTableName = keyof typeof VO_TABLE_KEYS;
+type VoTableName = "Variation_Orders" | "VO_Items" | "VO_Documents" | "VO_Payments" | "VO_Task_Links" | "VO_Finance_Ledger";
 
 const VO_LINE_TEST_GROUP_ID = process.env.VO_LINE_TEST_GROUP_ID || process.env.DECISION_LINE_TEST_GROUP_ID || "C512b905da442874d3bcc318e02a731c9";
-const VO_TABLE_KEYS = {
-  Variation_Orders: "vo_id",
-  VO_Items: "item_id",
-  VO_Documents: "document_id",
-  VO_Payments: "payment_id",
-  VO_Task_Links: "link_id",
-  VO_Finance_Ledger: "ledger_id",
-} as const;
-
 function text(value: unknown) {
   return String(value || "").trim();
 }
@@ -139,40 +130,17 @@ function filterProjectRows<T extends SheetRecord>(rows: T[], projectId: string) 
   return rows.filter((row) => String(row.project_id || "") === projectId);
 }
 
-function mergeRowsById<T extends SheetRecord>(primary: T[], fallback: T[], idColumn: string) {
-  const merged = new Map<string, T>();
-
-  fallback.forEach((row, index) => {
-    const key = String(row[idColumn] || row._rowIndex || `fallback-${index}`);
-    merged.set(key, row);
-  });
-
-  primary.forEach((row, index) => {
-    const key = String(row[idColumn] || row._rowIndex || `primary-${index}`);
-    merged.set(key, row);
-  });
-
-  return Array.from(merged.values());
-}
-
 async function getTaskRows(context: RouteContext) {
   const projectId = context.project.project_id;
   const readSheetsTasks = async () => filterProjectRows(await findAllRaw("Tasks", context.siteSheetId), projectId);
 
   if (!isSupabaseReadEnabled("site")) return readSheetsTasks();
 
-  return readWithSheetsFallback("tasks", async () => {
-    const supabaseTasks = await getSupabaseTasks(projectId);
-    if (!shouldFallbackToSheets()) return supabaseTasks;
-
-    const sheetTasks = await readSheetsTasks();
-    return mergeRowsById(supabaseTasks, sheetTasks, "task_id");
-  }, readSheetsTasks);
+  return readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
 }
 
-async function getMergedVoRows(context: RouteContext, tableName: VoTableName) {
+async function getVoRows(context: RouteContext, tableName: VoTableName) {
   const projectId = context.project.project_id;
-  const keyColumn = VO_TABLE_KEYS[tableName];
   const readSheetsRows = async () => filterProjectRows(await findAllRaw(tableName, context.siteSheetId), projectId);
 
   if (!isSupabaseReadEnabled("site")) return readSheetsRows();
@@ -181,11 +149,7 @@ async function getMergedVoRows(context: RouteContext, tableName: VoTableName) {
   if (!supabaseConfig) return readSheetsRows();
 
   return readWithSheetsFallback(tableName, async () => {
-    const supabaseRows = filterProjectRows(await findAllSupabase(supabaseConfig, projectId), projectId);
-    if (!shouldFallbackToSheets()) return supabaseRows;
-
-    const sheetRows = await readSheetsRows();
-    return mergeRowsById(supabaseRows, sheetRows, keyColumn);
+    return filterProjectRows(await findAllSupabase(supabaseConfig, projectId), projectId);
   }, readSheetsRows);
 }
 
@@ -408,13 +372,13 @@ async function handleCreateSupportingUploadSession(body: Record<string, unknown>
 
 async function getVoData(context: RouteContext) {
   const [voRows, itemRows, documents, payments, taskLinks, tasks, ledger] = await Promise.all([
-    getMergedVoRows(context, "Variation_Orders"),
-    getMergedVoRows(context, "VO_Items"),
-    getMergedVoRows(context, "VO_Documents"),
-    getMergedVoRows(context, "VO_Payments"),
-    getMergedVoRows(context, "VO_Task_Links"),
+    getVoRows(context, "Variation_Orders"),
+    getVoRows(context, "VO_Items"),
+    getVoRows(context, "VO_Documents"),
+    getVoRows(context, "VO_Payments"),
+    getVoRows(context, "VO_Task_Links"),
     getTaskRows(context),
-    getMergedVoRows(context, "VO_Finance_Ledger"),
+    getVoRows(context, "VO_Finance_Ledger"),
   ]);
   const vos = parseRows<VoRecord>(voRows);
   const items = parseRows<VoItemRecord>(itemRows);
@@ -572,7 +536,7 @@ async function handleCreateVo(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "ข้อมูลไม่ครบ", missing: required }, { status: 400 });
   }
 
-  const data = { vos: parseRows<VoRecord>(await getMergedVoRows(context, "Variation_Orders")) };
+  const data = { vos: parseRows<VoRecord>(await getVoRows(context, "Variation_Orders")) };
   const createdDate = getDateValue(body.created_date);
   const requestedVoType = asVoType(String(body.vo_type || "VO+"));
   const calculation = calculateVoTotals({
@@ -946,8 +910,8 @@ async function handleUpdateVo(body: Record<string, unknown>, context: RouteConte
   if (!voId) return NextResponse.json({ error: "ไม่พบ VO ที่ต้องการแก้ไข" }, { status: 400 });
 
   const [voRows, itemRows] = await Promise.all([
-    getMergedVoRows(context, "Variation_Orders"),
-    getMergedVoRows(context, "VO_Items"),
+    getVoRows(context, "Variation_Orders"),
+    getVoRows(context, "VO_Items"),
   ]);
   const data = { vos: parseRows<VoRecord>(voRows), items: parseRows<VoItemRecord>(itemRows) };
   const vo = findVo(data.vos, voId);

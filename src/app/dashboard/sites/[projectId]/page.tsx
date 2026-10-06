@@ -29,9 +29,9 @@ import SiteCalendarPanel, { type SiteCalendarEvent } from "./SiteCalendarPanel";
 import { authOptions } from "@/lib/authOptions";
 import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
-import { findAllBatch, findAllRaw } from "@/lib/sheetsCrud";
+import { findAllBatch } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
-import { isSupabaseBackend, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { isForemanRole } from "@/lib/siteAccess";
 import { getProjectContext } from "@/lib/siteContext";
 import { getSiteWeather } from "@/lib/siteWeather";
@@ -287,22 +287,6 @@ function isTaskDone(task: SiteRecord) {
 
 function isProjectRow(projectId: string) {
   return (row: SiteRecord) => stringValue(row.project_id) === projectId;
-}
-
-function mergeRowsById(primary: SiteRecord[], fallback: SiteRecord[], idField: string) {
-  const merged = new Map<string, SiteRecord>();
-
-  fallback.forEach((row, index) => {
-    const key = stringValue(row[idField] || row._rowIndex || `fallback-${index}`);
-    merged.set(key, row);
-  });
-
-  primary.forEach((row, index) => {
-    const key = stringValue(row[idField] || row._rowIndex || `primary-${index}`);
-    merged.set(key, row);
-  });
-
-  return Array.from(merged.values());
 }
 
 function daysUntil(value?: SiteValue) {
@@ -811,10 +795,7 @@ async function getDashboardData(project: MasterProject): Promise<DashboardData> 
       "Project_Warranty",
     ], sheetId) as Record<string, SiteRecord[]>;
 
-    const tasksFromBatch = rows.Tasks || [];
-    const tasks = isSupabaseBackend() && shouldFallbackToSheets()
-      ? mergeRowsById(tasksFromBatch, await findAllRaw("Tasks", sheetId) as SiteRecord[], "task_id")
-      : tasksFromBatch;
+    const tasks = rows.Tasks || [];
     const milestones = rows.Milestones || [];
     const customerDecisions = rows.Customer_Decisions || [];
     const qcChecklists = rows.QC_Checklists || [];

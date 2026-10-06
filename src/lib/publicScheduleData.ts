@@ -1,7 +1,7 @@
 import { getMasterProjects } from "@/lib/masterProjects";
 import { findAll, findAllRaw } from "@/lib/sheetsCrud";
 import { getProjectContext } from "@/lib/siteContext";
-import { isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseMilestones, getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 type ScheduleRow = Record<string, string | number | undefined>;
@@ -20,13 +20,6 @@ function onlyProject(rows: ScheduleRow[], projectId: string) {
   return rows.filter((row) => String(row.project_id || "") === projectId);
 }
 
-function mergeRows(primary: ScheduleRow[], fallback: ScheduleRow[], idField: string) {
-  const merged = new Map<string, ScheduleRow>();
-  fallback.forEach((row, index) => merged.set(String(row[idField] || `fallback-${index}`), row));
-  primary.forEach((row, index) => merged.set(String(row[idField] || `primary-${index}`), row));
-  return Array.from(merged.values());
-}
-
 async function getPublicMasterProject(projectId: string) {
   const projects = await getMasterProjects() as PublicMasterProject[];
   const project = projects.find((item) => item.project_id === projectId && item.active !== "FALSE");
@@ -43,10 +36,7 @@ export async function getPublicScheduleData(projectId: string) {
 
   const [tasks, milestones] = await Promise.all([
     isSupabaseReadEnabled("site")
-      ? readWithSheetsFallback("public schedule tasks", async () => {
-          const primary = await getSupabaseTasks(projectId);
-          return shouldFallbackToSheets() ? mergeRows(primary, await readSheetTasks(), "task_id") : primary;
-        }, readSheetTasks)
+      ? readWithSheetsFallback("public schedule tasks", () => getSupabaseTasks(projectId), readSheetTasks)
       : readSheetTasks(),
     isSupabaseReadEnabled("site")
       ? readWithSheetsFallback("public schedule milestones", () => getSupabaseMilestones(projectId), readSheetMilestones)

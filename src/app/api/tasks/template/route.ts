@@ -3,7 +3,7 @@ import { findAllRaw, insertMany } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
 import { SCHEDULE_TEMPLATE_CATEGORIES, SCHEDULE_TEMPLATE_TASKS } from "@/lib/scheduleTemplateData";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
 
 function getErrorMessage(error: unknown) {
@@ -13,22 +13,6 @@ function getErrorMessage(error: unknown) {
 function filterProjectTasks<T extends Record<string, string | number | undefined>>(tasks: T[], projectId?: string | null) {
   if (!projectId) return tasks;
   return tasks.filter((task) => String(task.project_id || "") === projectId);
-}
-
-function mergeTaskRows<T extends Record<string, string | number | undefined>>(primary: T[], fallback: T[]) {
-  const merged = new Map<string, T>();
-
-  fallback.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `fallback-${index}`);
-    merged.set(key, task);
-  });
-
-  primary.forEach((task, index) => {
-    const key = String(task.task_id || task._rowIndex || `primary-${index}`);
-    merged.set(key, task);
-  });
-
-  return Array.from(merged.values());
 }
 
 function makeTaskId(index: number) {
@@ -132,11 +116,7 @@ export async function POST(req: Request) {
 
     const readSheetsTasks = async () => filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
     const existingTasks = isSupabaseReadEnabled("site")
-      ? await readWithSheetsFallback("tasks", async () => {
-        const supabaseTasks = await getSupabaseTasks(projectId);
-        if (!shouldFallbackToSheets()) return supabaseTasks;
-        return mergeTaskRows(supabaseTasks, await readSheetsTasks());
-      }, readSheetsTasks)
+      ? await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks)
       : await readSheetsTasks();
 
     const selected = SCHEDULE_TEMPLATE_TASKS

@@ -68,7 +68,7 @@ async function getPublicContext(projectId: string, token: string) {
   const siteSheetId = text(project.site_sheet_id);
   if (!siteSheetId) return { error: "โครงการยังไม่ได้ตั้งค่า Site Sheet", status: 400 as const };
 
-  const schemaResult = await ensureSchema(siteSheetId);
+  const schemaResult = isSupabaseBackend() ? null : await ensureSchema(siteSheetId);
   const [voRows, backendItemRows, documentRows] = await Promise.all([
     findAll("Variation_Orders", siteSheetId) as Promise<VoRecord[]>,
     findAll("VO_Items", siteSheetId) as Promise<VoItemRecord[]>,
@@ -81,12 +81,12 @@ async function getPublicContext(projectId: string, token: string) {
     .filter((item) => item.project_id === project.project_id && item.vo_id === vo.vo_id)
     .sort((a, b) => numberValue(a.sort_order || a.item_no) - numberValue(b.sort_order || b.item_no));
   let items = backendItems;
-  if (schemaResult.success) {
+  if (schemaResult?.success) {
     const sheetItems = (await findAllRaw("VO_Items", siteSheetId) as VoItemRecord[])
       .filter((item) => item.project_id === project.project_id && item.vo_id === vo.vo_id)
       .sort((a, b) => numberValue(a.sort_order || a.item_no) - numberValue(b.sort_order || b.item_no));
     if (sheetItems.length > 0) items = sheetItems;
-  } else if (items.length === 0) {
+  } else if (schemaResult && items.length === 0) {
     return { error: "กำลังปรับโครงสร้างรายการ VO กรุณารีเฟรชอีกครั้ง", status: 503 as const };
   }
   const documents = documentRows.filter((document) => document.project_id === project.project_id && document.vo_id === vo.vo_id);

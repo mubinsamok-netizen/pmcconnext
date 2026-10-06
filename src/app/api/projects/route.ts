@@ -13,10 +13,10 @@ import {
   toIsoDate,
   type ReminderTarget,
 } from "@/lib/projectLifecycle";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback, shouldFallbackToSheets } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
-import { findAllBatch, findAllMaster, findAllRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -232,22 +232,6 @@ function calculateProjectHealth(project: SheetRecord, tasks: SheetRecord[]): Pro
   };
 }
 
-function mergeRowsById(primary: SheetRecord[], fallback: SheetRecord[], idField: string) {
-  const merged = new Map<string, SheetRecord>();
-
-  fallback.forEach((row, index) => {
-    const key = String(row[idField] || row._rowIndex || `fallback-${index}`);
-    merged.set(key, row);
-  });
-
-  primary.forEach((row, index) => {
-    const key = String(row[idField] || row._rowIndex || `primary-${index}`);
-    merged.set(key, row);
-  });
-
-  return Array.from(merged.values());
-}
-
 function calculateDailyReportHealth(project: SheetRecord, reports: SheetRecord[]) {
   const projectReports = reports
     .filter((report) => report.project_id === project.project_id)
@@ -316,9 +300,7 @@ async function enrichProjectWithHealth(project: SheetRecord) {
   try {
     const { sheetId } = await getProjectContext(projectId);
     const rows = await findAllBatch(["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"], sheetId) as Record<string, SheetRecord[]>;
-    const tasks = isSupabaseBackend() && shouldFallbackToSheets()
-      ? mergeRowsById(rows.Tasks || [], await findAllRaw("Tasks", sheetId) as SheetRecord[], "task_id")
-      : rows.Tasks || [];
+    const tasks = rows.Tasks || [];
     const dailyReports = rows.Daily_Reports || [];
     const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
     const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
