@@ -149,3 +149,69 @@ test("when both backends fail, schedule creation reports failure without inserti
   assert.equal(f.calls.sheets, 1);
   assert.equal(f.calls.writes, 0);
 });
+
+test("full template passes through the real write mapper with valid root and child foreign keys", async () => {
+  const stored = new Map();
+  let sheetCalls = 0;
+  const unavailableSheet = async () => { sheetCalls++; throw new Error("Requested entity was not found."); };
+  const rest = loadTs("src/lib/supabaseRest.ts", {}, {
+    DATA_BACKEND: "supabase", DATA_BACKEND_FALLBACK: "sheets", SUPABASE_EXPERIMENTAL_SITE_READS: "true",
+  });
+  const readModel = { getSupabaseTasks: async () => Array.from(stored.values()) };
+  const schema = {
+    getSupabaseSiteSchema: async () => "site_p_1",
+    isSupabaseSiteSchemaMode: () => true,
+    resolveSupabaseProjectId: async () => "P-1",
+  };
+  const supabase = loadTs("src/lib/supabaseCrud.ts", {
+    "@/lib/supabaseReadModel": readModel,
+    "@/lib/supabaseSchema": schema,
+    "@/lib/projectIds": {},
+    "@/lib/supabaseRest": {
+      supabaseInsert: async (table, payload, options) => {
+        assert.equal(table, "tasks");
+        assert.equal(options.schema, "site_p_1");
+        // Match the database's nullable self-reference constraint, including rejecting "".
+        if (payload.parent_task_id !== null && !stored.has(payload.parent_task_id)) {
+          throw new Error("23503: tasks_parent_task_id_fkey");
+        }
+        assert.equal(stored.has(payload.task_id), false);
+        stored.set(payload.task_id, payload);
+        return [payload];
+      },
+    },
+  });
+  const setup = { SITE_SCHEMA: { Tasks: ["task_id", "project_id", "name", "parent_task_id"] }, MASTER_SCHEMA: {}, ensureSchema: unavailableSheet };
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./google": { SHEET_ID: "missing-sheet", sheets: { spreadsheets: { values: { get: unavailableSheet, append: unavailableSheet } } } },
+    "./sheetsSetup": setup,
+    "./supabaseCrud": supabase,
+    "./supabaseRest": rest,
+    "./supabaseSchema": schema,
+  });
+  const template = loadTs("src/lib/scheduleTemplateData.ts");
+  const importer = loadTs("src/app/api/tasks/template/route.ts", {
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/sheetsCrud": crud,
+    "@/lib/sheetsSetup": setup,
+    "@/lib/siteContext": { getProjectContext: async () => ({ sheetId: "missing-sheet" }) },
+    "@/lib/scheduleTemplateData": template,
+    "@/lib/supabaseRest": rest,
+    "@/lib/supabaseReadModel": readModel,
+  });
+  const created = await importer.POST(importRequest());
+  assert.equal(created.status, 200);
+  assert.equal(stored.size, template.SCHEDULE_TEMPLATE_TASKS.length);
+  assert.equal(Array.from(stored.values()).filter((row) => row.parent_task_id === null).length, template.SCHEDULE_TEMPLATE_CATEGORIES.length);
+  const repeated = await importer.POST(importRequest());
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.body.count, 0);
+  assert.equal(repeated.body.reused_count, stored.size);
+  assert.equal(sheetCalls, 0);
+
+  const mapper = supabase.getSupabaseSiteConfig("Tasks").toDb;
+  assert.equal(mapper({ parent_task_id: "" }).parent_task_id, null);
+  assert.equal(mapper({ parent_task_id: null }).parent_task_id, null);
+  assert.equal(mapper({ parent_task_id: "PARENT-1" }).parent_task_id, "PARENT-1");
+  assert.equal(Object.hasOwn(mapper({ name: "Rename only" }), "parent_task_id"), false);
+});

@@ -301,6 +301,8 @@ function toTaskDb(data: Record<string, SheetValue>) {
     "unlock_reason",
   ]);
 
+  // Root tasks have no parent. An empty string is not a valid foreign key.
+  if (data.parent_task_id !== undefined) payload.parent_task_id = emptyToNull(data.parent_task_id);
   if (data.start !== undefined) payload.start_date = emptyToNull(data.start);
   if (data.end !== undefined) payload.end_date = emptyToNull(data.end);
   if (data.start_date !== undefined) payload.start_date = emptyToNull(data.start_date);
