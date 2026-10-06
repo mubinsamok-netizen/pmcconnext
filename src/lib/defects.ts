@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+import { applyLineFlexTheme, LINE_FLEX_HERO_IMAGES } from "@/lib/lineFlexTheme";
 
 export type DefectStatus =
   | "draft"
@@ -245,7 +246,7 @@ export function buildDefectApprovalLineFlex({
   pdfUrl?: string;
   approvalUrl: string;
 }) {
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `Defect close approval | ${projectName || projectId} | ${title}`,
     contents: {
@@ -309,7 +310,10 @@ export function buildDefectApprovalLineFlex({
         ],
       },
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.defect,
+    badgeText: "DEFECT APPROVAL",
+  });
 }
 
 export function buildDefectAcknowledgementLineFlex({
@@ -329,7 +333,7 @@ export function buildDefectAcknowledgementLineFlex({
   pdfUrl?: string;
   acknowledgementUrl: string;
 }) {
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `Defect acknowledgement | ${projectName || projectId} | ${title}`,
     contents: {
@@ -393,7 +397,10 @@ export function buildDefectAcknowledgementLineFlex({
         ],
       },
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.defect,
+    badgeText: "DEFECT LIST",
+  });
 }
 
 export function buildDefectApprovedLineFlex({
@@ -414,7 +421,7 @@ export function buildDefectApprovedLineFlex({
   pdfUrl?: string;
 }) {
   const approvedDate = formatBangkokDateTime(acknowledgedAt);
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `ลูกค้ายอมรับงานแก้ไข Defect แล้ว | ${projectName || projectId} | ${title}`,
     contents: {
@@ -459,7 +466,10 @@ export function buildDefectApprovedLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.defect,
+    badgeText: "DEFECT APPROVED",
+  });
 }
 
 export function buildDefectListAcknowledgedLineFlex({
@@ -480,7 +490,7 @@ export function buildDefectListAcknowledgedLineFlex({
   pdfUrl?: string;
 }) {
   const acknowledgedTime = formatBangkokDateTime(acknowledgedAt);
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `ลูกค้ารับทราบรายการ Defect แล้ว | ${projectName || projectId} | ${title}`,
     contents: {
@@ -538,7 +548,10 @@ export function buildDefectListAcknowledgedLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.defect,
+    badgeText: "DEFECT ACKNOWLEDGED",
+  });
 }
 
 function defectLineRow(label: string, value: string) {

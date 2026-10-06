@@ -1,18 +1,27 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Image from "next/image";
 import {
   Banknote,
   CheckCircle2,
+  ClipboardPaste,
+  Copy,
+  Download,
+  Eye,
   ExternalLink,
+  FileSpreadsheet,
   FileText,
   Loader2,
+  Maximize2,
+  Minimize2,
   Paperclip,
   Pencil,
   Plus,
   Printer,
+  Save,
+  Trash2,
   Workflow,
   XCircle,
 } from "lucide-react";
@@ -23,15 +32,22 @@ import {
   VO_STATUS_LABELS,
   VO_STATUS_STYLES,
   VO_TYPE_LABELS,
+  asVoItemChangeType,
+  asVoItemRowType,
   asVoStatus,
   asVoType,
+  calculateVoTotals,
   formatMoney,
   formatThaiDate,
+  isVoFinanciallyActive,
   numberValue,
+  resolveVoItemChangeType,
   todayBangkok,
+  voFinancialEffect,
   type VoItemInput,
   type VoRecord,
 } from "@/lib/variationOrders";
+import { parseVoSpreadsheetRows, type VoSpreadsheetParseResult } from "@/lib/variationOrderSpreadsheet";
 
 type Project = {
   project_id: string;
@@ -58,6 +74,39 @@ type ApiResponse = {
   ledger: Array<Record<string, string | number | undefined>>;
   audit_logs: Array<Record<string, string | number | undefined>>;
 };
+
+type CustomerItemDecision = {
+  item_key?: string;
+  item_no?: string | number;
+  description?: string;
+  amount?: string | number;
+  decision?: "approved" | "rejected";
+  note?: string;
+};
+
+function taskOrder(task: TaskRecord) {
+  return Number(task.order_index || 0) || 999999;
+}
+
+function getTaskDepth(task: TaskRecord, taskMap: Map<string, TaskRecord>) {
+  let depth = 0;
+  let parentId = String(task.parent_task_id || "");
+  const seen = new Set<string>([task.task_id]);
+
+  while (parentId && !seen.has(parentId)) {
+    const parent = taskMap.get(parentId);
+    if (!parent) break;
+    depth += 1;
+    seen.add(parentId);
+    parentId = String(parent.parent_task_id || "");
+  }
+
+  return depth;
+}
+
+function getHeadingLevelLabel(task: TaskRecord, taskMap: Map<string, TaskRecord>) {
+  return `H${getTaskDepth(task, taskMap) + 1}`;
+}
 
 type CreateForm = {
   vo_type: string;
@@ -93,9 +142,33 @@ const emptyCreateForm: CreateForm = {
   supporting_docs: "",
   approval_deadline_days: "14",
   items: [
-    { item_no: 1, description: "", unit: "LS", quantity: "1", unit_price: "" },
+    { item_no: 1, sort_order: 1, row_type: "group", change_type: "add", description: "", unit: "LS", quantity: "1", unit_price: "" },
+    { item_no: 2, sort_order: 2, row_type: "detail", parent_item_no: 1, description: "", unit: "", quantity: "1", unit_price: "" },
   ],
 };
+
+function calculationForItems(items: VoItemInput[], voType: string = "VO+") {
+  return calculateVoTotals({ items, defaultVoType: asVoType(voType), tax: { vat_exempt: true } });
+}
+
+function normalizeEditorItems(items: VoItemInput[]) {
+  let groupNo = 0;
+  let currentGroupNo = 0;
+  return items.map((item, index) => {
+    const rowType = asVoItemRowType(String(item.row_type || ""));
+    if (rowType === "group") {
+      groupNo += 1;
+      currentGroupNo = groupNo;
+    }
+    return {
+      ...item,
+      item_no: rowType === "group" ? currentGroupNo : index + 1,
+      sort_order: index + 1,
+      row_type: rowType,
+      parent_item_no: rowType === "group" ? "" : currentGroupNo || 1,
+    } satisfies VoItemInput;
+  });
+}
 
 const emptyEvidence = {
   client_approved_by: "",
@@ -119,15 +192,44 @@ const emptyPlan = {
 };
 
 const tabs = [
-  { key: "create", label: "กรอก / แนบหลักฐาน", icon: Plus },
+  { key: "history", label: "รายการ / ประวัติ", icon: FileText },
+  { key: "create", label: "เพิ่มงานใหม่", icon: Plus },
   { key: "plan", label: "เข้าแผนงาน", icon: Workflow },
-  { key: "history", label: "ประวัติ / Print ทั้งหมด", icon: FileText },
 ];
 
 const PLAN_ELIGIBLE_STATUSES = new Set(["approved", "billed", "partial_payment", "paid", "overdue"]);
 
 function canAddVoToPlan(vo?: VoRecord) {
   return PLAN_ELIGIBLE_STATUSES.has(asVoStatus(String(vo?.status || "")));
+}
+
+function rejectionReasonFor(vo?: VoRecord) {
+  if (!vo?.rejection_json) return "";
+  try {
+    const rejection = JSON.parse(String(vo.rejection_json)) as { reason?: unknown };
+    return String(rejection.reason || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function customerItemDecisionsFor(vo?: VoRecord) {
+  if (!vo) return [];
+  const parse = (value: unknown) => {
+    try {
+      return JSON.parse(String(value || "{}")) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+  const evidence = parse(vo.evidence_json);
+  const rejection = parse(vo.rejection_json);
+  const decisions = Array.isArray(evidence.item_decisions)
+    ? evidence.item_decisions
+    : Array.isArray(rejection.item_decisions)
+      ? rejection.item_decisions
+      : [];
+  return decisions as CustomerItemDecision[];
 }
 
 type VoPermissions = {
@@ -148,7 +250,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const { data, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
   const vos = useMemo(() => data?.data || [], [data?.data]);
   const tasks = useMemo(() => data?.tasks || [], [data?.tasks]);
-  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading"), [tasks]);
+  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading").sort((a, b) => taskOrder(a) - taskOrder(b)), [tasks]);
   const workTasks = useMemo(() => tasks.filter((task) => task.task_type !== "heading"), [tasks]);
   const normalizedRole = String(userRole || "").toLowerCase();
   const isClient = normalizedRole === "client";
@@ -172,20 +274,20 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
       return true;
     });
   }, [isClient, permissions]);
-  const [activeTab, setActiveTab] = useState(permissions.create && !isClient ? "create" : "history");
+  const [activeTab, setActiveTab] = useState("history");
   const [selectedVoId, setSelectedVoId] = useState("");
   const [editingVoId, setEditingVoId] = useState("");
   const [createForm, setCreateForm] = useState<CreateForm>({
     ...emptyCreateForm,
     client_name: project.client || "",
   });
-  const [supportingDocFiles, setSupportingDocFiles] = useState<File[]>([]);
   const [plan, setPlan] = useState(emptyPlan);
   const [loadingAction, setLoadingAction] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [documentHtml, setDocumentHtml] = useState("");
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
 
   const selectedVoFromState = useMemo(() => {
     return vos.find((vo) => vo.vo_id === selectedVoId) || vos[0];
@@ -213,14 +315,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   }, [data?.documents, selectedVo]);
 
   const stats = useMemo(() => {
-    const approvedStatuses = new Set(["approved", "billed", "partial_payment", "paid", "overdue", "work_unlocked"]);
-    const approvedVos = vos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
-    const addAmount = approvedVos
-      .filter((vo) => asVoType(String(vo.vo_type || "")) === "VO+")
-      .reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
-    const deductAmount = approvedVos
-      .filter((vo) => asVoType(String(vo.vo_type || "")) === "VO-")
-      .reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
+    const approvedVos = vos.filter(isVoFinanciallyActive);
+    const effects = approvedVos.map(voFinancialEffect);
+    const addAmount = effects.filter((amount) => amount > 0).reduce((sum, amount) => sum + amount, 0);
+    const deductAmount = Math.abs(effects.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
     const extensionDays = approvedVos.reduce((sum, vo) => sum + numberValue(vo.extension_days), 0);
     return {
       count: vos.length,
@@ -262,53 +360,79 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   };
 
   const createVo = async () => {
-    if (!createForm.amount.trim() || numberValue(createForm.amount) <= 0) {
+    if (!createForm.title.trim()) {
       setMessage("");
-      setError("กรุณากรอกมูลค่างานเพิ่ม/งานลด");
+      setError("กรุณากรอกชื่องาน");
       return;
     }
-    if (!editingVoId && supportingDocFiles.length === 0 && !createForm.supporting_docs.trim()) {
+    const approvalDeadlineDays = numberValue(createForm.approval_deadline_days);
+    if (approvalDeadlineDays < 1 || approvalDeadlineDays > 90) {
       setMessage("");
-      setError("กรุณาแนบเอกสาร ใบเสร็จ/บิล หรือแคปหน้าจอจากลูกค้า");
+      setError("กรุณากำหนดระยะเวลาตอบกลับระหว่าง 1–90 วัน");
       return;
     }
-    const supportingUploads = await Promise.all(supportingDocFiles.map(fileToUploadPayload));
+    const calculation = calculationForItems(createForm.items, createForm.vo_type);
+    if (calculation.increase_total + calculation.decrease_total <= 0) {
+      setMessage("");
+      setError("กรุณากรอกรายการงานและมูลค่ารวมให้มากกว่า 0 บาท");
+      return;
+    }
     const result = await postAction(editingVoId ? "update_vo" : "create_vo", {
       ...(editingVoId ? { vo_id: editingVoId } : {}),
       ...createForm,
       vat_exempt: true,
       withholding_tax: "0",
-      items: [
-        {
-          item_no: 1,
-          description: createForm.title || createForm.description || "งานเพิ่ม-ลด",
-          unit: "LS",
-          quantity: "1",
-          unit_price: createForm.amount,
-        },
-      ],
-      supporting_doc_uploads: supportingUploads,
+      vo_type: calculation.vo_type,
+      amount: String(calculation.grand_total),
+      items: normalizeEditorItems(createForm.items),
     });
     if (result?.data?.vo_id) {
       setSelectedVoId(result.data.vo_id);
       setEditingVoId("");
       setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
-      setSupportingDocFiles([]);
-      setActiveTab(permissions.addToPlan ? "plan" : "history");
+      setActiveTab("history");
     }
   };
 
   const startEditVo = (vo: VoRecord & { items?: VoItemInput[] }) => {
-    const firstItem = Array.isArray(vo.items) ? vo.items[0] : undefined;
+    const existingItems = Array.isArray(vo.items) && vo.items.length > 0
+      ? normalizeEditorItems(vo.items.map((item, index) => ({
+          item_no: item.item_no || index + 1,
+          sort_order: item.sort_order || index + 1,
+          row_type: asVoItemRowType(String(item.row_type || "")),
+          change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(String(vo.vo_type || "VO+"))),
+          parent_item_no: item.parent_item_no,
+          description: String(item.description || ""),
+          unit: String(item.unit || "LS"),
+          quantity: String(item.quantity || "1"),
+          unit_price: String(item.unit_price || ""),
+          material_unit_price: String(item.material_unit_price || ""),
+          material_amount: String(item.material_amount || ""),
+          labor_unit_price: String(item.labor_unit_price || (!item.material_unit_price && !item.labor_unit_price ? item.unit_price || "" : "")),
+          labor_amount: String(item.labor_amount || ""),
+          amount: String(item.amount || ""),
+        })))
+      : [{
+          item_no: 1,
+          sort_order: 1,
+          row_type: "group",
+          change_type: asVoType(String(vo.vo_type || "VO+")) === "VO-" ? "deduct" : "add",
+          description: String(vo.title || vo.description || "งานเพิ่ม-ลด"),
+          unit: "LS",
+          quantity: "1",
+          unit_price: String(vo.grand_total || vo.subtotal || ""),
+        }];
     setSelectedVoId(vo.vo_id);
     setEditingVoId(vo.vo_id);
     setCreateForm({
       vo_type: String(vo.vo_type || "VO+"),
       title: String(vo.title || ""),
       description: String(vo.description || ""),
-      amount: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
+      amount: String(calculationForItems(existingItems, String(vo.vo_type || "VO+")).grand_total),
       extension_days: String(vo.extension_days || "0"),
-      status: ["draft", "pending_approval", "rejected"].includes(String(vo.status || "")) ? String(vo.status || "") : "pending_approval",
+      status: String(vo.status || "") === "rejected"
+        ? "draft"
+        : ["draft", "pending_approval"].includes(String(vo.status || "")) ? String(vo.status || "") : "pending_approval",
       client_name: String(vo.client_name || project.client || ""),
       source_type: String(vo.source_type || "client_request"),
       source_ref_id: String(vo.source_ref_id || ""),
@@ -317,17 +441,8 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
       withholding_tax: String(vo.withholding_tax || "0"),
       supporting_docs: String(vo.supporting_docs || ""),
       approval_deadline_days: "14",
-      items: [
-        {
-          item_no: 1,
-          description: String(firstItem?.description || vo.title || vo.description || "งานเพิ่ม-ลด"),
-          unit: String(firstItem?.unit || "LS"),
-          quantity: String(firstItem?.quantity || "1"),
-          unit_price: String(firstItem?.unit_price || vo.grand_total || vo.subtotal || ""),
-        },
-      ],
+      items: existingItems,
     });
-    setSupportingDocFiles([]);
     setActiveTab("create");
     setMessage(`กำลังแก้ไข ${vo.vo_id}`);
     setError("");
@@ -336,8 +451,9 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   const cancelEdit = () => {
     setEditingVoId("");
     setCreateForm({ ...emptyCreateForm, client_name: project.client || "" });
-    setSupportingDocFiles([]);
     setMessage("");
+    setError("");
+    setActiveTab("history");
   };
 
   const addToPlan = async () => {
@@ -359,6 +475,19 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
       vo_id: selectedVo.vo_id,
       origin: window.location.origin,
     });
+  };
+
+  const createRevisionFromApprovedItems = async () => {
+    if (!selectedVo?.vo_id) return;
+    const result = await postAction("create_revision_from_approved_items", { vo_id: selectedVo.vo_id });
+    if (result?.data?.vo_id) {
+      setSelectedVoId(String(result.data.vo_id));
+      setEditingVoId("");
+      setActiveTab("history");
+      setMessage(result.reused
+        ? `เปิด ${result.data.vo_id} ซึ่งเป็นฉบับแก้ไขที่สร้างไว้แล้ว`
+        : `สร้าง ${result.data.vo_id} เป็นฉบับร่างแล้ว กรุณาตรวจสอบก่อนส่งลูกค้า`);
+    }
   };
 
   const printDocument = () => {
@@ -392,6 +521,30 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     setError("");
   };
 
+  const editVo = async (vo: VoRecord & { items?: VoItemInput[] }) => {
+    const status = asVoStatus(String(vo.status || ""));
+    const requiresRecall = status === "pending_approval" && Boolean(vo.approval_token || vo.sent_to_customer_at);
+
+    if (requiresRecall) {
+      const result = await postAction("recall_for_edit", { vo_id: vo.vo_id });
+      if (!result?.data) return;
+
+      const recalledVo = {
+        ...vo,
+        ...result.data,
+        status: "draft",
+        items: vo.items,
+      } as VoRecord & { items?: VoItemInput[] };
+      setDetailDialogOpen(false);
+      startEditVo(recalledVo);
+      setMessage(`เรียกกลับ ${vo.vo_id} แล้ว ลิงก์เดิมถูกยกเลิก กรุณาบันทึกและส่ง LINE ฉบับใหม่`);
+      return;
+    }
+
+    setDetailDialogOpen(false);
+    startEditVo(vo);
+  };
+
   const printVariationOrders = () => {
     document.body.classList.add("printing-variation-orders");
     window.print();
@@ -400,15 +553,17 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
 
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <Metric label="ยอดเงินงานเพิ่มรวม" value={`${formatMoney(stats.addAmount)} บาท`} tone="green" />
-          <Metric label="ยอดเงินงานลดรวม" value={`${formatMoney(stats.deductAmount)} บาท`} tone="red" />
-          <Metric label="ยอดเงินสุทธิ" value={`${formatMoney(stats.netAmount)} บาท`} tone={stats.netAmount >= 0 ? "orange" : "red"} />
-          <Metric label="วันเพิ่มรวม" value={`${formatMoney(stats.extensionDays)} วัน`} tone="sky" />
-          <Metric label="อนุมัติแล้ว" value={`${stats.approved} รายการ`} tone="gray" />
-        </div>
-      </section>
+      {activeTab !== "create" ? (
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <Metric label="ยอดเงินงานเพิ่มรวม" value={`${formatMoney(stats.addAmount)} บาท`} tone="green" />
+            <Metric label="ยอดเงินงานลดรวม" value={`${formatMoney(stats.deductAmount)} บาท`} tone="red" />
+            <Metric label="ยอดเงินสุทธิ" value={`${formatMoney(stats.netAmount)} บาท`} tone={stats.netAmount >= 0 ? "orange" : "red"} />
+            <Metric label="วันเพิ่มรวม" value={`${formatMoney(stats.extensionDays)} วัน`} tone="sky" />
+            <Metric label="อนุมัติแล้ว" value={`${stats.approved} รายการ`} tone="gray" />
+          </div>
+        </section>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {visibleTabs.map((tab) => {
@@ -440,14 +595,12 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className={activeTab === "plan" ? "grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]" : "min-w-0"}>
         <main className="min-w-0">
           {activeTab === "create" && (
             <CreateSection
               form={createForm}
               setForm={setCreateForm}
-              supportingDocFiles={supportingDocFiles}
-              setSupportingDocFiles={setSupportingDocFiles}
               onSubmit={createVo}
               loading={loadingAction === "create_vo" || loadingAction === "update_vo"}
               editingVoId={editingVoId}
@@ -471,7 +624,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               vos={vos}
               auditLogs={data?.audit_logs || []}
               selectedVoId={selectedVo?.vo_id || ""}
-              onSelect={setSelectedVoId}
+              onSelect={(voId) => {
+                setSelectedVoId(voId);
+                setDetailDialogOpen(true);
+              }}
               isLoading={isLoading}
               onPrintAll={openPrintPreview}
               printing={false}
@@ -480,37 +636,76 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
           )}
         </main>
 
-        <aside className="space-y-4">
+        {activeTab === "plan" ? <aside className="space-y-4">
           <SelectedVoPanel
             vo={selectedVo}
             documents={selectedDocuments}
             canSendApproval={permissions.submitToClient}
             canEdit={permissions.create}
             loading={loadingAction === "send_approval"}
+            editLoading={loadingAction === "recall_for_edit"}
+            revisionLoading={loadingAction === "create_revision_from_approved_items"}
             onSendApproval={sendApproval}
-            onEdit={startEditVo}
+            onCreateRevision={createRevisionFromApprovedItems}
+            onEdit={editVo}
           />
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="text-sm font-extrabold text-gray-900">หลักการใช้งาน</div>
             <div className="mt-3 space-y-2 text-sm leading-6 text-gray-600">
               {isClient ? (
                 <>
-                  <p>1. ตรวจรายละเอียด VO และยอดรวมก่อนตัดสินใจ</p>
-                  <p>2. กดยืนยันหรือปฏิเสธผ่านระบบ ระบบจะบันทึกเป็นหลักฐานดิจิทัล</p>
+                  <p>1. ตรวจตารางงานและยอดรวมของแต่ละรายการก่อนตัดสินใจ</p>
+                  <p>2. เลือกอนุมัติหรือไม่อนุมัติ พร้อมใส่หมายเหตุแยกเป็นรายการ</p>
                   <p>3. หากอนุมัติแล้ว ทีมงานจะนำไปวางแผนและออกเอกสารต่อ</p>
                 </>
               ) : (
                 <>
-                  <p>1. วิศวกรกรอกหัวข้องานเพิ่ม-ลด มูลค่า และจำนวนวันเพิ่ม</p>
-                  <p>2. แนบไฟล์เอกสาร ใบเสร็จ/บิล และแคปหน้าจอจากลูกค้า แล้วกดบันทึก</p>
-                  <p>3. ถ้าต้องใช้แผนงาน ให้ทำต่อใน tab เข้าแผนงานเหมือน workflow เดิม</p>
-                  <p>4. tab ประวัติใช้ดูทะเบียนย้อนหลังและ Print ทั้งหมดพร้อม timestamp เวลาโหลดข้อมูล</p>
+                  <p>1. วิศวกรกรอกหัวข้องานและรายการเพิ่ม-ลดในตาราง</p>
+                  <p>2. ส่งลิงก์ให้ลูกค้าเลือกอนุมัติและใส่หมายเหตุแยกเป็นรายการ</p>
+                  <p>3. รายการที่ผ่านการอนุมัติจึงนำไปเพิ่มในแผนงานและออกเอกสารต่อ</p>
+                  <p>4. tab ประวัติใช้ตรวจทะเบียนและสถานะย้อนหลัง</p>
                 </>
               )}
             </div>
           </section>
-        </aside>
+        </aside> : null}
       </div>
+
+      {detailDialogOpen && selectedVo && activeTab === "history" ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-2 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setDetailDialogOpen(false);
+          }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="vo-detail-dialog-title" className="flex h-[calc(100vh-16px)] w-[calc(100vw-16px)] max-w-[1720px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-xs font-extrabold uppercase text-orange-600">Variation Order</div>
+                <h3 id="vo-detail-dialog-title" className="truncate text-lg font-black text-slate-950">รายละเอียด {selectedVo.vo_id}</h3>
+              </div>
+              <button type="button" onClick={() => setDetailDialogOpen(false)} title="ปิด" aria-label="ปิดรายละเอียด VO" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900">
+                <XCircle size={20} />
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto p-3 sm:p-4">
+              <SelectedVoPanel
+                vo={selectedVo}
+                documents={selectedDocuments}
+                canSendApproval={permissions.submitToClient}
+                canEdit={permissions.create}
+                loading={loadingAction === "send_approval"}
+                editLoading={loadingAction === "recall_for_edit"}
+                revisionLoading={loadingAction === "create_revision_from_approved_items"}
+                onSendApproval={sendApproval}
+                onCreateRevision={createRevisionFromApprovedItems}
+                onEdit={editVo}
+                expanded
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {printDialogOpen && (
         <div className="variation-orders-print-dialog fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
@@ -551,17 +746,34 @@ function PipelineSection({
   isLoading,
   selectedVoId,
   onSelect,
+  onPrintAll,
+  printing,
+  canPrintAll,
 }: {
   vos: Array<VoRecord & { items?: VoItemInput[] }>;
   isLoading: boolean;
   selectedVoId: string;
   onSelect: (voId: string) => void;
+  onPrintAll: () => void;
+  printing: boolean;
+  canPrintAll: boolean;
 }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-      <div className="border-b border-gray-100 px-5 py-4">
-        <h3 className="text-lg font-extrabold text-gray-900">รายการงานเพิ่ม-ลด</h3>
-        <p className="text-sm text-gray-500">ติดตามสถานะตั้งแต่ร่าง อนุมัติ วางบิล จนถึงรับชำระ</p>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 px-5 py-4">
+        <div>
+          <h3 className="text-lg font-extrabold text-gray-900">รายการงานเพิ่ม-ลด</h3>
+          <p className="text-sm text-gray-500">ติดตามสถานะตั้งแต่ร่าง อนุมัติ วางบิล จนถึงรับชำระ</p>
+        </div>
+        <button
+          type="button"
+          onClick={onPrintAll}
+          disabled={!canPrintAll || printing}
+          className="inline-flex h-10 items-center gap-2 rounded-md border border-gray-200 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {printing ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
+          Print ทั้งหมด
+        </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
@@ -575,6 +787,7 @@ function PipelineSection({
               <th className="px-4 py-3 text-right">วันเพิ่ม</th>
               <th className="px-4 py-3">แผนงาน</th>
               <th className="px-4 py-3">วันที่บันทึก</th>
+              <th className="w-16 px-4 py-3 text-center">ดู</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -595,14 +808,19 @@ function PipelineSection({
                   <td className="px-4 py-3 text-right font-bold text-sky-700">{formatMoney(vo.extension_days)}</td>
                   <td className="px-4 py-3">{vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : status === "approved" ? "รอเพิ่มเข้าแผน" : "-"}</td>
                   <td className="px-4 py-3">{formatThaiDate(String(vo.created_at || "").slice(0, 10))}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button type="button" title="เปิดรายละเอียด" aria-label={`เปิดรายละเอียด ${vo.vo_id}`} onClick={(event) => { event.stopPropagation(); onSelect(vo.vo_id); }} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-orange-50 hover:text-orange-700">
+                      <Eye size={16} />
+                    </button>
+                  </td>
                 </tr>
               );
             })}
             {vos.length === 0 && !isLoading && (
-              <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
+              <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
             )}
             {isLoading && (
-              <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
+              <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
             )}
           </tbody>
         </table>
@@ -611,20 +829,9 @@ function PipelineSection({
   );
 }
 
-function fileToUploadPayload(file: File) {
-  return new Promise<{ name: string; type: string; dataUrl: string }>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function CreateSection({
   form,
   setForm,
-  supportingDocFiles,
-  setSupportingDocFiles,
   onSubmit,
   loading,
   editingVoId,
@@ -632,138 +839,484 @@ function CreateSection({
 }: {
   form: CreateForm;
   setForm: (next: CreateForm) => void;
-  supportingDocFiles: File[];
-  setSupportingDocFiles: (next: File[]) => void;
   onSubmit: () => void;
   loading: boolean;
   editingVoId?: string;
   onCancelEdit?: () => void;
 }) {
-  const addSupportingFiles = (files: FileList | null) => {
-    const nextFiles = Array.from(files || []);
-    if (nextFiles.length === 0) return;
-    setSupportingDocFiles([...supportingDocFiles, ...nextFiles]);
+  const [importPreview, setImportPreview] = useState<VoSpreadsheetParseResult | null>(null);
+  const [importSourceName, setImportSourceName] = useState("");
+  const [importError, setImportError] = useState("");
+  const [importingSpreadsheet, setImportingSpreadsheet] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
+  const itemCalculation = calculationForItems(form.items, form.vo_type);
+  const calculatedItems = itemCalculation.items;
+  const itemsTotal = itemCalculation.net_change;
+  const groupCount = form.items.filter((item) => asVoItemRowType(String(item.row_type || "")) === "group").length;
+  const detailCount = form.items.filter((item) => asVoItemRowType(String(item.row_type || "")) === "detail").length;
+  useEffect(() => {
+    if (!workspaceExpanded) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWorkspaceExpanded(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [workspaceExpanded]);
+  const rowLabels = useMemo(() => form.items.reduce<{
+    labels: string[];
+    groupNo: number;
+    childNo: number;
+  }>((state, item) => {
+      const rowType = asVoItemRowType(String(item.row_type || ""));
+      if (rowType === "group") {
+        const groupNo = state.groupNo + 1;
+        return { labels: [...state.labels, String(groupNo)], groupNo, childNo: 0 };
+      }
+      if (rowType === "detail") {
+        const childNo = state.childNo + 1;
+        return { labels: [...state.labels, `${Math.max(state.groupNo, 1)}.${childNo}`], groupNo: state.groupNo, childNo };
+      }
+      return { ...state, labels: [...state.labels, ""] };
+    }, { labels: [], groupNo: 0, childNo: 0 }).labels, [form.items]);
+  const setItems = (items: VoItemInput[], formPatch: Partial<CreateForm> = {}) => {
+    const normalizedItems = normalizeEditorItems(items);
+    const calculation = calculationForItems(normalizedItems, String(formPatch.vo_type || form.vo_type));
+    setForm({ ...form, ...formPatch, vo_type: calculation.vo_type, items: normalizedItems, amount: String(calculation.grand_total) });
   };
-  const removeSupportingFile = (index: number) => {
-    setSupportingDocFiles(supportingDocFiles.filter((_file, fileIndex) => fileIndex !== index));
+  const updateItem = (index: number, patch: Partial<VoItemInput>) => {
+    setItems(form.items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  };
+  const addItemRow = (rowType: "group" | "detail" | "note") => {
+    setItems([...form.items, {
+      row_type: rowType,
+      change_type: rowType === "group" ? (form.vo_type === "VO-" ? "deduct" : "add") : undefined,
+      description: "",
+      unit: rowType === "note" ? "" : rowType === "group" ? "LS" : "",
+      quantity: rowType === "note" ? "" : "1",
+      material_unit_price: "",
+      labor_unit_price: "",
+    }]);
+  };
+  const setDocumentType = (voType: string) => {
+    const nextType = asVoType(voType);
+    if (nextType === "VO0") {
+      setForm({ ...form, vo_type: nextType });
+      return;
+    }
+    setItems(form.items.map((item) => (
+      asVoItemRowType(String(item.row_type || "")) === "group"
+        ? { ...item, change_type: nextType === "VO-" ? "deduct" : "add" }
+        : item
+    )), { vo_type: nextType });
+  };
+  const addItemAfter = (index: number, rowType: "detail" | "note") => {
+    const nextGroupIndex = form.items.findIndex((item, itemIndex) => itemIndex > index && asVoItemRowType(String(item.row_type || "")) === "group");
+    const insertIndex = nextGroupIndex === -1 ? form.items.length : nextGroupIndex;
+    setItems([
+      ...form.items.slice(0, insertIndex),
+      {
+        row_type: rowType,
+        description: "",
+        unit: rowType === "note" ? "" : "",
+        quantity: rowType === "note" ? "" : "1",
+        material_unit_price: "",
+        labor_unit_price: "",
+      },
+      ...form.items.slice(insertIndex),
+    ]);
+  };
+  const duplicateItemRow = (index: number) => {
+    const source = form.items[index];
+    if (!source) return;
+    const rowType = asVoItemRowType(String(source.row_type || ""));
+    const nextGroupIndex = rowType === "group"
+      ? form.items.findIndex((item, itemIndex) => itemIndex > index && asVoItemRowType(String(item.row_type || "")) === "group")
+      : -1;
+    const blockEnd = rowType === "group" ? (nextGroupIndex === -1 ? form.items.length : nextGroupIndex) : index + 1;
+    const duplicatedRows = form.items.slice(index, blockEnd).map((item) => ({ ...item, item_no: undefined, sort_order: undefined }));
+    setItems([
+      ...form.items.slice(0, blockEnd),
+      ...duplicatedRows,
+      ...form.items.slice(blockEnd),
+    ]);
+  };
+  const removeItemRow = (index: number) => {
+    const source = form.items[index];
+    if (!source) return;
+    const rowType = asVoItemRowType(String(source.row_type || ""));
+    if (rowType !== "group") {
+      setItems(form.items.filter((_item, itemIndex) => itemIndex !== index));
+      return;
+    }
+    const nextGroupIndex = form.items.findIndex((item, itemIndex) => itemIndex > index && asVoItemRowType(String(item.row_type || "")) === "group");
+    const blockEnd = nextGroupIndex === -1 ? form.items.length : nextGroupIndex;
+    setItems([...form.items.slice(0, index), ...form.items.slice(blockEnd)]);
+  };
+  const showImportPreview = (result: VoSpreadsheetParseResult, sourceName: string) => {
+    setImportPreview(result);
+    setImportSourceName(sourceName);
+    setImportError("");
+  };
+  const importSpreadsheetFile = async (file?: File) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setImportError("ไฟล์ Excel ต้องมีขนาดไม่เกิน 10 MB");
+      return;
+    }
+    setImportingSpreadsheet(true);
+    setImportError("");
+    try {
+      const XLSX = await import("@e965/xlsx");
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellFormula: true, cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = firstSheetName ? workbook.Sheets[firstSheetName] : undefined;
+      if (!worksheet) throw new Error("ไม่พบ Worksheet ในไฟล์ Excel");
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, raw: true, defval: null });
+      showImportPreview(parseVoSpreadsheetRows(rows), file.name);
+    } catch (spreadsheetError) {
+      setImportPreview(null);
+      setImportError(spreadsheetError instanceof Error ? spreadsheetError.message : "อ่านไฟล์ Excel ไม่สำเร็จ");
+    } finally {
+      setImportingSpreadsheet(false);
+    }
+  };
+  const previewPastedRows = () => {
+    const rows = pasteText
+      .split(/\r?\n/)
+      .map((row) => row.split("\t"))
+      .filter((row) => row.some((cell) => cell.trim()));
+    showImportPreview(parseVoSpreadsheetRows(rows, { allowHeaderless: true }), "ข้อมูลที่วางจาก Excel");
+  };
+  const applyImportedItems = (mode: "replace" | "append") => {
+    if (!importPreview || importPreview.errors.length > 0 || importPreview.items.length === 0) return;
+    const nextItems = mode === "replace" ? importPreview.items : [...form.items, ...importPreview.items];
+    const firstGroup = importPreview.items.find((item) => item.row_type === "group");
+    setItems(nextItems, { title: form.title || String(firstGroup?.description || "") });
+    setImportPreview(null);
+    setImportSourceName("");
+    setImportError("");
+    setPasteText("");
+    setPasteOpen(false);
   };
 
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="mb-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="text-lg font-extrabold text-gray-900">{editingVoId ? `แก้ไขใบแนบหลักฐาน ${editingVoId}` : "บันทึกงานเพิ่ม-ลดแบบแนบหลักฐาน"}</h3>
-            <p className="text-sm text-gray-500">
-              {editingVoId
-                ? "แก้ไขข้อมูลก่อนลูกค้าอนุมัติได้ หากส่ง LINE ไปแล้วให้กดส่งอีกครั้งหลังบันทึก เพื่อให้ลูกค้าเห็นข้อมูลล่าสุด"
-                : "กรอกเฉพาะหัวข้องาน ยอดตามหลักฐาน วันเพิ่ม และแนบไฟล์อ้างอิงสำหรับเก็บเป็นหลักฐานไซต์งาน"}
-            </p>
-          </div>
-          {editingVoId && onCancelEdit ? (
-            <button type="button" onClick={onCancelEdit} className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50">
-              <XCircle size={16} />
-              ยกเลิกแก้ไข
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="mb-5 rounded-2xl border border-orange-100 bg-orange-50 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <div className="text-xs font-extrabold uppercase tracking-wide text-orange-600">Evidence-first VO</div>
-            <div className="mt-1 text-sm font-bold text-gray-900">ใช้เป็นใบสรุปงานเพิ่ม/งานลดจากหลักฐานที่แนบ สำหรับอ้างอิงในไซต์งาน</div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs font-bold text-orange-800 sm:grid-cols-3">
-            <span className="rounded-lg bg-white px-3 py-2">ยอดตามหลักฐาน</span>
-            <span className="rounded-lg bg-white px-3 py-2">ไฟล์อ้างอิง</span>
-            <span className="rounded-lg bg-white px-3 py-2">บันทึกไซต์งาน</span>
-          </div>
-        </div>
-      </div>
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Field label="ประเภทงาน">
-          <select value={form.vo_type} onChange={(event) => setForm({ ...form, vo_type: event.target.value })} className="form-input bg-white">
-            <option value="VO+">งานเพิ่ม</option>
-            <option value="VO-">งานลด</option>
-            <option value="VO0">งานสับเปลี่ยน</option>
-          </select>
-        </Field>
-        <Field label="ชื่องาน / รายการหลัก">
-          <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" placeholder="เช่น เปลี่ยนแปลงแบบ, งานโครงสร้าง, งานเพิ่มจากลูกค้า" />
-        </Field>
-        <Field label="อ้างอิงหลักฐาน">
-          <input value={form.source_ref_id} onChange={(event) => setForm({ ...form, source_ref_id: event.target.value })} className="form-input" placeholder="เช่น เลขใบเสนอราคา, ใบเสร็จ, แชท LINE" />
-        </Field>
-        <Field label="ยอดตามหลักฐาน (บาท)">
-          <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} className="form-input" inputMode="decimal" placeholder="0.00" />
-        </Field>
-        <Field label="จำนวนวันเพิ่ม">
-          <input value={form.extension_days} onChange={(event) => setForm({ ...form, extension_days: event.target.value })} className="form-input" inputMode="numeric" placeholder="0" />
-        </Field>
-        <Field label="สถานะ">
-          <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="form-input bg-white">
-            <option value="approved">อนุมัติแล้ว / ลูกค้ายืนยันแล้ว</option>
-            <option value="pending_approval">รอลูกค้ายืนยัน</option>
-            <option value="draft">บันทึกร่าง</option>
-            <option value="rejected">ไม่อนุมัติ</option>
-          </select>
-        </Field>
-      </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Field label="เหตุผล / รายละเอียดสั้น ๆ">
-          <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={4} className="form-input resize-none" placeholder="สรุปว่าทำไมต้องเพิ่ม/ลดงานนี้ และลูกค้ารับทราบจากช่องทางไหน" />
-        </Field>
-        <Field label="หลักฐานแนบ / หมายเหตุ">
-          <div className="space-y-3">
-            <textarea value={form.supporting_docs} onChange={(event) => setForm({ ...form, supporting_docs: event.target.value })} rows={4} className="form-input resize-none" placeholder="อธิบายว่าแนบอะไร เช่น ใบเสร็จ, บิล, แคปหน้าจอ LINE, รูปหน้างาน" />
-            <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/60 p-4">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-orange-700">
-                <Paperclip size={16} />
-                แนบไฟล์หลักฐาน
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx"
-                  className="sr-only"
-                  onChange={(event) => {
-                    addSupportingFiles(event.target.files);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-              <p className="mt-2 text-xs font-semibold text-orange-800">แนบรูปแคปหน้าจอ, PDF, Word, Excel หรือรูปหน้างานได้หลายไฟล์</p>
-              {supportingDocFiles.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {supportingDocFiles.map((file, index) => (
-                    <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm">
-                      <span className="truncate">{file.name}</span>
-                      <button type="button" onClick={() => removeSupportingFile(index)} className="font-bold text-red-600">ลบ</button>
-                    </div>
-                  ))}
-                </div>
-              )}
+    <section className={workspaceExpanded
+      ? "fixed inset-0 z-[70] flex min-w-0 flex-col overflow-hidden border-t-4 border-t-orange-600 bg-white shadow-2xl"
+      : "min-w-0 overflow-hidden rounded-md border border-gray-200 border-t-4 border-t-orange-600 bg-white shadow-sm"}>
+      <div className="flex flex-col gap-3 border-b border-gray-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-orange-600 text-white">
+              <FileSpreadsheet size={18} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-extrabold text-gray-950">{editingVoId ? `แก้ไข ${editingVoId}` : "ใบงานเพิ่ม-ลดฉบับใหม่"}</h3>
+              <p className="text-xs font-semibold text-gray-500">{groupCount} หมวดงาน · {detailCount} รายการย่อย</p>
             </div>
           </div>
-        </Field>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setWorkspaceExpanded((current) => !current)}
+              title={workspaceExpanded ? "ย่อหน้าจอ" : "ขยายพื้นที่ทำงาน"}
+              aria-label={workspaceExpanded ? "ย่อพื้นที่ทำงานตาราง" : "ขยายพื้นที่ทำงานตาราง"}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-bold text-gray-700 hover:bg-gray-100"
+            >
+              {workspaceExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              <span className="hidden sm:inline">{workspaceExpanded ? "ย่อหน้าจอ" : "ขยายตาราง"}</span>
+            </button>
+            {editingVoId && onCancelEdit ? (
+              <button type="button" onClick={onCancelEdit} className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-bold text-gray-700 hover:bg-gray-100">
+                <XCircle size={16} />
+                ยกเลิกแก้ไข
+              </button>
+            ) : null}
+            <button type="button" onClick={onSubmit} disabled={loading} className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-orange-600 px-4 text-xs font-extrabold text-white shadow-sm hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+              {editingVoId ? "บันทึกการแก้ไข" : "บันทึกใบงาน"}
+            </button>
+          </div>
       </div>
-      <div className="mt-5 grid gap-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 text-sm sm:grid-cols-3">
-        <div>
-          <p className="font-bold text-gray-500">ยอดตามหลักฐาน</p>
-          <p className="mt-1 text-xl font-extrabold text-gray-950">{formatMoney(form.amount)} บาท</p>
+      <div className="grid shrink-0 grid-cols-2 gap-3 px-4 py-3 xl:grid-cols-[140px_minmax(260px,1.35fr)_minmax(220px,1fr)_110px_150px_180px]">
+        <div className="order-1 xl:order-none">
+          <Field label="ประเภทงาน">
+            <select value={form.vo_type} onChange={(event) => setDocumentType(event.target.value)} className="form-input bg-white">
+              <option value="VO+">งานเพิ่ม</option>
+              <option value="VO-">งานลด</option>
+              <option value="VO0">งานเพิ่ม-ลด (ผสม)</option>
+            </select>
+          </Field>
         </div>
-        <div>
-          <p className="font-bold text-gray-500">วันเพิ่ม</p>
-          <p className="mt-1 text-xl font-extrabold text-sky-700">{formatMoney(form.extension_days)} วัน</p>
+        <div className="order-3 col-span-2 xl:order-none xl:col-span-1">
+          <Field label="ชื่อเอกสาร / เรื่อง">
+            <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" placeholder="เช่น เปลี่ยนแปลงแบบ, งานโครงสร้าง, งานเพิ่มจากลูกค้า" />
+          </Field>
         </div>
-        <div>
-          <p className="font-bold text-gray-500">รูปแบบเอกสาร</p>
-          <p className="mt-1 text-sm font-bold text-gray-700">ใบสรุปหลักฐาน</p>
+        <div className="order-4 col-span-2 xl:order-none xl:col-span-1">
+          <Field label="อ้างอิงหลักฐาน">
+            <input value={form.source_ref_id} onChange={(event) => setForm({ ...form, source_ref_id: event.target.value })} className="form-input" placeholder="เช่น เลขใบเสนอราคา, ใบเสร็จ, แชท LINE" />
+          </Field>
+        </div>
+        <div className="order-5 xl:order-none">
+          <Field label="จำนวนวันเพิ่ม">
+            <input value={form.extension_days} onChange={(event) => setForm({ ...form, extension_days: event.target.value })} className="form-input" inputMode="numeric" placeholder="0" />
+          </Field>
+        </div>
+        <div className="order-6 xl:order-none">
+          <Field label="กำหนดตอบกลับ (วัน)">
+            <input
+              type="number"
+              min="1"
+              max="90"
+              value={form.approval_deadline_days}
+              onChange={(event) => setForm({ ...form, approval_deadline_days: event.target.value })}
+              className="form-input"
+              inputMode="numeric"
+            />
+          </Field>
+        </div>
+        <div className="order-2 xl:order-none">
+          <Field label="สถานะ">
+            <div className="grid h-10 grid-cols-2 overflow-hidden rounded-md border border-gray-200 bg-gray-100 p-0.5">
+              <button type="button" onClick={() => setForm({ ...form, status: "pending_approval" })} className={`rounded px-2 text-xs font-extrabold ${form.status === "pending_approval" ? "bg-white text-orange-700 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>รอยืนยัน</button>
+              <button type="button" onClick={() => setForm({ ...form, status: "draft" })} className={`rounded px-2 text-xs font-extrabold ${form.status === "draft" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>ฉบับร่าง</button>
+            </div>
+          </Field>
         </div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
-        <button type="button" onClick={onSubmit} disabled={loading} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
-          {loading ? <Loader2 size={17} className="animate-spin" /> : <CheckCircle2 size={17} />}
+      <div className={`border-t border-gray-200 ${workspaceExpanded ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => addItemRow("group")} className="inline-flex h-9 items-center gap-2 rounded-md bg-gray-900 px-3 text-xs font-extrabold text-white hover:bg-black">
+              <Plus size={15} /> รายการหลัก
+            </button>
+            <button type="button" onClick={() => addItemRow("detail")} className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+              <Plus size={15} /> รายละเอียดย่อย
+            </button>
+            <button type="button" onClick={() => addItemRow("note")} className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+              <Plus size={15} /> หมายเหตุ
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => setPasteOpen((current) => !current)} className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-xs font-extrabold text-gray-700 hover:bg-gray-50">
+              <ClipboardPaste size={15} /> วาง Excel
+            </button>
+            <label className={`inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-extrabold text-blue-800 hover:bg-blue-100 ${importingSpreadsheet ? "pointer-events-none opacity-60" : ""}`}>
+              {importingSpreadsheet ? <Loader2 size={15} className="animate-spin" /> : <FileSpreadsheet size={15} />}
+              Import
+              <input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                className="sr-only"
+                onChange={(event) => {
+                  void importSpreadsheetFile(event.target.files?.[0]);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+            <a href="/templates/pcm-vo-import-template.xlsx" download title="ดาวน์โหลด Excel Template" className="inline-flex h-9 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 text-xs font-extrabold text-emerald-800 hover:bg-emerald-100">
+              <Download size={15} /> Template
+            </a>
+          </div>
+        </div>
+        {pasteOpen ? (
+          <div className="mt-3 grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <label className="block min-w-0">
+              <span className="text-xs font-extrabold text-gray-700">ข้อมูลจาก Excel</span>
+              <textarea
+                value={pasteText}
+                onChange={(event) => setPasteText(event.target.value)}
+                rows={4}
+                className="mt-1 w-full resize-y rounded-md border border-gray-200 bg-white px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-blue-100"
+                placeholder="วางตารางที่คัดลอกจาก Excel"
+              />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => { setPasteOpen(false); setPasteText(""); }} className="inline-flex min-h-10 items-center justify-center rounded-md border border-gray-200 bg-white px-4 text-xs font-extrabold text-gray-700 hover:bg-gray-100">ยกเลิก</button>
+              <button type="button" onClick={previewPastedRows} disabled={!pasteText.trim()} className="inline-flex min-h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-xs font-extrabold text-white hover:bg-blue-800 disabled:opacity-40">ตรวจข้อมูล</button>
+            </div>
+          </div>
+        ) : null}
+        {importError ? (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+            <XCircle size={16} className="mt-0.5 shrink-0" /> {importError}
+          </div>
+        ) : null}
+        {importPreview ? (
+          <div className={`mt-3 rounded-lg border p-4 ${importPreview.errors.length > 0 ? "border-red-200 bg-red-50" : "border-emerald-200 bg-emerald-50"}`}>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-gray-900">
+                  <FileSpreadsheet size={17} />
+                  <span className="truncate">{importSourceName}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-bold text-gray-700">
+                  <span>รายการหลัก {importPreview.counts.group}</span>
+                  <span>รายการย่อย {importPreview.counts.detail}</span>
+                  <span>หมายเหตุ {importPreview.counts.note}</span>
+                  <span>ยอดสุทธิ {formatMoney(calculationForItems(importPreview.items).net_change)} บาท</span>
+                </div>
+                {importPreview.errors.length > 0 ? (
+                  <ul className="mt-2 space-y-1 text-xs font-bold text-red-700">
+                    {importPreview.errors.slice(0, 6).map((item) => <li key={item}>• {item}</li>)}
+                  </ul>
+                ) : null}
+                {importPreview.warnings.length > 0 ? (
+                  <ul className="mt-2 space-y-1 text-xs font-semibold text-amber-800">
+                    {importPreview.warnings.slice(0, 6).map((item) => <li key={item}>• {item}</li>)}
+                  </ul>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <button type="button" onClick={() => { setImportPreview(null); setImportSourceName(""); }} className="inline-flex min-h-10 items-center justify-center rounded-md border border-gray-200 bg-white px-4 text-xs font-extrabold text-gray-700 hover:bg-gray-100">ยกเลิก</button>
+                <button type="button" onClick={() => applyImportedItems("append")} disabled={importPreview.errors.length > 0 || importPreview.items.length === 0} className="inline-flex min-h-10 items-center justify-center rounded-md border border-blue-200 bg-white px-4 text-xs font-extrabold text-blue-800 hover:bg-blue-50 disabled:opacity-40">เพิ่มต่อท้าย</button>
+                <button type="button" onClick={() => applyImportedItems("replace")} disabled={importPreview.errors.length > 0 || importPreview.items.length === 0} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-emerald-700 px-4 text-xs font-extrabold text-white hover:bg-emerald-800 disabled:opacity-40">
+                  <CheckCircle2 size={15} /> ใช้รายการนี้
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        <div className={workspaceExpanded
+          ? "min-h-0 flex-1 overflow-auto border-y border-gray-300 bg-white"
+          : "max-h-[calc(100vh-330px)] min-h-[280px] overflow-auto border-y border-gray-300 bg-white"}>
+          <table className="w-full min-w-[1320px] table-fixed border-collapse text-xs">
+            <thead className="sticky top-0 z-30 text-white shadow-sm">
+              <tr>
+                <th rowSpan={2} className="w-28 border border-slate-700 bg-slate-900 px-2 py-2 text-center">เพิ่ม / ลด</th>
+                <th rowSpan={2} className="w-14 border border-slate-700 bg-slate-900 px-2 py-2 text-center">#</th>
+                <th rowSpan={2} className="w-[420px] border border-slate-700 bg-slate-900 px-3 py-2 text-left">รายการงาน</th>
+                <th rowSpan={2} className="w-20 border border-slate-700 bg-slate-900 px-2 py-2 text-right">ปริมาณ</th>
+                <th rowSpan={2} className="w-16 border border-slate-700 bg-slate-900 px-2 py-2 text-left">หน่วย</th>
+                <th colSpan={2} className="border border-slate-700 bg-slate-900 px-2 py-2 text-center">ค่าวัสดุ</th>
+                <th colSpan={2} className="border border-slate-700 bg-slate-900 px-2 py-2 text-center">ค่าแรง</th>
+                <th rowSpan={2} className="w-28 border border-slate-700 bg-slate-900 px-2 py-2 text-right">รวมเป็นเงิน</th>
+                <th rowSpan={2} className="w-28 border border-slate-700 bg-slate-900 px-2 py-2 xl:sticky xl:right-0 xl:z-40" aria-label="เครื่องมือ" />
+              </tr>
+              <tr className="bg-slate-800 text-slate-200">
+                <th className="w-24 border border-slate-700 px-2 py-1.5 text-right">หน่วยละ</th>
+                <th className="w-24 border border-slate-700 px-2 py-1.5 text-right">รวม</th>
+                <th className="w-24 border border-slate-700 px-2 py-1.5 text-right">หน่วยละ</th>
+                <th className="w-24 border border-slate-700 px-2 py-1.5 text-right">รวม</th>
+              </tr>
+            </thead>
+            <tbody>
+              {form.items.map((item, index) => {
+                const rowType = asVoItemRowType(String(item.row_type || ""));
+                const calculated = calculatedItems.find((row) => row.sort_order === index + 1);
+                const changeType = calculated?.change_type || asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(form.vo_type));
+                const isDeduct = changeType === "deduct";
+                if (rowType === "group") {
+                  return (
+                    <tr key={index} className={`${isDeduct ? "bg-red-50" : "bg-blue-50"} font-bold text-slate-900`}>
+                      <td className="border border-slate-300 p-1.5">
+                        <div className="grid h-8 grid-cols-2 overflow-hidden rounded border border-slate-300 bg-white p-0.5">
+                          <button type="button" title="กำหนดเป็นงานเพิ่ม" aria-label={`กำหนดหมวด ${rowLabels[index]} เป็นงานเพิ่ม`} onClick={() => updateItem(index, { change_type: "add" })} className={`rounded text-xs font-black ${!isDeduct ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-blue-50 hover:text-blue-700"}`}>+</button>
+                          <button type="button" title="กำหนดเป็นงานลด" aria-label={`กำหนดหมวด ${rowLabels[index]} เป็นงานลด`} onClick={() => updateItem(index, { change_type: "deduct" })} className={`rounded text-xs font-black ${isDeduct ? "bg-red-600 text-white" : "text-slate-400 hover:bg-red-50 hover:text-red-700"}`}>−</button>
+                        </div>
+                      </td>
+                      <td className={`border border-slate-300 px-2 py-2 text-center text-sm font-black ${isDeduct ? "text-red-800" : "text-blue-900"}`}>{rowLabels[index]}</td>
+                      <td colSpan={7} className="border-y border-slate-300 p-1">
+                        <div className="flex items-center gap-2 px-2">
+                          <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-black ${isDeduct ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>{isDeduct ? "งานลด" : "งานเพิ่ม"}</span>
+                          <input value={String(item.description || "")} onChange={(event) => updateItem(index, { description: event.target.value })} className={`h-10 min-w-0 flex-1 border-0 bg-transparent px-2 text-sm font-extrabold outline-none placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-inset ${isDeduct ? "focus:ring-red-400" : "focus:ring-blue-400"}`} placeholder="ชื่อหมวดงาน เช่น งานหลังคา หรืองานปูกระเบื้อง" />
+                        </div>
+                      </td>
+                      <td className={`border border-slate-300 px-3 py-2 text-right text-sm font-black tabular-nums ${isDeduct ? "bg-red-100/70 text-red-800" : "bg-blue-100/70 text-blue-900"}`}>{isDeduct ? "−" : "+"}{formatMoney(calculated?.amount)}</td>
+                      <td className={`border border-slate-300 px-1 text-center xl:sticky xl:right-0 xl:z-10 ${isDeduct ? "bg-red-50" : "bg-blue-50"}`}>
+                        <button type="button" title="เพิ่มรายการย่อยในหมวดนี้" aria-label={`เพิ่มรายการย่อยในหมวด ${rowLabels[index]}`} onClick={() => addItemAfter(index, "detail")} className="inline-flex h-8 w-8 items-center justify-center rounded text-blue-700 hover:bg-blue-100"><Plus size={15} /></button>
+                        <button type="button" title="ทำสำเนาทั้งหมวด" aria-label={`ทำสำเนาหมวด ${rowLabels[index]}`} onClick={() => duplicateItemRow(index)} className="inline-flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-white hover:text-blue-700"><Copy size={15} /></button>
+                        <button type="button" title="ลบหมวด" aria-label={`ลบหมวด ${rowLabels[index]}`} onClick={() => removeItemRow(index)} disabled={groupCount <= 1} className="inline-flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30"><Trash2 size={15} /></button>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                if (rowType === "note") {
+                  return (
+                    <tr key={index} className="bg-amber-50 text-amber-950">
+                      <td className="border border-amber-200 px-3 py-2 text-[11px] font-extrabold">หมายเหตุ</td>
+                      <td className="border border-amber-200 px-2 py-2 text-center text-amber-500">•</td>
+                      <td colSpan={7} className="border-y border-amber-200 p-1">
+                        <input value={String(item.description || "")} onChange={(event) => updateItem(index, { description: event.target.value })} className="h-9 w-full border-0 bg-transparent px-3 italic outline-none placeholder:text-amber-600/60 focus:bg-white focus:ring-2 focus:ring-inset focus:ring-amber-400" placeholder="เงื่อนไขหรือหมายเหตุประกอบรายการ" />
+                      </td>
+                      <td className="border border-amber-200 text-center text-amber-400">-</td>
+                      <td className="border border-amber-200 bg-amber-50 px-1 text-center xl:sticky xl:right-0 xl:z-10">
+                        <button type="button" title="ทำสำเนาแถว" aria-label={`ทำสำเนาแถว ${index + 1}`} onClick={() => duplicateItemRow(index)} className="inline-flex h-8 w-8 items-center justify-center rounded text-amber-700 hover:bg-white"><Copy size={15} /></button>
+                        <button type="button" title="ลบแถว" aria-label={`ลบแถว ${index + 1}`} onClick={() => removeItemRow(index)} disabled={form.items.length <= 1} className="inline-flex h-8 w-8 items-center justify-center rounded text-amber-600 hover:bg-red-50 hover:text-red-700 disabled:opacity-30"><Trash2 size={15} /></button>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                return (
+                  <tr key={index} className="bg-white text-slate-800 hover:bg-slate-50/70">
+                    <td className={`border border-slate-200 px-3 py-2 text-center text-[11px] font-black ${isDeduct ? "text-red-600" : "text-blue-700"}`}>{isDeduct ? "− ลด" : "+ เพิ่ม"}</td>
+                    <td className="border border-slate-200 px-2 py-2 text-center font-bold text-slate-500">{rowLabels[index]}</td>
+                    <td className="border border-slate-200 p-1">
+                      <input value={String(item.description || "")} onChange={(event) => updateItem(index, { description: event.target.value })} className="h-9 w-full border-0 bg-transparent px-3 outline-none placeholder:text-slate-400 focus:bg-orange-50/50 focus:ring-2 focus:ring-inset focus:ring-orange-400" placeholder="รายละเอียดงาน วัสดุ หรือบริการ" />
+                    </td>
+                    {["quantity", "unit", "material_unit_price", "material_amount", "labor_unit_price", "labor_amount", "amount"].map((column) => {
+                      const calculatedValue = calculated?.[column as keyof typeof calculated];
+                      const isEditable = ["quantity", "unit", "material_unit_price", "labor_unit_price"].includes(column);
+                      const value = column === "unit"
+                        ? String(item.unit || "")
+                        : ["material_amount", "labor_amount", "amount"].includes(column)
+                          ? formatMoney(calculatedValue as string | number | undefined)
+                          : String(item[column as keyof VoItemInput] || "");
+                      return (
+                        <td key={column} className={`border border-slate-200 p-1 ${column === "unit" ? "text-left" : "text-right"}`}>
+                          {isEditable ? (
+                            <input
+                              value={value}
+                              onChange={(event) => updateItem(index, { [column]: event.target.value })}
+                              inputMode={column === "unit" ? undefined : "decimal"}
+                              className={`h-9 w-full border-0 bg-transparent px-2 outline-none focus:bg-white focus:ring-2 focus:ring-inset focus:ring-orange-400 ${column === "unit" ? "text-left" : "text-right"}`}
+                            />
+                          ) : <span className={`block px-2 font-bold tabular-nums ${column === "amount" ? (isDeduct ? "text-red-700" : "text-slate-950") : "text-slate-600"}`}>{column === "amount" && isDeduct ? "−" : ""}{value}</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="border border-slate-200 bg-white p-1 text-center xl:sticky xl:right-0 xl:z-10">
+                      <button type="button" title="ทำสำเนาแถว" aria-label={`ทำสำเนาแถว ${index + 1}`} onClick={() => duplicateItemRow(index)} className="inline-flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-blue-50 hover:text-blue-700">
+                        <Copy size={15} />
+                      </button>
+                      <button type="button" title="ลบแถว" aria-label={`ลบแถว ${index + 1}`} onClick={() => removeItemRow(index)} disabled={form.items.length <= 1} className="inline-flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30">
+                        <Trash2 size={15} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              <tr className="bg-white">
+                <td colSpan={11} className="border-t border-dashed border-slate-300 px-4 py-3">
+                  <div className="flex items-center justify-center gap-2">
+                    <button type="button" onClick={() => addItemRow("detail")} className="inline-flex h-9 items-center gap-2 rounded-md border border-dashed border-slate-300 bg-white px-4 text-xs font-extrabold text-slate-600 hover:border-orange-300 hover:bg-orange-50 hover:text-orange-700"><Plus size={15} /> เพิ่มรายการย่อย</button>
+                    <button type="button" onClick={() => addItemRow("note")} className="inline-flex h-9 items-center gap-2 rounded-md px-3 text-xs font-bold text-slate-500 hover:bg-amber-50 hover:text-amber-800"><Plus size={15} /> หมายเหตุ</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className={`${workspaceExpanded ? "shrink-0" : "sticky bottom-0"} z-40 flex flex-col gap-3 border-t border-gray-300 bg-white/95 px-4 py-3 shadow-[0_-10px_24px_rgba(15,23,42,0.08)] backdrop-blur sm:flex-row sm:items-center sm:justify-between`}>
+        <div className="flex flex-wrap items-center gap-x-7 gap-y-2 text-xs">
+          <div><span className="font-bold text-gray-500">รวมงานเพิ่ม</span><span className="ml-2 font-black tabular-nums text-blue-700">+{formatMoney(itemCalculation.increase_total)} บาท</span></div>
+          <div><span className="font-bold text-gray-500">รวมงานลด</span><span className="ml-2 font-black tabular-nums text-red-700">−{formatMoney(itemCalculation.decrease_total)} บาท</span></div>
+          <div><span className="font-bold text-gray-500">ยอดสุทธิ</span><span className={`ml-2 text-xl font-black tabular-nums ${itemsTotal < 0 ? "text-red-700" : "text-gray-950"}`}>{itemsTotal > 0 ? "+" : itemsTotal < 0 ? "−" : ""}{formatMoney(Math.abs(itemsTotal))} บาท</span></div>
+          <div><span className="font-bold text-gray-500">วันเพิ่ม</span><span className="ml-2 font-extrabold tabular-nums text-sky-700">{formatMoney(form.extension_days)} วัน</span></div>
+          <div><span className="font-bold text-gray-500">หมวดงาน</span><span className="ml-2 font-extrabold text-gray-800">{groupCount}</span></div>
+          <div><span className="font-bold text-gray-500">รายการย่อย</span><span className="ml-2 font-extrabold text-gray-800">{detailCount}</span></div>
+        </div>
+        <button type="button" onClick={onSubmit} disabled={loading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-orange-600 px-6 text-sm font-extrabold text-white shadow-sm hover:bg-orange-700 disabled:cursor-wait disabled:opacity-70">
+          {loading ? <Loader2 size={17} className="animate-spin" /> : <Save size={17} />}
           {editingVoId ? "บันทึกการแก้ไข" : "บันทึกงานเพิ่ม-ลด"}
         </button>
       </div>
@@ -989,6 +1542,7 @@ function PlanSection({
   const canPlanSelectedVo = canAddVoToPlan(vo);
   const hasPlanTarget = voType === "VO+" ? headings.length > 0 : workTasks.length > 0;
   const canSubmitPlan = canAddToPlan && canPlanSelectedVo && hasPlanTarget;
+  const headingMap = useMemo(() => new Map(headings.map((task) => [task.task_id, task])), [headings]);
   return (
     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <h3 className="text-lg font-extrabold text-gray-900">เพิ่มเข้าแผนงาน</h3>
@@ -1001,15 +1555,15 @@ function PlanSection({
           ) : null}
           {canPlanSelectedVo && !hasPlanTarget ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-              {voType === "VO+" ? "ยังไม่มีหัวข้อหลักในแผนงาน กรุณาสร้าง H1 ในหน้าแผนงานก่อน" : "ยังไม่มี task ในแผนงานให้เลือก"}
+              {voType === "VO+" ? "ยังไม่มีหัวข้อในแผนงาน กรุณาสร้างหัวข้อในหน้าแผนงานก่อน" : "ยังไม่มี task ในแผนงานให้เลือก"}
             </div>
           ) : null}
           {voType === "VO+" ? (
             <div className="grid gap-4 lg:grid-cols-2">
               <Field label="หัวข้อหลัก">
                 <select value={plan.parent_task_id} onChange={(event) => setPlan({ ...plan, parent_task_id: event.target.value })} className="form-input bg-white">
-                  <option value="">เลือกหัวข้อหลัก</option>
-                  {headings.map((task) => <option key={task.task_id} value={task.task_id}>{task.name}</option>)}
+                  <option value="">เลือกหัวข้อแม่</option>
+                  {headings.map((task) => <option key={task.task_id} value={task.task_id}>{getHeadingLevelLabel(task, headingMap)} - {task.name}</option>)}
                 </select>
               </Field>
               <Field label="ชื่องานในแผน">
@@ -1223,47 +1777,17 @@ function HistoryPrintSection({
   printing: boolean;
   canPrintAll: boolean;
 }) {
-  const allSummary = useMemo(() => {
-    const approvedStatuses = new Set(["approved", "billed", "partial_payment", "paid", "overdue", "work_unlocked"]);
-    const approvedVos = vos.filter((vo) => approvedStatuses.has(String(vo.status || "")));
-    const plus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO+").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
-    const minus = approvedVos.filter((vo) => asVoType(String(vo.vo_type || "")) === "VO-").reduce((sum, vo) => sum + numberValue(vo.grand_total), 0);
-    const days = approvedVos.reduce((sum, vo) => sum + numberValue(vo.extension_days), 0);
-    return { plus, minus, net: plus - minus, days, approved: approvedVos.length };
-  }, [vos]);
-
   return (
     <section className="space-y-5">
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-extrabold text-gray-900">ประวัติงานเพิ่ม-ลด</h3>
-            <p className="text-sm text-gray-500">ดูทะเบียนย้อนหลังทั้งหมด แล้วกด Print ทั้งหมดเพื่อออกเอกสารพร้อม timestamp เวลาโหลดข้อมูลสำหรับอ้างอิง</p>
-          </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <button
-              type="button"
-              onClick={onPrintAll}
-              disabled={!canPrintAll || printing}
-              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 font-bold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {printing ? <Loader2 size={17} className="animate-spin" /> : <Printer size={17} />}
-              Print ทั้งหมด
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 grid gap-3 md:grid-cols-5">
-          <Metric label="งานเพิ่มทั้งหมด" value={`${formatMoney(allSummary.plus)} บาท`} tone="green" />
-          <Metric label="งานลดทั้งหมด" value={`${formatMoney(allSummary.minus)} บาท`} tone="red" />
-          <Metric label="สุทธิทั้งหมด" value={`${formatMoney(allSummary.net)} บาท`} tone={allSummary.net >= 0 ? "orange" : "red"} />
-          <Metric label="วันเพิ่มทั้งหมด" value={`${formatMoney(allSummary.days)} วัน`} tone="sky" />
-          <Metric label="อนุมัติแล้ว" value={`${allSummary.approved} รายการ`} />
-        </div>
-        <PipelineSection vos={vos} isLoading={isLoading} selectedVoId={selectedVoId} onSelect={onSelect} />
-      </div>
+      <PipelineSection
+        vos={vos}
+        isLoading={isLoading}
+        selectedVoId={selectedVoId}
+        onSelect={onSelect}
+        onPrintAll={onPrintAll}
+        printing={printing}
+        canPrintAll={canPrintAll}
+      />
 
       <HistoryTable
         title="Audit Trail"
@@ -1303,8 +1827,9 @@ function VariationOrdersPrintDocument({
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date());
-  const paid = vos.reduce((sum, vo) => sum + numberValue(vo.amount_paid), 0);
-  const outstanding = vos.reduce((sum, vo) => sum + numberValue(vo.balance), 0);
+  const financialVos = vos.filter(isVoFinanciallyActive);
+  const paid = financialVos.reduce((sum, vo) => sum + numberValue(vo.amount_paid), 0);
+  const outstanding = financialVos.reduce((sum, vo) => sum + numberValue(vo.balance), 0);
 
   return (
     <div className="variation-orders-print-document bg-white p-8 text-gray-950">
@@ -1355,7 +1880,7 @@ function VariationOrdersPrintDocument({
             <th className="w-40 border border-gray-300 px-2 py-2 text-left">VO No.</th>
             <th className="w-24 border border-gray-300 px-2 py-2 text-left">ประเภท</th>
             <th className="border border-gray-300 px-2 py-2 text-left">ชื่องาน / รายละเอียด</th>
-            <th className="w-28 border border-gray-300 px-2 py-2 text-right">มูลค่า</th>
+            <th className="w-28 border border-gray-300 px-2 py-2 text-right">มูลค่าเสนอ</th>
             <th className="w-28 border border-gray-300 px-2 py-2 text-left">สถานะ</th>
             <th className="w-24 border border-gray-300 px-2 py-2 text-right">วันเพิ่ม</th>
             <th className="w-32 border border-gray-300 px-2 py-2 text-left">แผนงาน</th>
@@ -1447,16 +1972,24 @@ function SelectedVoPanel({
   canSendApproval,
   canEdit,
   loading,
+  editLoading,
+  revisionLoading,
   onSendApproval,
+  onCreateRevision,
   onEdit,
+  expanded = false,
 }: {
   vo?: VoRecord & { items?: VoItemInput[] };
   documents: Array<Record<string, string | number | undefined>>;
   canSendApproval: boolean;
   canEdit: boolean;
   loading: boolean;
+  editLoading: boolean;
+  revisionLoading: boolean;
   onSendApproval: () => void;
+  onCreateRevision: () => void;
   onEdit: (vo: VoRecord & { items?: VoItemInput[] }) => void;
+  expanded?: boolean;
 }) {
   if (!vo) {
     return (
@@ -1467,46 +2000,115 @@ function SelectedVoPanel({
   }
   const type = asVoType(String(vo.vo_type || ""));
   const status = asVoStatus(String(vo.status || ""));
+  const rejectionReason = rejectionReasonFor(vo);
+  const voItems = Array.isArray(vo.items) ? vo.items : [];
+  const itemDecisions = customerItemDecisionsFor(vo);
+  const approvedDecisions = itemDecisions.filter((item) => item.decision === "approved");
+  const rejectedDecisions = itemDecisions.filter((item) => item.decision === "rejected");
+  const approvedAmount = approvedDecisions.reduce((sum, item) => sum + numberValue(item.amount), 0);
+  const customerApprovalNote = String(vo.customer_approval_note || "").trim();
   const canEditVo = canEdit && ["draft", "pending_approval", "rejected", "expired"].includes(status);
+  const requiresRecall = status === "pending_approval" && Boolean(vo.approval_token || vo.sent_to_customer_at);
+  const canCreateRevision = canEdit && status === "rejected" && approvedDecisions.length > 0;
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <section className={expanded ? "bg-white" : "rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-xs font-extrabold uppercase tracking-wide text-orange-600">Selected VO</div>
-          <h3 className="mt-1 text-lg font-extrabold text-gray-900">{vo.vo_id}</h3>
+          <div className="text-xs font-extrabold uppercase text-orange-600">ข้อมูลใบงาน</div>
+          <h3 className="mt-1 text-xl font-black text-gray-950">{vo.title || vo.vo_id}</h3>
+          <div className="mt-1 text-xs font-bold text-gray-500">{vo.vo_id}</div>
         </div>
         <StatusBadge status={status} />
       </div>
-      <div className="mt-4 space-y-3 text-sm">
+      <div className={`mt-5 gap-x-8 gap-y-3 text-sm ${expanded ? "grid sm:grid-cols-2" : "space-y-3"}`}>
         <InfoRow label="ประเภท" value={VO_TYPE_LABELS[type]} />
         <InfoRow label="ชื่องาน" value={String(vo.title || "-")} />
-        <InfoRow label="มูลค่า" value={`${formatMoney(vo.grand_total)} บาท`} />
+        <InfoRow
+          label={type === "VO0" ? "ส่วนต่างสุทธิ" : "มูลค่า"}
+          value={`${type === "VO0" && voFinancialEffect(vo) > 0 ? "+" : ""}${formatMoney(voFinancialEffect(vo))} บาท`}
+        />
         <InfoRow label="จำนวนวันเพิ่ม" value={`${formatMoney(vo.extension_days)} วัน`} />
         <InfoRow label="อ้างอิงเอกสาร" value={String(vo.source_ref_id || "-")} />
         <InfoRow label="ส่งลูกค้า" value={vo.sent_to_customer_at ? formatThaiDate(String(vo.sent_to_customer_at).slice(0, 10)) : "-"} />
         <InfoRow label="แผนงาน" value={vo.task_plan_status === "planned" ? "เพิ่มเข้าแผนแล้ว" : "ยังไม่เพิ่มเข้าแผน"} />
+        {status === "rejected" ? <InfoRow label="เหตุผลที่ลูกค้าไม่อนุมัติ" value={rejectionReason || String(vo.description || "-")} /> : null}
       </div>
-      <div className="mt-5 space-y-2 border-t border-gray-100 pt-4">
+      {voItems.length > 0 ? (
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="text-sm font-extrabold text-gray-900">รายการใน VO</div>
+              <div className="mt-0.5 text-xs font-semibold text-gray-500">แสดงหมวดงาน รายการย่อย ราคา และผลพิจารณาในตารางเดียว</div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+              <span className="text-gray-500">{voItems.length} แถว</span>
+              {itemDecisions.length > 0 ? (
+                <>
+                  <span className="bg-emerald-50 px-2 py-1 text-emerald-700">อนุมัติ {approvedDecisions.length}</span>
+                  <span className="bg-red-50 px-2 py-1 text-red-700">ไม่อนุมัติ {rejectedDecisions.length}</span>
+                  <span className="bg-blue-50 px-2 py-1 text-blue-700">ยอดอนุมัติ {formatMoney(approvedAmount)} บาท</span>
+                </>
+              ) : null}
+            </div>
+          </div>
+          <VoItemsReadOnlyTable items={voItems} decisions={itemDecisions} defaultVoType={type} expanded={expanded} />
+        </div>
+      ) : null}
+      {itemDecisions.length > 0 ? (
+        <div className="mt-4 border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="text-xs font-black uppercase text-slate-500">หมายเหตุรวมจากลูกค้า</div>
+          <div className="mt-1 whitespace-pre-wrap text-sm font-semibold leading-6 text-slate-800">
+            {customerApprovalNote || "ไม่มีหมายเหตุเพิ่มเติม"}
+          </div>
+        </div>
+      ) : null}
+      {status === "rejected" ? (
+        <div className="mt-5 border border-amber-300 bg-amber-50 p-4">
+          <div className="text-sm font-black text-slate-950">งานที่ OE ต้องทำต่อ</div>
+          <div className="mt-3 grid gap-3 text-sm font-semibold leading-6 text-slate-700 md:grid-cols-3">
+            <div className="flex items-start gap-2"><span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-600 text-xs font-black text-white">1</span><span>ตรวจหมายเหตุของ {rejectedDecisions.length} รายการที่ไม่อนุมัติ</span></div>
+            <div className="flex items-start gap-2"><span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-600 text-xs font-black text-white">2</span><span>{canCreateRevision ? "สร้างฉบับแก้ไขจากรายการที่ลูกค้าอนุมัติ แล้วปรับรายละเอียดตามข้อสังเกต" : "แก้ไขรายการตามข้อสังเกตและบันทึกกลับเป็นฉบับร่าง"}</span></div>
+            <div className="flex items-start gap-2"><span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-600 text-xs font-black text-white">3</span><span>ตรวจยอดและเอกสาร ก่อนส่ง LINE ฉบับใหม่ให้ลูกค้ายืนยัน</span></div>
+          </div>
+        </div>
+      ) : null}
+      {requiresRecall ? (
+        <div className="mt-5 border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold leading-6 text-amber-900">
+          ใบงานนี้ส่งให้ลูกค้าแล้ว หากต้องแก้ไข ระบบจะยกเลิกลิงก์เดิมและเปลี่ยนใบงานกลับเป็นฉบับร่าง หลังบันทึกต้องส่ง LINE ฉบับใหม่
+        </div>
+      ) : null}
+      <div className={`mt-5 gap-2 border-t border-gray-100 pt-4 ${expanded ? "grid sm:grid-cols-2 xl:grid-cols-3" : "space-y-2"}`}>
+        {status === "rejected" ? (
+          <button
+            type="button"
+            onClick={onCreateRevision}
+            disabled={revisionLoading || !canCreateRevision}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-gray-900 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {revisionLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+            สร้างฉบับแก้ไขจากรายการที่อนุมัติ
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => onEdit(vo)}
-          disabled={!canEditVo}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-extrabold text-orange-700 hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!canEditVo || editLoading}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-extrabold text-orange-700 hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Pencil size={16} />
-          แก้ไขรายการนี้
+          {editLoading ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}
+          {editLoading ? "กำลังเรียกกลับ..." : requiresRecall ? "เรียกกลับมาแก้ไข" : "แก้ไขรายการนี้"}
         </button>
         <button
           type="button"
           onClick={onSendApproval}
           disabled={loading || !canSendApproval || !["draft", "pending_approval"].includes(String(vo.status || ""))}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
           ส่ง LINE ให้ลูกค้าอนุมัติ
         </button>
         {vo.approval_url ? (
-          <a href={String(vo.approval_url)} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-extrabold text-gray-700 hover:bg-gray-50">
+          <a href={String(vo.approval_url)} target="_blank" rel="noreferrer" className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-4 py-2.5 text-sm font-extrabold text-gray-700 hover:bg-gray-50">
             <ExternalLink size={15} />
             เปิดลิงก์อนุมัติ
           </a>
@@ -1514,16 +2116,16 @@ function SelectedVoPanel({
       </div>
       <div className="mt-5 border-t border-gray-100 pt-4">
         <div className="text-sm font-extrabold text-gray-900">เอกสาร</div>
-        <div className="mt-3 space-y-2">
+        <div className={`mt-3 gap-2 ${expanded ? "grid sm:grid-cols-2" : "space-y-2"}`}>
           {documents.map((document) => (
             <a
               key={String(document.document_id)}
               href={String(document.pdf_url || "#")}
               target="_blank"
               rel="noreferrer"
-              className={`flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm ${document.pdf_url ? "bg-white text-gray-700 hover:border-orange-200 hover:text-orange-700" : "bg-gray-50 text-gray-400"}`}
+              className={`flex min-w-0 items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm ${document.pdf_url ? "bg-white text-gray-700 hover:border-orange-200 hover:text-orange-700" : "bg-gray-50 text-gray-400"}`}
             >
-              <span className="truncate font-bold">{document.title || document.document_type || "Document"}</span>
+              <span className="min-w-0 truncate font-bold">{document.title || document.document_type || "Document"}</span>
               {document.pdf_url ? <ExternalLink size={15} /> : <span className="text-xs">HTML only</span>}
             </a>
           ))}
@@ -1531,6 +2133,148 @@ function SelectedVoPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function VoItemsReadOnlyTable({
+  items,
+  decisions,
+  defaultVoType,
+  expanded = false,
+}: {
+  items: VoItemInput[];
+  decisions: CustomerItemDecision[];
+  defaultVoType: ReturnType<typeof asVoType>;
+  expanded?: boolean;
+}) {
+  const hasDecisions = decisions.length > 0;
+  const hasGroups = items.some((item) => asVoItemRowType(String(item.row_type || "")) === "group");
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-md border border-slate-300">
+      <div className={expanded ? "overflow-x-auto" : "max-h-[420px] overflow-auto"}>
+        <table className={`w-full border-collapse text-xs ${hasDecisions ? (expanded ? "min-w-[980px]" : "min-w-[1040px]") : (expanded ? "min-w-[920px]" : "min-w-[980px]")}`}>
+          <thead className="sticky top-0 z-20 bg-slate-950 text-white">
+            <tr>
+              <th rowSpan={2} className="w-24 border border-slate-700 px-2 py-2.5 text-left">ประเภท</th>
+              <th rowSpan={2} className="w-14 border border-slate-700 px-2 py-2.5 text-center">#</th>
+              <th rowSpan={2} className="min-w-64 border border-slate-700 px-3 py-2.5 text-left">รายการงาน</th>
+              <th rowSpan={2} className="w-20 border border-slate-700 px-2 py-2.5 text-right">ปริมาณ</th>
+              <th rowSpan={2} className="w-20 border border-slate-700 px-2 py-2.5 text-left">หน่วย</th>
+              <th colSpan={2} className="border border-slate-700 px-2 py-2 text-center">ค่าวัสดุ</th>
+              <th colSpan={2} className="border border-slate-700 px-2 py-2 text-center">ค่าแรง</th>
+              <th rowSpan={2} className="w-28 border border-slate-700 px-2 py-2.5 text-right">รวมเป็นเงิน</th>
+              {hasDecisions ? <th rowSpan={2} className="w-24 border border-slate-700 px-2 py-2.5 text-center">ผลพิจารณา</th> : null}
+            </tr>
+            <tr className="text-slate-300">
+              <th className="w-24 border border-slate-700 px-2 py-2 text-right">หน่วยละ</th>
+              <th className="w-24 border border-slate-700 px-2 py-2 text-right">รวม</th>
+              <th className="w-24 border border-slate-700 px-2 py-2 text-right">หน่วยละ</th>
+              <th className="w-24 border border-slate-700 px-2 py-2 text-right">รวม</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => {
+              const rowType = asVoItemRowType(String(item.row_type || ""));
+              const isGroup = rowType === "group";
+              const isNote = rowType === "note";
+              const isDeduct = resolveVoItemChangeType(item, items, defaultVoType) === "deduct";
+              const precedingRows = items.slice(0, index + 1);
+              const currentGroupNo = precedingRows.filter((row) => asVoItemRowType(String(row.row_type || "")) === "group").length;
+              const lastGroupIndex = precedingRows.map((row) => asVoItemRowType(String(row.row_type || ""))).lastIndexOf("group");
+              const currentDetailNo = precedingRows.slice(lastGroupIndex + 1)
+                .filter((row) => asVoItemRowType(String(row.row_type || "")) === "detail").length;
+
+              const displayNo = isNote
+                ? "•"
+                : isGroup
+                  ? currentGroupNo
+                  : hasGroups && currentGroupNo > 0
+                    ? `${currentGroupNo}.${currentDetailNo}`
+                    : item.item_no || index + 1;
+              const quantity = numberValue(item.quantity);
+              const splitCostFields = [item.material_unit_price, item.material_amount, item.labor_unit_price, item.labor_amount]
+                .some((value) => String(value ?? "").trim() !== "");
+              const materialUnit = numberValue(item.material_unit_price);
+              const laborUnit = splitCostFields ? numberValue(item.labor_unit_price) : numberValue(item.unit_price);
+              const materialAmount = String(item.material_amount ?? "").trim() !== ""
+                ? numberValue(item.material_amount)
+                : quantity * materialUnit;
+              const laborAmount = String(item.labor_amount ?? "").trim() !== ""
+                ? numberValue(item.labor_amount)
+                : quantity * laborUnit;
+              const calculatedAmount = materialAmount + laborAmount || quantity * numberValue(item.unit_price);
+              const rowAmount = String(item.amount ?? "").trim() !== "" ? numberValue(item.amount) : calculatedAmount;
+              const signedRowAmount = isDeduct ? -Math.abs(rowAmount) : Math.abs(rowAmount);
+              const itemKey = `${String(item.item_no || index + 1)}:${String(item.description || "").trim()}`;
+              const decision = decisions.find((entry) => (
+                entry.item_key === itemKey || (
+                  String(entry.item_no || "") === String(item.item_no || index + 1) &&
+                  (!entry.description || String(entry.description).trim() === String(item.description || "").trim())
+                )
+              ));
+
+              if (isNote) {
+                return (
+                  <tr key={`${item.item_no || index}-${item.description || ""}`} className="bg-amber-50 text-amber-900">
+                    <td className="border border-slate-300 px-2 py-2 font-extrabold">หมายเหตุ</td>
+                    <td className="border border-slate-300 px-2 py-2 text-center">{displayNo}</td>
+                    <td colSpan={8} className="border border-slate-300 px-3 py-2 italic">{item.description || "-"}</td>
+                    {hasDecisions ? <td className="border border-slate-300 px-2 py-2 text-center text-slate-400">-</td> : null}
+                  </tr>
+                );
+              }
+
+              if (isGroup) {
+                return (
+                  <tr key={`${item.item_no || index}-${item.description || ""}`} className={`border-t-2 border-slate-400 text-slate-950 ${isDeduct ? "bg-red-50" : "bg-blue-50"}`}>
+                    <td className={`border border-slate-300 px-2 py-2.5 font-extrabold ${isDeduct ? "text-red-700" : "text-blue-700"}`}>
+                      {isDeduct ? "หมวดงานลด" : "หมวดงานเพิ่ม"}
+                    </td>
+                    <td className="border border-slate-300 px-2 py-2.5 text-center font-black">{displayNo}</td>
+                    <td colSpan={7} className="border border-slate-300 px-3 py-2.5 font-black">{item.description || "-"}</td>
+                    <td className={`border border-slate-300 px-2 py-2.5 text-right font-black tabular-nums ${isDeduct ? "bg-red-100/70 text-red-800" : "bg-blue-100/70 text-blue-800"}`}>
+                      {isDeduct ? "−" : "+"}{formatMoney(Math.abs(signedRowAmount))}
+                    </td>
+                    {hasDecisions ? <VoDecisionCell decision={decision} /> : null}
+                  </tr>
+                );
+              }
+
+              return (
+                <tr key={`${item.item_no || index}-${item.description || ""}`} className="bg-white text-slate-700 hover:bg-slate-50">
+                  <td className="border border-slate-300 px-2 py-2.5 font-bold text-slate-500">รายการ</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-center font-semibold text-slate-500">{displayNo}</td>
+                  <td className="border border-slate-300 px-3 py-2.5 font-semibold text-slate-900">{item.description || "-"}</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-right tabular-nums">{formatMoney(quantity)}</td>
+                  <td className="border border-slate-300 px-2 py-2.5">{item.unit || "-"}</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-right tabular-nums">{formatMoney(materialUnit)}</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-right tabular-nums">{formatMoney(materialAmount)}</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-right tabular-nums">{formatMoney(laborUnit)}</td>
+                  <td className="border border-slate-300 px-2 py-2.5 text-right tabular-nums">{formatMoney(laborAmount)}</td>
+                  <td className={`border border-slate-300 px-2 py-2.5 text-right font-black tabular-nums ${isDeduct ? "text-red-700" : "text-blue-800"}`}>
+                    {isDeduct ? "−" : "+"}{formatMoney(Math.abs(signedRowAmount))}
+                  </td>
+                  {hasDecisions ? <VoDecisionCell decision={decision} /> : null}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function VoDecisionCell({ decision }: { decision?: CustomerItemDecision }) {
+  const approved = decision?.decision === "approved";
+  const rejected = decision?.decision === "rejected";
+  return (
+    <td className="border border-slate-300 px-2 py-2.5 text-center">
+      <span className={`inline-flex px-2 py-1 font-extrabold ${approved ? "bg-emerald-50 text-emerald-700" : rejected ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-500"}`}>
+        {approved ? "อนุมัติ" : rejected ? "ไม่อนุมัติ" : "รอพิจารณา"}
+      </span>
+    </td>
   );
 }
 

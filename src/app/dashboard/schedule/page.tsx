@@ -1,7 +1,6 @@
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
-import { CalendarRange } from "lucide-react";
 import SchedulePlanner from "./SchedulePlanner";
 
 export const dynamic = "force-dynamic";
@@ -28,16 +27,6 @@ export default async function SchedulePage() {
 
   return (
     <div className="max-w-[1680px] mx-auto space-y-6">
-      <div className="schedule-screen-only flex items-center gap-3">
-        <div className="p-2 bg-orange-100 text-orange-600 rounded-xl">
-          <CalendarRange size={24} />
-        </div>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">แผนงานโครงการ (Gantt & Milestone)</h2>
-          <p className="text-gray-500">วางแผนงานรายไซต์ กำหนด Milestone เอง และพิมพ์เอกสารพร้อมโลโก้บริษัท</p>
-        </div>
-      </div>
-
       {error && (
         <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
           {error}
@@ -49,7 +38,7 @@ export default async function SchedulePage() {
           ยังไม่มีโครงการในระบบ กรุณาสร้างโครงการก่อน
         </div>
       ) : (
-        <SchedulePlanner projects={projects} />
+        <SchedulePlanner projects={projects} showPageHeader />
       )}
     </div>
   );

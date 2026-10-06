@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Bug,
+  Banknote,
   Building2,
   CalendarClock,
   X,
@@ -23,6 +24,7 @@ import {
   ShieldCheck,
   StickyNote,
   Users,
+  Wrench,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { getAppRole } from "@/lib/roles";
@@ -53,6 +55,7 @@ const siteNavItems = [
   { name: "แผนงาน", segment: "schedule", icon: ListChecks },
   { name: "QC Checklist", segment: "qc-checklists", icon: ShieldCheck },
   { name: "งานเพิ่ม-ลด", segment: "variation-orders", icon: FileText },
+  { name: "ระบบเบิกเงิน", segment: "payment-requests", icon: Banknote },
   { name: "Defect", segment: "defects", icon: Bug },
   { name: "รูปภาพและไฟล์ทั้งหมด", segment: "files", icon: Images },
 ];
@@ -170,6 +173,7 @@ export default function Sidebar({
               const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return <SidebarLink key={item.href} href={item.href} name={item.name} Icon={Icon} active={isActive} collapsed={collapsed && !isMobile} onNavigate={isMobile ? onMobileClose : undefined} />;
             })}
+            {isAdmin && <SidebarLink href="/dashboard/contractors" name="ฐานข้อมูลช่าง" Icon={Wrench} active={pathname.startsWith("/dashboard/contractors")} collapsed={collapsed && !isMobile} onNavigate={isMobile ? onMobileClose : undefined} />}
             {isAdmin && <SidebarLink href="/dashboard/team" name="จัดการพนักงาน" Icon={Users} active={pathname.startsWith("/dashboard/team")} collapsed={collapsed && !isMobile} onNavigate={isMobile ? onMobileClose : undefined} />}
           </>
         )}

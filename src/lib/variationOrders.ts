@@ -1,5 +1,9 @@
 ﻿export type VoType = "VO+" | "VO-" | "VO0";
 import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+import { applyLineFlexTheme, LINE_FLEX_HERO_IMAGES } from "@/lib/lineFlexTheme";
+
+export type VoItemRowType = "group" | "detail" | "note";
+export type VoItemChangeType = "add" | "deduct";
 
 export type VoStatus =
   | "draft"
@@ -16,18 +20,35 @@ export type VoStatus =
 
 export type VoItemInput = {
   item_no?: number | string;
+  sort_order?: number | string;
+  row_type?: VoItemRowType | string;
+  change_type?: VoItemChangeType | VoType | string;
+  parent_item_no?: number | string;
   description?: string;
   unit?: string;
   quantity?: number | string;
   unit_price?: number | string;
+  material_unit_price?: number | string;
+  material_amount?: number | string;
+  labor_unit_price?: number | string;
+  labor_amount?: number | string;
+  amount?: number | string;
 };
 
 export type VoItem = {
   item_no: number;
+  sort_order: number;
+  row_type: VoItemRowType;
+  change_type: VoItemChangeType;
+  parent_item_no?: number;
   description: string;
   unit: string;
   quantity: number;
   unit_price: number;
+  material_unit_price: number;
+  material_amount: number;
+  labor_unit_price: number;
+  labor_amount: number;
   amount: number;
 };
 
@@ -40,6 +61,10 @@ export type VoTaxSettings = {
 export type VoCalculation = {
   items: VoItem[];
   subtotal: number;
+  increase_total: number;
+  decrease_total: number;
+  net_change: number;
+  vo_type: VoType;
   vat_rate: number;
   vat_exempt: boolean;
   withholding_tax: number;
@@ -78,6 +103,7 @@ export type VoRecord = Record<string, string | number | undefined> & {
   client_name?: string;
   task_plan_status?: string;
   evidence_json?: string;
+  rejection_json?: string;
   linked_tasks_json?: string;
   document_refs_json?: string;
   extension_days?: string | number;
@@ -90,19 +116,27 @@ export type VoItemRecord = Record<string, string | number | undefined> & {
   item_id: string;
   vo_id: string;
   project_id: string;
+  row_type?: VoItemRowType | string;
+  change_type?: VoItemChangeType | VoType | string;
+  parent_item_no?: string | number;
+  sort_order?: string | number;
+  material_unit_price?: string | number;
+  material_amount?: string | number;
+  labor_unit_price?: string | number;
+  labor_amount?: string | number;
 };
 
 export const VO_TYPE_LABELS: Record<VoType, string> = {
   "VO+": "งานเพิ่ม",
   "VO-": "งานลด",
-  VO0: "งานสับเปลี่ยน",
+  VO0: "งานเพิ่ม-ลด (ผสม)",
 };
 
 export const VO_STATUS_LABELS: Record<VoStatus, string> = {
   draft: "ร่าง",
   pending_approval: "รออนุมัติ",
   approved: "อนุมัติแล้ว",
-  rejected: "ปฏิเสธ",
+  rejected: "ลูกค้าไม่อนุมัติ",
   billed: "วางบิลแล้ว",
   partial_payment: "ชำระบางส่วน",
   paid: "ชำระครบ",
@@ -126,6 +160,15 @@ export const VO_STATUS_STYLES: Record<VoStatus, string> = {
   cancelled: "bg-slate-100 text-slate-600",
 };
 
+export const VO_FINANCIAL_STATUSES = new Set<VoStatus>([
+  "approved",
+  "billed",
+  "partial_payment",
+  "paid",
+  "overdue",
+  "work_unlocked",
+]);
+
 export function asVoType(value?: string): VoType {
   if (value === "VO-" || value === "VO0") return value;
   return "VO+";
@@ -135,6 +178,10 @@ export function asVoStatus(value?: string): VoStatus {
   const normalized = String(value || "draft") as VoStatus;
   if (normalized in VO_STATUS_LABELS) return normalized;
   return "draft";
+}
+
+export function isVoFinanciallyActive(vo?: Pick<VoRecord, "status">) {
+  return VO_FINANCIAL_STATUSES.has(asVoStatus(String(vo?.status || "")));
 }
 
 export function numberValue(value?: string | number | null) {
@@ -150,43 +197,136 @@ export function boolValue(value?: string | boolean | null) {
   return String(value || "").toLowerCase() === "true";
 }
 
-export function normalizeVoItems(items: VoItemInput[]) {
-  return items
+export function asVoItemRowType(value?: string): VoItemRowType {
+  if (value === "detail" || value === "note") return value;
+  return "group";
+}
+
+export function asVoItemChangeType(value?: string, fallback: VoType | VoItemChangeType | string = "VO+"): VoItemChangeType {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["deduct", "decrease", "minus", "vo-", "group_deduct", "งานลด", "ลด", "-"].includes(normalized)) return "deduct";
+  if (["add", "increase", "plus", "vo+", "group_add", "งานเพิ่ม", "เพิ่ม", "+"].includes(normalized)) return "add";
+  return String(fallback).toLowerCase() === "vo-" || String(fallback).toLowerCase() === "deduct" ? "deduct" : "add";
+}
+
+export function storedVoItemRowType(rowType: VoItemRowType, changeType?: VoItemChangeType | string) {
+  if (rowType !== "group") return rowType;
+  return asVoItemChangeType(String(changeType || "")) === "deduct" ? "group_deduct" : "group_add";
+}
+
+export function resolveVoItemChangeType(
+  item: Pick<VoItemInput, "row_type" | "change_type" | "parent_item_no" | "item_no">,
+  items: Array<Pick<VoItemInput, "row_type" | "change_type" | "parent_item_no" | "item_no">> = [],
+  defaultVoType: VoType = "VO+",
+) {
+  if (asVoItemRowType(String(item.row_type || "")) === "group") {
+    return asVoItemChangeType(String(item.change_type || item.row_type || ""), defaultVoType);
+  }
+  const parent = items.find((candidate) => (
+    asVoItemRowType(String(candidate.row_type || "")) === "group" &&
+    String(candidate.item_no || "") === String(item.parent_item_no || "")
+  ));
+  return parent
+    ? asVoItemChangeType(String(parent.change_type || parent.row_type || ""), defaultVoType)
+    : asVoItemChangeType(String(item.change_type || item.row_type || ""), defaultVoType);
+}
+
+export function signedVoItemAmount(
+  item: Pick<VoItemInput, "row_type" | "change_type" | "parent_item_no" | "item_no" | "amount">,
+  items: Array<Pick<VoItemInput, "row_type" | "change_type" | "parent_item_no" | "item_no">> = [],
+  defaultVoType: VoType = "VO+",
+) {
+  const amount = Math.abs(numberValue(item.amount));
+  return resolveVoItemChangeType(item, items, defaultVoType) === "deduct" ? -amount : amount;
+}
+
+export function normalizeVoItems(items: VoItemInput[], defaultVoType: VoType = "VO+") {
+  const normalized = items
     .map((item, index) => {
+      const rowType = asVoItemRowType(String(item.row_type || ""));
       const quantity = numberValue(item.quantity);
-      const unitPrice = numberValue(item.unit_price);
+      const materialUnitPrice = numberValue(item.material_unit_price);
+      const laborUnitPrice = numberValue(item.labor_unit_price);
+      const hasCostBreakdown = item.material_unit_price !== undefined || item.labor_unit_price !== undefined;
+      const unitPrice = hasCostBreakdown ? materialUnitPrice + laborUnitPrice : numberValue(item.unit_price);
       return {
         item_no: Number(item.item_no || index + 1),
+        sort_order: Number(item.sort_order || index + 1),
+        row_type: rowType,
+        change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), defaultVoType),
+        parent_item_no: item.parent_item_no === undefined || item.parent_item_no === "" ? undefined : Number(item.parent_item_no),
         description: String(item.description || "").trim(),
-        unit: String(item.unit || "LS").trim() || "LS",
+        unit: rowType === "note" ? "" : String(item.unit || (rowType === "group" ? "LS" : "")).trim(),
         quantity,
         unit_price: unitPrice,
-        amount: quantity * unitPrice,
+        material_unit_price: materialUnitPrice,
+        material_amount: rowType === "note" ? 0 : quantity * materialUnitPrice,
+        labor_unit_price: laborUnitPrice,
+        labor_amount: rowType === "note" ? 0 : quantity * laborUnitPrice,
+        amount: rowType === "note" ? 0 : quantity * unitPrice,
       };
     })
-    .filter((item) => item.description || item.quantity || item.unit_price);
+    .filter((item) => item.description || item.quantity || item.unit_price)
+    .sort((a, b) => a.sort_order - b.sort_order);
+
+  const withInheritedType = normalized.map((item) => {
+    if (item.row_type === "group") return item;
+    const parent = normalized.find((candidate) => candidate.row_type === "group" && candidate.item_no === item.parent_item_no);
+    return { ...item, change_type: parent?.change_type || item.change_type };
+  });
+
+  return withInheritedType.map((item) => {
+    if (item.row_type !== "group") return item;
+    const children = withInheritedType.filter((candidate) => (
+      candidate.row_type === "detail" && candidate.parent_item_no === item.item_no
+    ));
+    if (children.length === 0) return item;
+    return {
+      ...item,
+      material_amount: children.reduce((sum, child) => sum + child.material_amount, 0),
+      labor_amount: children.reduce((sum, child) => sum + child.labor_amount, 0),
+      amount: children.reduce((sum, child) => sum + child.amount, 0),
+    };
+  });
 }
 
 export function calculateVoTotals({
   items,
   tax,
+  defaultVoType = "VO+",
 }: {
   items: VoItemInput[];
   tax?: VoTaxSettings;
+  defaultVoType?: VoType;
 }): VoCalculation {
-  const normalizedItems = normalizeVoItems(items);
-  const subtotal = normalizedItems.reduce((sum, item) => sum + item.amount, 0);
+  const normalizedItems = normalizeVoItems(items, defaultVoType);
+  const groupItems = normalizedItems.filter((item) => item.row_type === "group");
+  const billableItems = groupItems.length > 0
+    ? groupItems
+    : normalizedItems.filter((item) => item.row_type === "detail");
+  const increaseTotal = billableItems
+    .filter((item) => item.change_type === "add")
+    .reduce((sum, item) => sum + item.amount, 0);
+  const decreaseTotal = billableItems
+    .filter((item) => item.change_type === "deduct")
+    .reduce((sum, item) => sum + item.amount, 0);
+  const subtotal = increaseTotal - decreaseTotal;
+  const voType: VoType = increaseTotal > 0 && decreaseTotal > 0 ? "VO0" : decreaseTotal > 0 ? "VO-" : "VO+";
   const vatRate = numberValue(tax?.vat_rate || 7);
   const vatExempt = boolValue(tax?.vat_exempt);
   const withholdingTax = numberValue(tax?.withholding_tax);
   const vatAmount = vatExempt ? 0 : subtotal * (vatRate / 100);
-  const grandTotal = subtotal + vatAmount;
+  const grandTotal = Math.abs(subtotal + vatAmount);
   const whtAmount = grandTotal * (withholdingTax / 100);
   const netPayable = grandTotal - whtAmount;
 
   return {
     items: normalizedItems,
     subtotal,
+    increase_total: increaseTotal,
+    decrease_total: decreaseTotal,
+    net_change: subtotal,
+    vo_type: voType,
     vat_rate: vatRate,
     vat_exempt: vatExempt,
     withholding_tax: withholdingTax,
@@ -370,6 +510,8 @@ export function buildVoApprovalLineFlex({
   extensionDays,
   deadline,
   pdfUrl,
+  attachmentUrl,
+  attachmentCount,
   approvalUrl,
 }: {
   projectName?: string;
@@ -381,10 +523,12 @@ export function buildVoApprovalLineFlex({
   extensionDays?: string | number;
   deadline?: string | number;
   pdfUrl?: string;
+  attachmentUrl?: string;
+  attachmentCount?: number;
   approvalUrl: string;
 }) {
   const type = asVoType(voType);
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `VO approval | ${projectName || projectId} | ${voId}`,
     contents: {
@@ -446,10 +590,149 @@ export function buildVoApprovalLineFlex({
             color: "#E2E8F0",
             action: { type: "uri", label: "เปิด PDF VO", uri: pdfUrl },
           }] : []),
+          ...(attachmentUrl && attachmentCount ? [{
+            type: "button",
+            style: "secondary",
+            height: "sm",
+            color: "#FFEDD5",
+            action: { type: "uri", label: `ดูไฟล์แนบ (${attachmentCount})`, uri: attachmentUrl },
+          }] : []),
         ],
       },
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.variationOrder,
+    badgeText: "VARIATION ORDER",
+    metadataTypography: "comfortable",
+  });
+}
+
+export function buildVoReviewResultLineFlex({
+  projectName,
+  projectId,
+  voId,
+  title,
+  approvedItems,
+  rejectedItems,
+  approvedAmount,
+  reviewedBy,
+  reviewedAt,
+  note,
+  reviewUrl,
+  dashboardUrl,
+}: {
+  projectName?: string;
+  projectId: string;
+  voId: string;
+  title?: string;
+  approvedItems: number;
+  rejectedItems: number;
+  approvedAmount?: string | number;
+  reviewedBy?: string;
+  reviewedAt?: string | number;
+  note?: string;
+  reviewUrl: string;
+  dashboardUrl?: string;
+}) {
+  const resultMetric = (label: string, value: string, color: string, backgroundColor: string) => ({
+    type: "box",
+    layout: "vertical",
+    flex: 1,
+    backgroundColor,
+    cornerRadius: "10px",
+    paddingAll: "12px",
+    contents: [
+      { type: "text", text: label, color: "#475569", size: "sm", weight: "bold" },
+      { type: "text", text: value, color, size: "xl", weight: "bold", margin: "sm" },
+    ],
+  });
+
+  return applyLineFlexTheme({
+    type: "flex",
+    altText: `VO review result | ${projectName || projectId} | ${voId}`,
+    contents: {
+      type: "bubble",
+      size: "mega",
+      header: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0F172A",
+        paddingAll: "18px",
+        contents: [
+          { type: "text", text: "PMC CONNEXT VO RESULT", color: "#67E8F9", size: "xs", weight: "bold" },
+          { type: "text", text: "ผลพิจารณางานเพิ่ม-ลด", color: "#FFFFFF", size: "xl", weight: "bold", margin: "sm", wrap: true },
+          { type: "text", text: voId, color: "#FEF3C7", size: "sm", weight: "bold", margin: "xs" },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "20px",
+        spacing: "md",
+        contents: [
+          { type: "text", text: projectName || projectId, color: "#020617", size: "lg", weight: "bold", wrap: true },
+          flexInfoRow("รายการ", title || "-"),
+          {
+            type: "box",
+            layout: "horizontal",
+            spacing: "sm",
+            margin: "sm",
+            contents: [
+              resultMetric("อนุมัติ", `${approvedItems} รายการ`, "#047857", "#ECFDF5"),
+              resultMetric("ไม่อนุมัติ", `${rejectedItems} รายการ`, "#B91C1C", "#FEF2F2"),
+            ],
+          },
+          flexInfoRow("ยอดที่อนุมัติ", `${formatMoney(approvedAmount)} บาท`),
+          flexInfoRow("ผู้พิจารณา", reviewedBy || "ลูกค้า"),
+          flexInfoRow("เวลาพิจารณา", formatBangkokDateTime(reviewedAt)),
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: "#FFF7ED",
+            cornerRadius: "8px",
+            paddingAll: "12px",
+            contents: [
+              { type: "text", text: "หมายเหตุจากลูกค้า", color: "#C2410C", size: "sm", weight: "bold" },
+              { type: "text", text: note || "มีรายการที่ไม่อนุมัติ กรุณาตรวจรายละเอียดและออก VO ฉบับแก้ไข", color: "#7C2D12", size: "sm", wrap: true, margin: "xs", maxLines: 4 },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            height: "sm",
+            color: "#0F766E",
+            action: { type: "uri", label: "ดูผลพิจารณารายรายการ", uri: reviewUrl },
+          },
+          ...(dashboardUrl ? [{
+            type: "button",
+            style: "secondary",
+            height: "sm",
+            color: "#E2E8F0",
+            action: { type: "uri", label: "เปิดระบบ VO", uri: dashboardUrl },
+          }] : []),
+        ],
+      },
+    },
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.variationOrder,
+    badgeText: "VO REVIEW RESULT",
+    metadataTypography: "comfortable",
+  });
+}
+
+export function voFinancialEffect(vo?: Pick<VoRecord, "vo_type" | "grand_total" | "subtotal">) {
+  const voType = asVoType(String(vo?.vo_type || ""));
+  if (voType === "VO-") return -Math.abs(numberValue(vo?.grand_total));
+  if (voType === "VO0") return numberValue(vo?.subtotal);
+  return Math.abs(numberValue(vo?.grand_total));
 }
 
 export function buildVoApprovedLineFlex({
@@ -471,7 +754,7 @@ export function buildVoApprovedLineFlex({
   total?: string | number;
   pdfUrl?: string;
 }) {
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `VO approved | ${projectName || projectId} | ${voId}`,
     contents: {
@@ -495,7 +778,15 @@ export function buildVoApprovedLineFlex({
         spacing: "md",
         contents: [
           { type: "text", text: projectName || projectId, color: "#020617", size: "lg", weight: "bold", wrap: true },
-          flexInfoRow("รายการ", title || "-"),
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "xs",
+            contents: [
+              { type: "text", text: "รายการงาน", color: "#64748B", size: "xs", weight: "bold" },
+              { type: "text", text: title || "-", color: "#0F172A", size: "sm", weight: "bold", wrap: true, align: "start" },
+            ],
+          },
           flexInfoRow("มูลค่า", `${formatMoney(total)} บาท`),
           flexInfoRow("ผู้อนุมัติ", approvedBy || "-"),
           flexInfoRow("เวลา", formatBangkokDateTime(approvedAt)),
@@ -527,5 +818,8 @@ export function buildVoApprovedLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.variationOrder,
+    badgeText: "VO APPROVED",
+  });
 }

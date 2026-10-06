@@ -65,7 +65,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ projectI
 
     if (current?._rowIndex) {
       const lifecycleId = String(current.lifecycle_id || "");
-      const fallbackRowIndex = lifecycleId ? await getFallbackRowIndex(context.siteSheetId, lifecycleId, current) : current._rowIndex;
+      const fallbackRowIndex = lifecycleId ? () => getFallbackRowIndex(context.siteSheetId, lifecycleId, current) : current._rowIndex;
       await update("Project_Lifecycle", lifecycleId || current._rowIndex, patch, context.siteSheetId, fallbackRowIndex);
       return NextResponse.json({ success: true, data: { ...current, ...patch } });
     }

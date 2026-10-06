@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition, type ComponentType } from "react";
+import { useEffect, useMemo, useState, useTransition, type ComponentType } from "react";
 import {
   CheckCircle2,
   Clock3,
@@ -29,7 +29,9 @@ import {
   MEMO_TYPE_LABELS,
   isTrueText,
   numberValue,
+  parseMemoAttachments,
   todayBangkok,
+  type MemoAttachment,
   type MemoEvidenceRecord,
   type MemoRecord,
 } from "@/lib/siteMemos";
@@ -154,6 +156,10 @@ function isCompressibleImage(file: File) {
   return file.type.startsWith("image/") && !["image/gif", "image/svg+xml"].includes(file.type);
 }
 
+function isPreviewableFile(file: File) {
+  return file.type.startsWith("image/") || file.type === "application/pdf";
+}
+
 function loadImageFromFile(file: File) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -253,23 +259,115 @@ function TabButton({ tab, active, onClick }: { tab: (typeof tabs)[number]; activ
   );
 }
 
-function FileList({ files, onRemove }: { files: File[]; onRemove: (index: number) => void }) {
-  if (files.length === 0) return null;
+function FileList({ files, onRemove, emptyLabel }: { files: File[]; onRemove: (index: number) => void; emptyLabel?: string }) {
+  return <PreviewFileList files={files} onRemove={onRemove} emptyLabel={emptyLabel} />;
+}
+
+type PreviewFile = {
+  file: File;
+  url: string;
+  key: string;
+};
+
+function PreviewFileList({ files, onRemove, emptyLabel = "ยังไม่ได้เลือกไฟล์" }: { files: File[]; onRemove: (index: number) => void; emptyLabel?: string }) {
+  const previewFiles = useMemo<PreviewFile[]>(() => {
+    return files.map((file, index) => ({
+      file,
+      url: isPreviewableFile(file) ? URL.createObjectURL(file) : "",
+      key: `${file.name}-${file.size}-${file.lastModified}-${index}`,
+    }));
+  }, [files]);
+
+  useEffect(() => {
+    return () => {
+      previewFiles.forEach((item) => {
+        if (item.url) URL.revokeObjectURL(item.url);
+      });
+    };
+  }, [previewFiles]);
+
+  return (
+    <div className={files.length > 0 ? "space-y-2" : "rounded-xl border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-center text-xs font-bold text-gray-400"}>
+      {files.length === 0 ? emptyLabel : null}
+      {previewFiles.map(({ file, url, key }, index) => {
+        const isImage = file.type.startsWith("image/");
+        const isPdf = file.type === "application/pdf";
+
+        return (
+          <div key={key} className="grid grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 p-2 text-xs font-semibold text-gray-600">
+            <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-lg border border-gray-200 bg-white">
+              {isImage && url ? (
+                // eslint-disable-next-line @next/next/no-img-element -- Local object URLs are client-only file previews.
+                <img src={url} alt={file.name} className="h-full w-full object-cover" />
+              ) : (
+                <FileText size={24} className={isPdf ? "text-red-500" : "text-gray-400"} />
+              )}
+            </div>
+            <div className="min-w-0">
+              <span className="block truncate font-extrabold text-gray-800">{file.name}</span>
+              <span className="mt-0.5 block text-[11px] text-gray-400">
+                {formatBytes(file.size)}{isCompressibleImage(file) ? " · จะย่อรูปก่อนอัปโหลด" : ""}
+              </span>
+              <span className="mt-1 inline-flex rounded-full bg-white px-2 py-0.5 text-[11px] font-extrabold text-gray-500 ring-1 ring-gray-200">
+                {isImage ? "รูปภาพ" : isPdf ? "PDF" : file.type || "ไฟล์"}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {url ? (
+                <a href={url} target="_blank" rel="noreferrer" aria-label={`Preview ${file.name}`} className="inline-flex h-8 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 text-[11px] font-extrabold text-gray-700 hover:text-orange-600" title="Preview file">
+                  Preview
+                  <ExternalLink size={12} />
+                </a>
+              ) : null}
+              <button type="button" onClick={() => onRemove(index)} className="grid h-8 w-8 place-items-center rounded-lg bg-white text-gray-400 ring-1 ring-gray-200 hover:text-red-600" title="Remove file" aria-label={`Remove ${file.name}`}>
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExistingAttachmentList({ attachments }: { attachments: MemoAttachment[] }) {
+  if (attachments.length === 0) return null;
+
   return (
     <div className="space-y-2">
-      {files.map((file, index) => (
-        <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
-          <span className="min-w-0">
-            <span className="block truncate">{file.name}</span>
-            <span className="mt-0.5 block text-[11px] text-gray-400">
-              {formatBytes(file.size)}{isCompressibleImage(file) ? " · จะย่อรูปก่อนอัปโหลด" : ""}
-            </span>
-          </span>
-          <button type="button" onClick={() => onRemove(index)} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-gray-400 hover:bg-white hover:text-red-600">
-            <X size={14} />
-          </button>
-        </div>
-      ))}
+      {attachments.map((attachment, index) => {
+        const mimeType = String(attachment.mime_type || "");
+        const isImage = mimeType.startsWith("image/");
+        const isPdf = mimeType === "application/pdf";
+        const fileUrl = attachment.file_id
+          ? `/api/drive/files/${encodeURIComponent(attachment.file_id)}`
+          : String(attachment.file_url || "");
+
+        return (
+          <div key={attachment.file_id || `${attachment.file_name}-${index}`} className="grid grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-2 text-xs font-semibold text-gray-600">
+            <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-lg border border-emerald-100 bg-white">
+              {isImage && fileUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- Existing Drive files are served through the authenticated file route.
+                <img src={fileUrl} alt={attachment.file_name || "ไฟล์แนบเดิม"} loading="lazy" className="h-full w-full object-cover" />
+              ) : (
+                <FileText size={24} className={isPdf ? "text-red-500" : "text-gray-400"} />
+              )}
+            </div>
+            <div className="min-w-0">
+              <span className="block truncate font-extrabold text-gray-800">{attachment.file_name || `ไฟล์แนบ ${index + 1}`}</span>
+              <span className="mt-1 inline-flex rounded-full bg-white px-2 py-0.5 text-[11px] font-extrabold text-emerald-700 ring-1 ring-emerald-200">
+                ไฟล์เดิม · {isImage ? "รูปภาพ" : isPdf ? "PDF" : mimeType || "ไฟล์"}
+              </span>
+            </div>
+            {fileUrl ? (
+              <a href={fileUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2 text-[11px] font-extrabold text-emerald-700 hover:text-orange-600" title="เปิดไฟล์เดิม">
+                เปิดดู
+                <ExternalLink size={12} />
+              </a>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -305,6 +403,14 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const selectedMemo = useMemo(
     () => memos.find((memo) => memo.memo_id === selectedMemoId) || memos.find((memo) => memo.pdf_url) || memos[0],
     [memos, selectedMemoId]
+  );
+  const editingMemo = useMemo(
+    () => memos.find((memo) => memo.memo_id === editingMemoId),
+    [editingMemoId, memos]
+  );
+  const existingAttachments = useMemo(
+    () => parseMemoAttachments(editingMemo?.attachments_json),
+    [editingMemo]
   );
 
   const creatorOptions = useMemo(() => {
@@ -349,7 +455,19 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.error) throw new Error(String(result.error || "ทำรายการไม่สำเร็จ"));
-      await mutate();
+      if ((action === "create_memo" || action === "update_memo") && result.data?.memo_id) {
+        const saved = result.data as MemoRecord;
+        await mutate((current) => ({
+          ...current,
+          success: true,
+          data: [saved, ...(current?.data || []).filter((memo) => memo.memo_id !== saved.memo_id)]
+            .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime()),
+        }), { revalidate: false });
+        // Refresh audit history without holding the completed save open.
+        void mutate().catch(() => setActionError("บันทึกสำเร็จแล้ว แต่โหลดประวัติล่าสุดไม่สำเร็จ กรุณารีเฟรช"));
+      } else {
+        await mutate();
+      }
       return result;
     } catch (postError) {
       setActionError(postError instanceof Error ? postError.message : "ทำรายการไม่สำเร็จ");
@@ -477,12 +595,12 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
 
   const addAttachmentFiles = (files: FileList | null) => {
     const nextFiles = Array.from(files || []);
-    if (nextFiles.length > 0) setAttachmentFiles([...attachmentFiles, ...nextFiles].slice(0, 10));
+    if (nextFiles.length > 0) setAttachmentFiles((current) => [...current, ...nextFiles].slice(0, 10));
   };
 
   const addEvidenceFiles = (files: FileList | null) => {
     const nextFiles = Array.from(files || []);
-    if (nextFiles.length > 0) setEvidenceFiles([...evidenceFiles, ...nextFiles].slice(0, 10));
+    if (nextFiles.length > 0) setEvidenceFiles((current) => [...current, ...nextFiles].slice(0, 10));
   };
 
   const selectedEvidence = useMemo(() => {
@@ -637,10 +755,34 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                 <Paperclip className="text-gray-500" size={18} />
                 <h3 className="font-extrabold text-gray-900">ไฟล์ประกอบ</h3>
               </div>
-              <input type="file" multiple accept="image/*,application/pdf,.pdf" onChange={(event) => addAttachmentFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <input
+                type="file"
+                multiple
+                accept="image/*,application/pdf,.pdf"
+                onChange={(event) => {
+                  addAttachmentFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              />
               <p className="mt-2 text-xs font-semibold text-gray-500">รูปภาพจะถูกย่ออัตโนมัติก่อนอัปโหลด เพื่อให้แนบหลักฐานและออก PDF ได้ง่ายขึ้น</p>
+              {editingMemoId && existingAttachments.length > 0 ? (
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-extrabold text-emerald-700">ไฟล์เดิมที่แนบไว้</p>
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-emerald-700">{existingAttachments.length} ไฟล์</span>
+                  </div>
+                  <ExistingAttachmentList attachments={existingAttachments} />
+                  <p className="mt-2 text-[11px] font-semibold text-gray-500">ไฟล์เดิมจะยังคงอยู่หลังบันทึก สามารถเลือกไฟล์ด้านบนเพื่อแนบเพิ่มได้</p>
+                </div>
+              ) : null}
               <div className="mt-3">
-                <FileList files={attachmentFiles} onRemove={(index) => setAttachmentFiles(attachmentFiles.filter((_file, fileIndex) => fileIndex !== index))} />
+                {editingMemoId ? <p className="mb-2 text-xs font-extrabold text-gray-600">ไฟล์ที่จะเพิ่มใหม่</p> : null}
+                <FileList
+                  files={attachmentFiles}
+                  onRemove={(index) => setAttachmentFiles(attachmentFiles.filter((_file, fileIndex) => fileIndex !== index))}
+                  emptyLabel={editingMemoId ? "ยังไม่ได้เลือกไฟล์ใหม่เพิ่มเติม" : undefined}
+                />
               </div>
             </div>
             <div className="rounded-2xl border border-orange-100 bg-orange-50 p-5">
@@ -690,7 +832,16 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                 <input type="checkbox" checked={ackForm.extension_approved} onChange={(event) => setAckForm({ ...ackForm, extension_approved: event.target.checked })} />
                 อนุมัติจำนวนวันที่ขอเพิ่มแล้ว
               </label>
-              <input type="file" multiple accept="image/*,application/pdf,.pdf" onChange={(event) => addEvidenceFiles(event.target.files)} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
+              <input
+                type="file"
+                multiple
+                accept="image/*,application/pdf,.pdf"
+                onChange={(event) => {
+                  addEvidenceFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              />
               <p className="text-xs font-semibold text-gray-500">หลักฐานรูปภาพจะถูกย่อก่อนบันทึก เหมาะกับแคปหน้าจอ LINE และภาพหน้างาน</p>
               <FileList files={evidenceFiles} onRemove={(index) => setEvidenceFiles(evidenceFiles.filter((_file, fileIndex) => fileIndex !== index))} />
               <button type="button" disabled={busy || !canAcknowledge || !selectedMemo?.pdf_url} onClick={acknowledgeMemo} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-slate-800 disabled:opacity-60">

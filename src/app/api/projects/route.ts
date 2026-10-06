@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
-import { filterProjectsForUser } from "@/lib/authz";
+import { clearProjectAccessCache, filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
@@ -522,6 +522,7 @@ export async function POST(req: Request) {
       }
     }
 
+    clearProjectAccessCache();
     return NextResponse.json({ success: true, data: result.inserted, warning: driveProvisionWarning || undefined });
   } catch (error: unknown) {
     console.error("Failed to create project:", error);
@@ -646,6 +647,7 @@ export async function PUT(req: Request) {
     };
 
     await updateMaster("Projects", current._rowIndex, patch);
+    clearProjectAccessCache();
 
     return NextResponse.json({
       success: true,
@@ -680,6 +682,7 @@ export async function DELETE(req: Request) {
     }
 
     await updateMaster("Projects", current._rowIndex, { active: "FALSE" });
+    clearProjectAccessCache();
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {

@@ -101,7 +101,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         context.decision.decision_id || context.decision._rowIndex || "",
         patch,
         context.siteSheetId,
-        await getFallbackRowIndex(context.siteSheetId, context.decision)
+        () => getFallbackRowIndex(context.siteSheetId, context.decision)
       );
       await writeAuditLog({
         actor: { name: decidedBy, role: "Customer" },

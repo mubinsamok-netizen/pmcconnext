@@ -35,8 +35,9 @@ export default async function SiteSchedulePage({ params }: { params: Promise<{ p
       description="Task Tracker, ตารางแผนงาน และ Gantt Chart สำหรับไซต์นี้"
       icon={ListChecks}
       wide
+      hideHeader
     >
-      <SchedulePlanner projects={[project]} />
+      <SchedulePlanner projects={[project]} showPageHeader />
     </SiteShell>
   );
 }

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { buildLineFlexHero, LINE_FLEX_HERO_IMAGES } from "@/lib/lineFlexTheme";
 
 export type DailyReportTableRow = Record<string, string>;
 
@@ -542,23 +543,28 @@ export function buildDailyReportLineFlex({
   pdfUrl,
   photosFolderUrl,
   photoCount = 0,
+  heroImageUrl = LINE_FLEX_HERO_IMAGES.dailyReport,
 }: {
   report: DailyReportPayload;
   pdfUrl?: string;
   photosFolderUrl?: string;
   photoCount?: number;
+  heroImageUrl?: string;
 }) {
   const hasIssues = Boolean(report.issues?.trim());
   const footerContents = [
     ...(pdfUrl ? [{
       type: "button",
       style: "primary",
-      color: "#111827",
+      color: "#2bbfa5",
+      height: "sm",
       action: { type: "uri", label: "เปิด PDF รายงาน", uri: pdfUrl },
     }] : []),
     ...(photosFolderUrl ? [{
       type: "button",
       style: "secondary",
+      height: "sm",
+      color: "#ffffff",
       action: { type: "uri", label: "ดูรูปภาพประกอบ", uri: photosFolderUrl },
     }] : []),
   ];
@@ -568,39 +574,43 @@ export function buildDailyReportLineFlex({
     altText: `รายงานประจำวัน | ${report.project_name || report.project_id} | ${report.document_no}`,
     contents: {
       type: "bubble",
-      size: "mega",
-      header: {
-        type: "box",
-        layout: "vertical",
-        backgroundColor: "#0f172a",
-        paddingAll: "18px",
-        paddingBottom: "16px",
-        contents: [
-          { type: "text", text: "PMC CONNEXT DAILY REPORT", color: "#7dd3fc", weight: "bold", size: "xs" },
-          { type: "text", text: "รายงานประจำวัน", color: "#ffffff", weight: "bold", size: "lg", margin: "xs" },
-          { type: "text", text: report.document_no || report.report_id, color: "#fef3c7", size: "sm", margin: "xs", wrap: true },
-        ],
-      },
+      size: "giga",
+      ...(heroImageUrl ? {
+        hero: buildLineFlexHero(heroImageUrl, "DAILY REPORT"),
+      } : {}),
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "xs",
-        paddingAll: "18px",
+        spacing: "sm",
+        paddingAll: "20px",
+        backgroundColor: "#243b55",
         contents: [
-          { type: "text", text: report.project_name || report.project_id, color: "#0f172a", weight: "bold", size: "lg", wrap: true },
-          lineInfoRow("วันที่", formatThaiDate(report.date)),
-          lineInfoRow("สภาพอากาศ", report.weather || "-"),
-          lineInfoRow("บุคลากรรวม", `${report.workers || "0"} คน`),
-          lineInfoRow("ผู้จัดทำ", report.prepared_by_name || "-"),
-          { type: "separator", margin: "md", color: "#e5e7eb" },
+          { type: "text", text: "รายงานประจำวัน", color: "#ffffff", weight: "bold", size: "xl" },
+          { type: "text", text: report.project_name || report.project_id, color: "#d8e4ef", size: "sm", wrap: true },
+          { type: "text", text: report.document_no || report.report_id, color: "#8edfd1", size: "xs", weight: "bold", wrap: true },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "none",
+            margin: "md",
+            contents: [
+              lineInfoRow("วันที่", formatThaiDate(report.date)),
+              lineInfoRow("สภาพอากาศ", report.weather || "-"),
+              lineInfoRow("บุคลากรรวม", `${report.workers || "0"} คน`),
+              lineInfoRow("ผู้จัดทำ", report.prepared_by_name || "-"),
+            ],
+          },
           {
             type: "box",
             layout: "vertical",
             spacing: "xs",
             margin: "md",
+            paddingAll: "14px",
+            backgroundColor: "#f3f8fc",
+            cornerRadius: "12px",
             contents: [
-              { type: "text", text: "งานที่ปฏิบัติ", color: "#64748b", size: "xs" },
-              { type: "text", text: trimLineText(report.work_done || "-"), color: "#0f172a", size: "sm", wrap: true },
+              { type: "text", text: "งานที่ปฏิบัติ", color: "#078b78", size: "xs", weight: "bold" },
+              { type: "text", text: trimLineText(report.work_done || "-"), color: "#172b3f", size: "sm", weight: "bold", wrap: true },
             ],
           },
           {
@@ -608,19 +618,22 @@ export function buildDailyReportLineFlex({
             layout: "vertical",
             spacing: "xs",
             margin: "sm",
+            paddingAll: "14px",
+            backgroundColor: hasIssues ? "#fff0f2" : "#effaf6",
+            cornerRadius: "12px",
             contents: [
-              { type: "text", text: "ปัญหา/อุปสรรค", color: "#64748b", size: "xs" },
+              { type: "text", text: "ปัญหา/อุปสรรค", color: hasIssues ? "#c53045" : "#078b78", size: "xs", weight: "bold" },
               {
                 type: "text",
                 text: hasIssues ? trimLineText(report.issues) : "ไม่มี",
-                color: hasIssues ? "#b91c1c" : "#0f172a",
+                color: hasIssues ? "#8f1d2c" : "#172b3f",
                 size: "sm",
                 weight: hasIssues ? "bold" : "regular",
                 wrap: true,
               },
             ],
           },
-          ...(photoCount > 0 ? [{ type: "text", text: `แนบรูปภาพ ${photoCount} รูป`, color: "#94a3b8", size: "xxs", margin: "sm" }] : []),
+          ...(photoCount > 0 ? [{ type: "text", text: `แนบรูปภาพ ${photoCount} รูป`, color: "#afc1d3", size: "xxs", margin: "sm" }] : []),
         ],
       },
       ...(footerContents.length > 0 ? {
@@ -628,7 +641,9 @@ export function buildDailyReportLineFlex({
           type: "box",
           layout: "vertical",
           spacing: "xs",
-          paddingAll: "8px",
+          paddingAll: "12px",
+          paddingTop: "4px",
+          backgroundColor: "#243b55",
           contents: footerContents,
         },
       } : {}),
@@ -640,10 +655,18 @@ function lineInfoRow(label: string, value: string) {
   return {
     type: "box",
     layout: "horizontal",
-    margin: "sm",
+    margin: "xs",
     contents: [
-      { type: "text", text: label, color: "#64748b", size: "xs", flex: 5 },
-      { type: "text", text: value, color: "#0f172a", size: "sm", flex: 7, wrap: true },
+      { type: "text", text: label, color: "#afc1d3", size: "xxs", flex: 5 },
+      {
+        type: "text",
+        text: value,
+        color: "#ffffff",
+        size: "xs",
+        align: "end",
+        flex: 7,
+        wrap: true,
+      },
     ],
   };
 }

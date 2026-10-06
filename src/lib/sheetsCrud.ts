@@ -1,5 +1,5 @@
 import { MASTER_SHEET_ID, sheets, SHEET_ID } from "./google";
-import { MASTER_SCHEMA, SITE_SCHEMA } from "./sheetsSetup";
+import { MASTER_SCHEMA, SITE_SCHEMA, migrateSheetRows } from "./sheetsSetup";
 import {
   deleteSupabase,
   findAllSupabase,
@@ -27,7 +27,15 @@ type SiteTable = keyof typeof SITE_SCHEMA;
 type MasterTable = keyof typeof MASTER_SCHEMA;
 type SheetSchema = Record<string, readonly string[]>;
 type RowKey = number | string;
+// Resolve legacy row positions only if the write actually reaches Sheets.
+type FallbackRowKey = RowKey | (() => Promise<RowKey | undefined>);
 type SheetRow = { _rowIndex: number | string } & Record<string, string | number | undefined>;
+
+function sheetValueInputOption(tableName: string) {
+  // Bank accounts and tax IDs may begin with zero. RAW prevents Sheets from
+  // coercing these strings into numbers and dropping the leading zero.
+  return tableName === "PaymentRequests" ? "RAW" : "USER_ENTERED";
+}
 
 const MASTER_READ_CACHE_TTL_MS = 10 * 60 * 1000;
 const MASTER_READ_STALE_TTL_MS = 60 * 60 * 1000;
@@ -73,29 +81,37 @@ function clearSiteReadCache(spreadsheetId: string, tableName?: string) {
   siteReadCache.delete(getReadCacheKey(spreadsheetId, tableName));
 }
 
-function rowsToRecords(rows: unknown[][]) {
+function rowsToRecords(rows: unknown[][], tableName: string, schema: SheetSchema) {
   if (rows.length === 0) return [] as SheetRow[];
 
-  const headers = rows[0].map((header) => String(header || ""));
-  const dataRows = rows.slice(1);
+  const currentHeaders = rows[0].map((header) => String(header || ""));
+  const targetHeaders = schema[tableName];
+  const headerMismatch = targetHeaders && (
+    currentHeaders.length < targetHeaders.length ||
+    targetHeaders.some((header, index) => currentHeaders[index] !== header)
+  );
+  const headers = headerMismatch ? Array.from(targetHeaders) : currentHeaders;
+  const dataRows = headerMismatch
+    ? migrateSheetRows(tableName, currentHeaders, headers, rows.slice(1))
+    : rows.slice(1);
 
   return dataRows.map((row, rowIndex) => {
     const obj = { _rowIndex: rowIndex + 2 } as SheetRow;
     headers.forEach((header, colIndex) => {
-      obj[header] = String(row[colIndex] || "");
+      obj[header] = String(row[colIndex] ?? "");
     });
     return obj;
   });
 }
 
-async function findAllFromSheet(spreadsheetId: string, tableName: string) {
+async function findAllFromSheet(spreadsheetId: string, tableName: string, schema: SheetSchema) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${tableName}`,
     });
 
-    return rowsToRecords(res.data.values || []);
+    return rowsToRecords(res.data.values || [], tableName, schema);
   } catch (error) {
     if (isQuotaExceeded(error)) {
       console.warn(`Read quota exceeded in findAll(${tableName}).`);
@@ -107,11 +123,11 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string) {
 }
 
 export async function findAllRaw(tableName: string, spreadsheetId: string = SHEET_ID) {
-  return findAllFromSheet(spreadsheetId, tableName);
+  return findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA);
 }
 
 export async function findAllMasterRaw(tableName: MasterTable) {
-  return findAllFromSheet(MASTER_SHEET_ID, String(tableName));
+  return findAllFromSheet(MASTER_SHEET_ID, String(tableName), MASTER_SCHEMA);
 }
 
 async function findAllFromSiteCache(spreadsheetId: string, tableName: string) {
@@ -127,7 +143,7 @@ async function findAllFromSiteCache(spreadsheetId: string, tableName: string) {
     return cached.promise;
   }
 
-  const promise = findAllFromSheet(spreadsheetId, tableName)
+  const promise = findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA)
     .then((rows) => {
       siteReadCache.set(cacheKey, {
         expiresAt: Date.now() + SITE_READ_CACHE_TTL_MS,
@@ -176,12 +192,12 @@ async function insertToSheet(
     if (headers.includes("updated_at") && !payload.updated_at) payload.updated_at = now;
 
     // Create row array based on header order
-    const row = headers.map((h) => payload[h] || "");
+    const row = headers.map((h) => payload[h] ?? "");
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${tableName}!A:A`,
-      valueInputOption: "USER_ENTERED",
+      valueInputOption: sheetValueInputOption(tableName),
       insertDataOption: "INSERT_ROWS",
       requestBody: {
         values: [row],
@@ -191,6 +207,41 @@ async function insertToSheet(
     return { success: true, inserted: payload };
   } catch (error) {
     console.error(`Error in insert(${tableName}):`, error);
+    throw error;
+  }
+}
+
+async function insertManyToSheet(
+  spreadsheetId: string,
+  schema: SheetSchema,
+  tableName: string,
+  rows: Record<string, SheetValue>[]
+) {
+  try {
+    const headers = schema[tableName];
+    const now = new Date().toISOString();
+    const payloads = rows.map((data) => {
+      const payload = { ...data };
+      if (headers.includes("created_at") && !payload.created_at) payload.created_at = now;
+      if (headers.includes("updated_at") && !payload.updated_at) payload.updated_at = now;
+      return payload;
+    });
+
+    if (payloads.length === 0) return { success: true, inserted: [] };
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${tableName}!A:A`,
+      valueInputOption: sheetValueInputOption(tableName),
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: payloads.map((payload) => headers.map((header) => payload[header] ?? "")),
+      },
+    });
+
+    return { success: true, inserted: payloads };
+  } catch (error) {
+    console.error(`Error in insertMany(${tableName}):`, error);
     throw error;
   }
 }
@@ -220,7 +271,7 @@ async function updateInSheet(
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
       requestBody: {
-        valueInputOption: "USER_ENTERED",
+        valueInputOption: sheetValueInputOption(tableName),
         data,
       },
     });
@@ -355,7 +406,7 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
     })
       .then((response) => {
         pendingTables.forEach((tableName, index) => {
-          const rows = rowsToRecords(response.data.valueRanges?.[index]?.values || []);
+          const rows = rowsToRecords(response.data.valueRanges?.[index]?.values || [], tableName, SITE_SCHEMA);
           siteReadCache.set(getReadCacheKey(spreadsheetId, tableName), {
             expiresAt: Date.now() + SITE_READ_CACHE_TTL_MS,
             staleUntil: Date.now() + SITE_READ_STALE_TTL_MS,
@@ -428,7 +479,7 @@ export async function findAllMaster(tableName: MasterTable) {
     return cached.promise;
   }
 
-  const promise = findAllFromSheet(MASTER_SHEET_ID, String(tableName))
+  const promise = findAllFromSheet(MASTER_SHEET_ID, String(tableName), MASTER_SCHEMA)
     .then((rows) => {
       masterReadCache.set(cacheKey, {
         expiresAt: Date.now() + MASTER_READ_CACHE_TTL_MS,
@@ -477,6 +528,29 @@ export async function insert(tableName: SiteTable, data: Record<string, SheetVal
   return result;
 }
 
+export async function insertMany(tableName: SiteTable, rows: Record<string, SheetValue>[], spreadsheetId: string = SHEET_ID) {
+  if (rows.length === 0) return { success: true, inserted: [] };
+
+  const supabaseConfig = getSupabaseSiteConfig(String(tableName));
+  if (shouldUseSupabase() && supabaseConfig) {
+    try {
+      const inserted = [];
+      for (const row of rows) {
+        const result = await insertSupabase(supabaseConfig, row, await resolveSiteProjectId(spreadsheetId, row));
+        if (result.inserted) inserted.push(result.inserted);
+      }
+      return { success: true, inserted };
+    } catch (error) {
+      if (!shouldFallbackToSheets()) throw error;
+      warnSupabaseFallback(`insertMany ${String(tableName)}`, error);
+    }
+  }
+
+  const result = await insertManyToSheet(spreadsheetId, SITE_SCHEMA, String(tableName), rows);
+  clearSiteReadCache(spreadsheetId, String(tableName));
+  return result;
+}
+
 export async function insertMaster(tableName: MasterTable, data: Record<string, SheetValue>) {
   const supabaseConfig = getSupabaseMasterConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
@@ -498,7 +572,7 @@ export async function update(
   rowIndex: RowKey,
   patch: Record<string, SheetValue>,
   spreadsheetId: string = SHEET_ID,
-  fallbackRowIndex?: RowKey,
+  fallbackRowIndex?: FallbackRowKey,
   projectId?: string | null
 ) {
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
@@ -511,7 +585,8 @@ export async function update(
     }
   }
 
-  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  const resolvedFallback = typeof fallbackRowIndex === "function" ? await fallbackRowIndex() : fallbackRowIndex;
+  const numericRowIndex = Number(resolvedFallback ?? rowIndex);
   if (!Number.isFinite(numericRowIndex)) {
     throw new Error(`Google Sheets update for ${String(tableName)} requires a numeric row index`);
   }
@@ -551,7 +626,7 @@ export async function deleteRow(
   tableName: SiteTable,
   rowIndex: RowKey,
   spreadsheetId: string = SHEET_ID,
-  fallbackRowIndex?: RowKey,
+  fallbackRowIndex?: FallbackRowKey,
   projectId?: string | null
 ) {
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
@@ -564,7 +639,8 @@ export async function deleteRow(
     }
   }
 
-  const numericRowIndex = Number(fallbackRowIndex ?? rowIndex);
+  const resolvedFallback = typeof fallbackRowIndex === "function" ? await fallbackRowIndex() : fallbackRowIndex;
+  const numericRowIndex = Number(resolvedFallback ?? rowIndex);
   if (!Number.isFinite(numericRowIndex)) {
     throw new Error(`Google Sheets delete for ${String(tableName)} requires a numeric row index`);
   }

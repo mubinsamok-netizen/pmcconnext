@@ -41,6 +41,7 @@ import {
   getWarrantyReminderTargets,
   type SheetRecord as LifecycleSheetRecord,
 } from "@/lib/projectLifecycle";
+import CustomerPortalShareButton from "@/components/CustomerPortalShareButton";
 
 export const dynamic = "force-dynamic";
 
@@ -1307,6 +1308,11 @@ export default async function SiteDashboardPage({
           </div>
           <div className="border-t border-gray-100 bg-gray-50 p-4 xl:border-l xl:border-t-0">
             <SiteWeatherCard weather={weather} />
+            {!isForeman ? (
+              <div className="mt-3">
+                <CustomerPortalShareButton projectId={project.project_id} />
+              </div>
+            ) : null}
           </div>
         </div>
       </section>

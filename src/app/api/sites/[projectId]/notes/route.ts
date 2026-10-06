@@ -111,12 +111,15 @@ async function createNote(req: Request, context: RouteContext) {
   if (!title && !body) return NextResponse.json({ error: "กรุณากรอกหัวข้อหรือรายละเอียด" }, { status: 400 });
 
   const noteId = makeId("NOTE");
+  const timestamp = new Date().toISOString();
   const files = formData.getAll("files").filter((item): item is File => item instanceof File && item.size > 0);
   const attachments = await uploadNoteAttachments(context, noteId, files);
   const actorName = context.session.user.name || "";
   const actorEmail = context.session.user.email || "";
   const payload = {
     note_id: noteId,
+    created_at: timestamp,
+    updated_at: timestamp,
     project_id: context.project.project_id,
     title: title || "บันทึกหน้างาน",
     body,
@@ -147,6 +150,7 @@ async function patchNote(body: Record<string, unknown>, context: RouteContext) {
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบบันทึกหน้างาน" }, { status: 404 });
 
   const patch: Record<string, string> = {
+    updated_at: new Date().toISOString(),
     updated_by_name: context.session.user.name || "",
     updated_by_email: context.session.user.email || "",
   };

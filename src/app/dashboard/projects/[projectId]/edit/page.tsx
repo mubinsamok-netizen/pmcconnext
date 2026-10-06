@@ -134,13 +134,21 @@ function normalizeDate(date?: string) {
 
 function extractDriveFileId(url?: string) {
   if (!url) return "";
-  return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
+  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
+}
+
+function looksLikeDriveFileId(value?: string) {
+  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
 }
 
 function getCoverSrc(project: Pick<Project, "cover_file_id" | "cover_url">) {
-  const fileId = project.cover_file_id || extractDriveFileId(project.cover_url);
+  const coverFileId = String(project.cover_file_id || "").trim();
+  const coverUrl = String(project.cover_url || "").trim();
+  const fileId = looksLikeDriveFileId(coverFileId)
+    ? coverFileId
+    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
   if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
-  return project.cover_url || "";
+  return coverUrl;
 }
 
 function toForm(project: Project): ProjectForm {

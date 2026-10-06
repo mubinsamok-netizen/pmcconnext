@@ -7,16 +7,17 @@ import useSWR from "swr";
 import {
   ArrowDown,
   ArrowUp,
-  BarChart3,
   Bell,
   CalendarClock,
   CalendarDays,
+  CalendarRange,
   ChevronDown,
   ChevronRight,
   CheckSquare,
   CheckCircle2,
   ClipboardCheck,
   CircleDot,
+  Download,
   Edit3,
   ExternalLink,
   FileSpreadsheet,
@@ -24,17 +25,23 @@ import {
   Flag,
   GripVertical,
   Loader2,
+  Maximize2,
+  Minimize2,
   Plus,
   Printer,
   Search,
   Send,
+  Share2,
   Trash2,
   Upload,
+  ZoomIn,
+  ZoomOut,
   X,
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { CUSTOMER_DECISION_PHASES, CUSTOMER_DECISION_STATUSES } from "@/lib/customerDecisions";
 import { fetcher } from "@/lib/fetcher";
+import { downloadScheduleWorkbook } from "@/lib/scheduleExcel";
 
 type Project = {
   project_id: string;
@@ -172,6 +179,13 @@ type ApiListResponse<T> = {
   data: T[];
 };
 
+type ScheduleTemplateCategory = {
+  id: string;
+  wbs: string;
+  name: string;
+  taskCount: number;
+};
+
 type CustomerDecisionResponse = ApiListResponse<CustomerDecision> & {
   line?: {
     test_mode?: boolean;
@@ -189,6 +203,11 @@ type Timeline = {
   dayTicks: { key: string; date: Date; left: number }[];
   monthGroups: { label: string; left: number; width: number }[];
 };
+
+type TimelineFocusRange = {
+  start: string;
+  end: string;
+};
 type TaskPatch = Partial<Omit<Task, "task_id" | "project_id" | "_rowIndex">>;
 type TaskDateForm = {
   start: string;
@@ -204,8 +223,8 @@ type GanttPrintSegment = {
 
 const TASK_STATUSES = ["To Do", "In Progress", "Review", "Done"];
 const TASK_TYPES = [
-  { value: "heading", label: "H1 หัวข้อหลัก" },
-  { value: "subtask", label: "งานย่อย" },
+  { value: "heading", label: "หัวข้อ / กลุ่มงาน" },
+  { value: "subtask", label: "งานจริง" },
 ];
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -283,13 +302,12 @@ const MILESTONE_TYPES = ["งวดงาน", "ตรวจงาน", "ส่�
 const MILESTONE_COLORS = ["#f97316", "#2563eb", "#16a34a", "#dc2626", "#7c3aed", "#0f766e"];
 const COLLAPSED_STORAGE_KEY = "pmc.schedule.collapsedHeadings.v1";
 const PLAN_PRINT_ROWS_PER_PAGE = 28;
-const GANTT_PRINT_DAYS_PER_PAGE = 56;
-const GANTT_PRINT_ROWS_PER_PAGE = 16;
+const GANTT_PRINT_ROWS_PER_PAGE = 20;
 const GANTT_PRINT_SVG_WIDTH = 1500;
 const GANTT_PRINT_LEFT_WIDTH = 410;
 const GANTT_PRINT_CHART_WIDTH = GANTT_PRINT_SVG_WIDTH - GANTT_PRINT_LEFT_WIDTH - 28;
 const GANTT_PRINT_HEADER_HEIGHT = 86;
-const GANTT_PRINT_ROW_HEIGHT = 38;
+const GANTT_PRINT_ROW_HEIGHT = 34;
 const DECISION_SAVE_TIMEOUT_MS = 25000;
 const DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS = 90000;
 const DECISION_EVIDENCE_MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -334,6 +352,8 @@ const emptyDecisionForm: CustomerDecisionForm = {
   decided_by: "",
   order_index: "",
 };
+
+const AUTO_CATEGORY_COLORS = ["#ea580c", "#2563eb", "#0f766e", "#7c3aed", "#be123c", "#4d7c0f", "#0369a1"];
 
 const CUSTOM_DECISION_PHASE_VALUE = "__custom_decision_phase__";
 
@@ -397,13 +417,7 @@ function truncateText(value: string | undefined, maxLength: number) {
 }
 
 function buildGanttPrintSegments(timeline: Timeline): GanttPrintSegment[] {
-  const totalDays = Math.max(1, diffDays(timeline.start, timeline.end) + 1);
-  const pageCount = Math.max(1, Math.ceil(totalDays / GANTT_PRINT_DAYS_PER_PAGE));
-  return Array.from({ length: pageCount }, (_, index) => {
-    const start = addDays(timeline.start, index * GANTT_PRINT_DAYS_PER_PAGE);
-    const end = minDate(addDays(start, GANTT_PRINT_DAYS_PER_PAGE - 1), timeline.end);
-    return { start, end, index: index + 1, total: pageCount };
-  });
+  return [{ start: timeline.start, end: timeline.end, index: 1, total: 1 }];
 }
 
 function buildGanttPrintTicks(segment: GanttPrintSegment) {
@@ -413,7 +427,8 @@ function buildGanttPrintTicks(segment: GanttPrintSegment) {
   for (let day = 0; day < totalDays; day += step) {
     ticks.push(addDays(segment.start, day));
   }
-  if (toInputDate(ticks[ticks.length - 1] || segment.start) !== toInputDate(segment.end)) ticks.push(segment.end);
+  const lastTick = ticks[ticks.length - 1] || segment.start;
+  if (diffDays(lastTick, segment.end) >= 6) ticks.push(segment.end);
   return ticks;
 }
 
@@ -436,7 +451,8 @@ function daysBetween(start?: string, end?: string) {
 }
 
 function getInitialTab(tab?: string | null): ActiveTab {
-  return tab === "tracker" || tab === "plan" || tab === "gantt" || tab === "decisions" ? tab : "plan";
+  if (tab === "gantt") return "plan";
+  return tab === "tracker" || tab === "plan" || tab === "decisions" ? tab : "plan";
 }
 
 function formatDate(value?: string, options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short", year: "numeric" }) {
@@ -450,6 +466,10 @@ function formatDateShort(value?: string) {
   if (!date) return "-";
   const buddhistYear = String(date.getFullYear() + 543).slice(-2);
   return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${buddhistYear}`;
+}
+
+function hasTaskScheduleDates(task: Pick<Task, "start" | "end">) {
+  return Boolean(parseDate(task.start) || parseDate(task.end));
 }
 
 function clamp(value: number, min = 0, max = 100) {
@@ -502,6 +522,50 @@ function percentBetween(date: Date, start: Date, totalDays: number) {
   return clamp((diff / (totalDays * 86400000)) * 100);
 }
 
+function buildTimelineForRange(start: Date, end: Date): Timeline {
+  const rangeStart = start <= end ? start : end;
+  const rangeEnd = end >= start ? end : start;
+  const totalDays = Math.max(1, diffDays(rangeStart, rangeEnd));
+  const dayStep = totalDays <= 14 ? 1 : totalDays <= 45 ? 3 : totalDays <= 120 ? 7 : totalDays <= 240 ? 14 : 30;
+  const dayTicks = [];
+
+  for (let day = 0; day <= totalDays; day += dayStep) {
+    const current = addDays(rangeStart, day);
+    dayTicks.push({
+      key: toInputDate(current),
+      date: current,
+      left: percentBetween(current, rangeStart, totalDays),
+    });
+  }
+
+  if (toInputDate(dayTicks[dayTicks.length - 1]?.date || rangeStart) !== toInputDate(rangeEnd)) {
+    dayTicks.push({
+      key: toInputDate(rangeEnd),
+      date: rangeEnd,
+      left: 100,
+    });
+  }
+
+  const monthGroups: { label: string; left: number; width: number }[] = [];
+  const cursor = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1, 12);
+  while (cursor <= rangeEnd) {
+    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1, 12);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 12);
+    const visibleStart = monthStart < rangeStart ? rangeStart : monthStart;
+    const visibleEnd = monthEnd > rangeEnd ? rangeEnd : monthEnd;
+    const left = percentBetween(visibleStart, rangeStart, totalDays);
+    const right = percentBetween(visibleEnd, rangeStart, totalDays);
+    monthGroups.push({
+      label: new Intl.DateTimeFormat("th-TH", { month: "long", year: "numeric" }).format(monthStart),
+      left,
+      width: Math.max(3, right - left),
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return { start: rangeStart, end: rangeEnd, totalDays, dayTicks, monthGroups };
+}
+
 function normalizeTask(task: Task, index: number): Task {
   const start = task.start || task.planned_start || "";
   const end = task.end || task.planned_end || "";
@@ -543,23 +607,155 @@ function isHeadingTask(task: Task) {
   return task.task_type === "heading";
 }
 
+function getTaskDepth(task: Task, taskMap: Map<string, Task>) {
+  let depth = 0;
+  let parentId = task.parent_task_id || "";
+  const seen = new Set<string>([task.task_id]);
+
+  while (parentId && !seen.has(parentId)) {
+    const parent = taskMap.get(parentId);
+    if (!parent) break;
+    depth += 1;
+    seen.add(parentId);
+    parentId = parent.parent_task_id || "";
+  }
+
+  return depth;
+}
+
+function getTaskLevelLabel(task: Task, taskMap: Map<string, Task>) {
+  const level = getTaskDepth(task, taskMap) + 1;
+  return isHeadingTask(task) ? `H${level} กลุ่มงาน` : `H${level} งาน`;
+}
+
+function getHeadingDisplay(depth: number) {
+  if (depth === 0) {
+    return {
+      row: "bg-slate-900 text-white",
+      border: "border-slate-800",
+      toggle: "border border-white/20 bg-white/10 text-white hover:bg-white/20",
+      badge: "bg-white/15 text-white",
+      meta: "text-white/75",
+      secondaryButton: "bg-white/10 text-white hover:bg-white/20",
+      editButton: "text-white/75 hover:bg-white/10 hover:text-white",
+      deleteButton: "text-white/75 hover:bg-red-500 hover:text-white",
+    };
+  }
+
+  if (depth === 1) {
+    return {
+      row: "bg-amber-50 text-slate-950",
+      border: "border-amber-200",
+      toggle: "border border-amber-300 bg-white text-amber-800 hover:bg-amber-100",
+      badge: "bg-amber-100 text-amber-900",
+      meta: "text-amber-800",
+      secondaryButton: "bg-amber-100 text-amber-900 hover:bg-amber-200",
+      editButton: "text-slate-500 hover:bg-amber-100 hover:text-amber-800",
+      deleteButton: "text-slate-500 hover:bg-red-50 hover:text-red-600",
+    };
+  }
+
+  return {
+    row: "bg-white text-slate-950",
+    border: "border-slate-200",
+    toggle: "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
+    badge: "bg-slate-100 text-slate-700",
+    meta: "text-slate-500",
+    secondaryButton: "bg-slate-100 text-slate-700 hover:bg-slate-200",
+    editButton: "text-slate-400 hover:bg-orange-50 hover:text-orange-600",
+    deleteButton: "text-slate-400 hover:bg-red-50 hover:text-red-600",
+  };
+}
+
+function getGanttHeadingTone(depth: number) {
+  if (depth === 0) {
+    return {
+      row: "border-slate-800",
+      left: "border-slate-800 bg-slate-900 text-white",
+      chart: "bg-slate-950",
+      dot: "#f97316",
+      meta: "text-white/70",
+      bar: "#f97316",
+      barText: "#ffffff",
+    };
+  }
+
+  if (depth === 1) {
+    return {
+      row: "border-amber-200",
+      left: "border-amber-200 bg-amber-50 text-slate-950",
+      chart: "bg-amber-50/45",
+      dot: "#f59e0b",
+      meta: "text-amber-800",
+      bar: "#f59e0b",
+      barText: "#111827",
+    };
+  }
+
+  return {
+    row: "border-slate-200",
+    left: "border-slate-200 bg-white text-slate-950",
+    chart: "bg-white",
+    dot: "#64748b",
+    meta: "text-slate-500",
+    bar: "#64748b",
+    barText: "#ffffff",
+  };
+}
+
+function getDescendantTasks(parentTask: Task, tasks: Task[]) {
+  const childrenByParent = new Map<string, Task[]>();
+  tasks.forEach((task) => {
+    if (!task.parent_task_id) return;
+    const current = childrenByParent.get(task.parent_task_id) || [];
+    current.push(task);
+    childrenByParent.set(task.parent_task_id, current);
+  });
+
+  const descendants: Task[] = [];
+  const visit = (taskId: string) => {
+    const children = childrenByParent.get(taskId) || [];
+    children.forEach((child) => {
+      descendants.push(child);
+      visit(child.task_id);
+    });
+  };
+
+  visit(parentTask.task_id);
+  return descendants;
+}
+
 function getParentTaskName(task: Task, taskMap: Map<string, Task>) {
   if (!task.parent_task_id) return "";
   return taskMap.get(task.parent_task_id)?.name || "";
 }
 
 function getTaskCategoryName(task: Task, taskMap: Map<string, Task>) {
-  if (isHeadingTask(task)) return task.name || task.category || "";
-  if (task.parent_task_id) {
-    const parent = taskMap.get(task.parent_task_id);
-    if (parent) return parent.name || parent.category || "";
+  let rootTask = task;
+  const seen = new Set<string>();
+
+  while (rootTask.parent_task_id && !seen.has(rootTask.task_id)) {
+    seen.add(rootTask.task_id);
+    const parent = taskMap.get(rootTask.parent_task_id);
+    if (!parent) break;
+    rootTask = parent;
   }
-  return task.category || "";
+
+  if (rootTask.task_id !== task.task_id || isHeadingTask(rootTask)) {
+    return rootTask.name || rootTask.category || task.category || "";
+  }
+
+  return task.category || task.name || "";
 }
 
 function getTaskCategoryColor(task: Task, taskMap: Map<string, Task>) {
   const categoryName = getTaskCategoryName(task, taskMap);
-  return CATEGORY_COLORS[categoryName] || "#607d8b";
+  if (CATEGORY_COLORS[categoryName]) return CATEGORY_COLORS[categoryName];
+  const hash = Array.from(categoryName || task.task_id).reduce(
+    (value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0,
+    0
+  );
+  return AUTO_CATEGORY_COLORS[hash % AUTO_CATEGORY_COLORS.length];
 }
 
 function readCollapsedState(): CollapsedState {
@@ -587,15 +783,16 @@ function sortTaskList(tasks: Task[]) {
   });
 }
 
-function getHeadingSummaryTask(heading: Task, children: Task[], collapsed: boolean): Task {
-  const childDates = children
+function getHeadingSummaryTask(heading: Task, descendants: Task[], collapsed: boolean): Task {
+  const workDescendants = descendants.filter((child) => !isHeadingTask(child));
+  const childDates = workDescendants
     .flatMap((child) => [parseDate(child.start), parseDate(child.end)])
     .filter((date): date is Date => Boolean(date))
     .sort((a, b) => a.getTime() - b.getTime());
-  const plannedChildren = children.filter((child) => parseDate(child.start) && parseDate(child.end)).length;
+  const progressSum = workDescendants.reduce((sum, child) => sum + clamp(Number(child.percent_done || 0)), 0);
   const start = childDates[0] ? toInputDate(childDates[0]) : "";
   const end = childDates[childDates.length - 1] ? toInputDate(childDates[childDates.length - 1]) : "";
-  const planPercent = children.length ? Math.round((plannedChildren / children.length) * 100) : 0;
+  const planPercent = workDescendants.length ? Math.round(progressSum / workDescendants.length) : 0;
 
   return {
     ...heading,
@@ -605,57 +802,120 @@ function getHeadingSummaryTask(heading: Task, children: Task[], collapsed: boole
     planned_end: end,
     duration_days: daysBetween(start, end),
     percent_done: String(planPercent),
-    summary_child_count: children.length,
+    summary_child_count: workDescendants.length,
     is_collapsed: collapsed,
   };
 }
 
 function buildTaskRows(tasks: Task[], collapsedHeadings: Record<string, boolean>) {
   const sorted = sortTaskList(tasks);
-  const headingIds = new Set(sorted.filter(isHeadingTask).map((task) => task.task_id));
+  const taskIds = new Set(sorted.map((task) => task.task_id));
+  const taskMap = new Map(sorted.map((task) => [task.task_id, task]));
   const childrenByParent = new Map<string, Task[]>();
 
   sorted.forEach((task) => {
-    if (isHeadingTask(task) || !task.parent_task_id || !headingIds.has(task.parent_task_id)) return;
+    if (!task.parent_task_id || !taskIds.has(task.parent_task_id)) return;
     const current = childrenByParent.get(task.parent_task_id) || [];
     current.push(task);
     childrenByParent.set(task.parent_task_id, current);
   });
 
   const ordered: Task[] = [];
-  sorted.forEach((task) => {
-    if (isHeadingTask(task)) {
-      const children = childrenByParent.get(task.task_id) || [];
+  const descendantsCache = new Map<string, Task[]>();
+  const collecting = new Set<string>();
+
+  const collectDescendants = (task: Task): Task[] => {
+    const cached = descendantsCache.get(task.task_id);
+    if (cached) return cached;
+    if (collecting.has(task.task_id)) return [];
+    collecting.add(task.task_id);
+    const descendants = (childrenByParent.get(task.task_id) || []).flatMap((child) => [child, ...collectDescendants(child)]);
+    collecting.delete(task.task_id);
+    descendantsCache.set(task.task_id, descendants);
+    return descendants;
+  };
+
+  const visited = new Set<string>();
+  const visit = (task: Task) => {
+    if (visited.has(task.task_id)) return;
+    visited.add(task.task_id);
+    const hasChildren = Boolean((childrenByParent.get(task.task_id) || []).length);
+    if (isHeadingTask(task) || hasChildren) {
       const collapsed = Boolean(collapsedHeadings[task.task_id]);
-      ordered.push(getHeadingSummaryTask(task, children, collapsed));
-      if (!collapsed) ordered.push(...children);
+      ordered.push(getHeadingSummaryTask({ ...task, task_type: "heading" }, collectDescendants(task), collapsed));
+      if (!collapsed) {
+        (childrenByParent.get(task.task_id) || []).forEach(visit);
+      }
       return;
     }
 
-    if (!task.parent_task_id || !headingIds.has(task.parent_task_id)) {
-      ordered.push(task);
+    ordered.push(task);
+    (childrenByParent.get(task.task_id) || []).forEach(visit);
+  };
+
+  sorted.forEach((task) => {
+    if (!task.parent_task_id || !taskIds.has(task.parent_task_id)) {
+      visit(task);
     }
+  });
+  sorted.forEach((task) => {
+    if (visited.has(task.task_id)) return;
+
+    let parentId = task.parent_task_id || "";
+    const seen = new Set<string>();
+    let hiddenByCollapsedAncestor = false;
+    while (parentId && !seen.has(parentId)) {
+      if (visited.has(parentId)) {
+        hiddenByCollapsedAncestor = true;
+        break;
+      }
+      seen.add(parentId);
+      parentId = taskMap.get(parentId)?.parent_task_id || "";
+    }
+
+    if (!hiddenByCollapsedAncestor) visit(task);
   });
 
   return ordered;
 }
 
 function getTaskOutlineNumber(task: Task, visibleRows: Task[], allRows: Task[]) {
-  const visibleHeadings = visibleRows.filter(isHeadingTask);
-  if (isHeadingTask(task)) {
-    const headingIndex = visibleHeadings.findIndex((item) => item.task_id === task.task_id);
-    return headingIndex >= 0 ? String(headingIndex + 1) : String(getTaskOrder(task));
+  const rows = sortTaskList(allRows.length ? allRows : visibleRows);
+  const taskIds = new Set(rows.map((item) => item.task_id));
+  const childrenByParent = new Map<string, Task[]>();
+
+  rows.forEach((item) => {
+    if (!item.parent_task_id || !taskIds.has(item.parent_task_id)) return;
+    const current = childrenByParent.get(item.parent_task_id) || [];
+    current.push(item);
+    childrenByParent.set(item.parent_task_id, current);
+  });
+
+  const findPath = (items: Task[], prefix: number[] = [], seen = new Set<string>()): number[] | null => {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (seen.has(item.task_id)) continue;
+      const path = [...prefix, index + 1];
+      if (item.task_id === task.task_id) return path;
+      const nextSeen = new Set(seen);
+      nextSeen.add(item.task_id);
+      const childPath = findPath(childrenByParent.get(item.task_id) || [], path, nextSeen);
+      if (childPath) return childPath;
+    }
+
+    return null;
+  };
+
+  const roots = rows.filter((item) => !item.parent_task_id || !taskIds.has(item.parent_task_id));
+  const path = findPath(roots);
+  if (path) return path.join(".");
+
+  const visibleIndex = visibleRows.findIndex((item) => item.task_id === task.task_id);
+  if (visibleIndex >= 0) {
+    return String(visibleIndex + 1);
   }
 
-  if (task.parent_task_id) {
-    const parentIndex = visibleHeadings.findIndex((item) => item.task_id === task.parent_task_id);
-    const siblings = sortTaskList(allRows.filter((item) => item.parent_task_id === task.parent_task_id && !isHeadingTask(item)));
-    const childIndex = siblings.findIndex((item) => item.task_id === task.task_id);
-    if (parentIndex >= 0 && childIndex >= 0) return `${parentIndex + 1}.${childIndex + 1}`;
-  }
-
-  const looseIndex = visibleRows.filter((item) => !isHeadingTask(item) && !item.parent_task_id).findIndex((item) => item.task_id === task.task_id);
-  return looseIndex >= 0 ? String(looseIndex + 1) : String(getTaskOrder(task));
+  return String(getTaskOrder(task));
 }
 
 function dateRangeLabel(start: Date, end: Date) {
@@ -750,7 +1010,7 @@ async function postDecisionJson(projectId: string, body: Record<string, unknown>
   }
 }
 
-export default function SchedulePlanner({ projects }: { projects: Project[] }) {
+export default function SchedulePlanner({ projects, showPageHeader = false }: { projects: Project[]; showPageHeader?: boolean }) {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => getInitialTab(searchParams.get("tab")));
   const [selectedProject, setSelectedProject] = useState(projects[0]?.project_id || "");
@@ -759,15 +1019,24 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showMilestoneForm, setShowMilestoneForm] = useState(false);
   const [showDecisionForm, setShowDecisionForm] = useState(false);
+  const [showScheduleTemplateModal, setShowScheduleTemplateModal] = useState(false);
   const [taskForm, setTaskForm] = useState<TaskForm>(emptyTaskForm);
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(emptyMilestoneForm);
   const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
+  const [selectedTemplateCategoryIds, setSelectedTemplateCategoryIds] = useState<string[]>([]);
   const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
   const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");
   const [saving, setSaving] = useState(false);
+  const [importingScheduleTemplate, setImportingScheduleTemplate] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [message, setMessage] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null);
   const [quickDateEdit, setQuickDateEdit] = useState(false);
+  const [ganttDatedOnly, setGanttDatedOnly] = useState(false);
+  const [ganttExpanded, setGanttExpanded] = useState(false);
+  const [ganttFocusRange, setGanttFocusRange] = useState<TimelineFocusRange | null>(null);
   const [dateEditTask, setDateEditTask] = useState<Task | null>(null);
   const [dateEditForm, setDateEditForm] = useState<TaskDateForm>({ start: "", end: "" });
   const [collapsedByProject, setCollapsedByProject] = useState<CollapsedState>(readCollapsedState);
@@ -787,21 +1056,41 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const taskKey = selectedProject ? `/api/tasks?project_id=${selectedProject}` : null;
   const milestoneKey = selectedProject ? `/api/milestones?project_id=${selectedProject}` : null;
   const decisionKey = selectedProject && activeTab === "decisions" ? `/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions` : null;
+  const scheduleTemplateKey = showScheduleTemplateModal ? "/api/tasks/template" : null;
 
   const { data: taskRes, isLoading: tasksLoading, mutate: mutateTasks } = useSWR<ApiListResponse<Task>>(taskKey, fetcher);
   const { data: milestoneRes, isLoading: milestonesLoading, mutate: mutateMilestones } = useSWR<ApiListResponse<Milestone>>(milestoneKey, fetcher);
   const { data: decisionRes, isLoading: decisionsLoading, mutate: mutateDecisions } = useSWR<CustomerDecisionResponse>(decisionKey, fetcher);
+  const { data: scheduleTemplateRes, isLoading: scheduleTemplateLoading } = useSWR<ApiListResponse<ScheduleTemplateCategory>>(scheduleTemplateKey, fetcher);
 
   const tasks = useMemo(() => (taskRes?.data ?? []).map(normalizeTask), [taskRes?.data]);
   const milestones = useMemo(() => milestoneRes?.data ?? [], [milestoneRes?.data]);
   const decisions = useMemo(() => decisionRes?.data ?? [], [decisionRes?.data]);
+  const scheduleTemplateCategories = useMemo(() => scheduleTemplateRes?.data ?? [], [scheduleTemplateRes?.data]);
   const collapsedHeadings = useMemo(() => collapsedByProject[selectedProject] || {}, [collapsedByProject, selectedProject]);
 
   const sortedTasks = useMemo(() => sortTaskList(tasks), [tasks]);
   const visibleTaskRows = useMemo(() => buildTaskRows(tasks, collapsedHeadings), [collapsedHeadings, tasks]);
+  const ganttTaskRows = useMemo(() => {
+    return ganttDatedOnly ? visibleTaskRows.filter(hasTaskScheduleDates) : visibleTaskRows;
+  }, [ganttDatedOnly, visibleTaskRows]);
+  const datedGanttTaskCount = useMemo(() => visibleTaskRows.filter(hasTaskScheduleDates).length, [visibleTaskRows]);
 
   const taskMap = useMemo(() => new Map(sortedTasks.map((task) => [task.task_id, task])), [sortedTasks]);
-  const headingTasks = useMemo(() => sortedTasks.filter(isHeadingTask), [sortedTasks]);
+  const parentTaskOptions = useMemo(() => sortedTasks, [sortedTasks]);
+  const taskIdsWithChildren = useMemo(() => {
+    const ids = new Set<string>();
+    sortedTasks.forEach((task) => {
+      if (task.parent_task_id) ids.add(task.parent_task_id);
+    });
+    return ids;
+  }, [sortedTasks]);
+  const leafTasks = useMemo(() => {
+    return tasks.filter((task) => !isHeadingTask(task) && !taskIdsWithChildren.has(task.task_id));
+  }, [taskIdsWithChildren, tasks]);
+  const descendantTasksById = useMemo(() => {
+    return new Map(sortedTasks.map((task) => [task.task_id, getDescendantTasks(task, sortedTasks)]));
+  }, [sortedTasks]);
 
   const filteredTasks = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -829,7 +1118,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
   const timeline = useMemo(() => {
     const dates: Date[] = [];
-    visibleTaskRows.forEach((task) => {
+    ganttTaskRows.forEach((task) => {
       const start = parseDate(task.start);
       const end = parseDate(task.end);
       if (start) dates.push(start);
@@ -851,42 +1140,18 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     const end = dates.length ? new Date(Math.max(...dates.map((date) => date.getTime()))) : addDays(today, 45);
     const paddedStart = addDays(start, -2);
     const paddedEnd = addDays(end, 2);
-    const totalDays = Math.max(1, Math.round((paddedEnd.getTime() - paddedStart.getTime()) / 86400000));
-    const dayStep = totalDays <= 50 ? 1 : totalDays <= 110 ? 3 : totalDays <= 220 ? 7 : 14;
+    return buildTimelineForRange(paddedStart, paddedEnd);
+  }, [ganttTaskRows, selectedProjectData?.end_date, selectedProjectData?.start_date, sortedMilestones]);
 
-    const dayTicks = [];
-    for (let day = 0; day <= totalDays; day += dayStep) {
-      const current = addDays(paddedStart, day);
-      dayTicks.push({
-        key: toInputDate(current),
-        date: current,
-        left: percentBetween(current, paddedStart, totalDays),
-      });
-    }
-
-    const monthGroups: { label: string; left: number; width: number }[] = [];
-    let cursor = new Date(paddedStart.getFullYear(), paddedStart.getMonth(), 1, 12);
-    if (cursor < paddedStart) cursor = new Date(paddedStart.getFullYear(), paddedStart.getMonth(), 1, 12);
-    while (cursor <= paddedEnd) {
-      const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1, 12);
-      const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 12);
-      const visibleStart = monthStart < paddedStart ? paddedStart : monthStart;
-      const visibleEnd = monthEnd > paddedEnd ? paddedEnd : monthEnd;
-      const left = percentBetween(visibleStart, paddedStart, totalDays);
-      const right = percentBetween(visibleEnd, paddedStart, totalDays);
-      monthGroups.push({
-        label: new Intl.DateTimeFormat("th-TH", { month: "long", year: "numeric" }).format(monthStart),
-        left,
-        width: Math.max(3, right - left),
-      });
-      cursor.setMonth(cursor.getMonth() + 1);
-    }
-
-    return { start: paddedStart, end: paddedEnd, totalDays, dayTicks, monthGroups };
-  }, [selectedProjectData?.end_date, selectedProjectData?.start_date, sortedMilestones, visibleTaskRows]);
+  const displayedTimeline = useMemo(() => {
+    if (!ganttFocusRange) return timeline;
+    const start = parseDate(ganttFocusRange.start);
+    const end = parseDate(ganttFocusRange.end);
+    return start && end ? buildTimelineForRange(start, end) : timeline;
+  }, [ganttFocusRange, timeline]);
 
   const stats = useMemo(() => {
-    const workTasks = tasks.filter((task) => !isHeadingTask(task));
+    const workTasks = leafTasks;
     const done = workTasks.filter((task) => task.status === "Done").length;
     const inProgress = workTasks.filter((task) => task.status === "In Progress").length;
     const late = workTasks.filter((task) => {
@@ -901,12 +1166,34 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       late,
       average: workTasks.length ? Math.round(totalProgress / workTasks.length) : 0,
     };
-  }, [tasks]);
+  }, [leafTasks]);
 
   const today = new Date();
-  const todayLeft = today >= timeline.start && today <= timeline.end
-    ? percentBetween(today, timeline.start, timeline.totalDays)
+  const todayLeft = today >= displayedTimeline.start && today <= displayedTimeline.end
+    ? percentBetween(today, displayedTimeline.start, displayedTimeline.totalDays)
     : null;
+
+  async function copyRealtimeLink() {
+    if (!selectedProject || sharing) return;
+    setSharing(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/sites/${encodeURIComponent(selectedProject)}/schedule-share`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok || !result.url) throw new Error(result.error || "ไม่สามารถสร้างลิงก์ได้");
+      setShareUrl(result.url);
+      try {
+        await navigator.clipboard.writeText(result.url);
+        setMessage("คัดลอกลิงก์ดูแผนงาน Realtime แล้ว ผู้รับลิงก์จะดูได้อย่างเดียวและข้อมูลอัปเดตทุก 10 วินาที");
+      } catch {
+        setMessage("สร้างลิงก์ดูแผนงาน Realtime แล้ว สามารถคัดลอกจากช่องด้านล่างได้");
+      }
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSharing(false);
+    }
+  }
 
   const isLoading = tasksLoading || milestonesLoading;
   const showProjectSelector = projects.length > 1;
@@ -914,6 +1201,56 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   const handlePrint = (target: Exclude<PrintTarget, null>) => {
     setPrintTarget(target);
     window.setTimeout(() => window.print(), 80);
+  };
+
+  const handleExportExcel = async () => {
+    if (!selectedProjectData || exportingExcel) return;
+    setExportingExcel(true);
+    setMessage("");
+
+    try {
+      const exportRows = buildTaskRows(tasks, {});
+      const exportTaskMap = new Map(sortedTasks.map((task) => [task.task_id, task]));
+
+      await downloadScheduleWorkbook({
+        projectCode: selectedProjectData.project_id,
+        projectName: selectedProjectData.name,
+        clientName: selectedProjectData.client || "",
+        timelineStart: toInputDate(displayedTimeline.start),
+        timelineEnd: toInputDate(displayedTimeline.end),
+        rows: exportRows.map((task) => {
+          const duration = Number(task.duration_days || daysBetween(task.start, task.end));
+          const progress = Number(normalizeProgressValue(task.percent_done));
+          return {
+            wbs: getTaskOutlineNumber(task, exportRows, sortedTasks),
+            name: task.name,
+            level: getTaskLevelLabel(task, exportTaskMap),
+            depth: getTaskDepth(task, exportTaskMap),
+            assignee: isHeadingTask(task) ? "" : task.assignee || "",
+            start: task.start || "",
+            end: task.end || "",
+            durationDays: Number.isFinite(duration) && duration > 0 ? duration : null,
+            progress,
+            status: TASK_STATUS_LABELS[getStatusForProgress(progress)] || "-",
+            notes: task.notes || "",
+            color: getTaskCategoryColor(task, exportTaskMap),
+            isHeading: isHeadingTask(task),
+          };
+        }),
+        milestones: sortedMilestones.map((milestone) => ({
+          title: milestone.title,
+          date: milestone.date,
+          type: milestone.type || "Milestone",
+          notes: milestone.notes || "",
+          color: milestone.color || "#475569",
+        })),
+      });
+      setMessage("ดาวน์โหลดไฟล์ Excel แผนงานเรียบร้อยแล้ว");
+    } catch (error: unknown) {
+      setMessage(`ดาวน์โหลด Excel ไม่สำเร็จ: ${getErrorMessage(error)}`);
+    } finally {
+      setExportingExcel(false);
+    }
   };
 
   const toggleHeading = (taskId: string) => {
@@ -931,19 +1268,93 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
     const todayInput = toInputDate(new Date());
     const isHeading = taskType === "heading";
+    const parentTask = sortedTasks.find((task) => task.task_id === parentTaskId);
     setTaskForm({
       ...emptyTaskForm,
       task_type: taskType,
-      name: isHeading ? TASK_CATEGORIES[0] : "",
-      category: isHeading ? TASK_CATEGORIES[0] : "",
+      name: isHeading ? (parentTaskId ? "" : TASK_CATEGORIES[0]) : "",
+      category: isHeading ? (parentTask ? getTaskCategoryName(parentTask, taskMap) : TASK_CATEGORIES[0]) : "",
       order_index: String(sortedTasks.length + 1),
-      parent_task_id: isHeading ? "" : parentTaskId,
+      parent_task_id: parentTaskId,
       start: isHeading ? "" : todayInput,
       end: isHeading ? "" : todayInput,
       planned_start: isHeading ? "" : todayInput,
       planned_end: isHeading ? "" : todayInput,
     });
     setShowTaskForm(true);
+  };
+
+  const openScheduleTemplateModal = () => {
+    setMessage("");
+    setSelectedTemplateCategoryIds([]);
+    setShowScheduleTemplateModal(true);
+  };
+
+  const requestScheduleTemplateImport = async ({
+    categoryIds,
+    importAll = false,
+    closeModal = false,
+  }: {
+    categoryIds?: string[];
+    importAll?: boolean;
+    closeModal?: boolean;
+  }) => {
+    if (!selectedProject || importingScheduleTemplate || (!importAll && !categoryIds?.length)) return;
+
+    setImportingScheduleTemplate(true);
+    setMessage("");
+
+    try {
+      const res = await fetch("/api/tasks/template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: selectedProject,
+          ...(importAll ? { import_all: true } : { category_ids: categoryIds }),
+        }),
+      });
+
+      const json = await res.json() as {
+        data?: Task[];
+        count?: number;
+        reused_count?: number;
+        category_count?: number;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || "Failed to import schedule template");
+
+      const importedTasks = json.data || [];
+      void mutateTasks((current) => current ? {
+        ...current,
+        data: [...current.data, ...importedTasks],
+      } : current, { revalidate: false });
+      void mutateTasks().catch(() => undefined);
+      if (closeModal) setShowScheduleTemplateModal(false);
+      const insertedCount = json.count ?? importedTasks.length;
+      const reusedText = json.reused_count ? ` และใช้รายการเดิม ${json.reused_count} รายการ` : "";
+      if (importAll && insertedCount === 0 && json.reused_count) {
+        setMessage(`แผนงานครบตามแม่แบบแล้ว ใช้รายการเดิม ${json.reused_count} รายการ`);
+      } else {
+        const actionLabel = importAll ? "สร้างแผนงานทั้งโครงการ" : "เติมโครงสร้างแผนงานจากแม่แบบ";
+        const categoryText = json.category_count ? ` ${json.category_count} หมวด` : "";
+        setMessage(`${actionLabel}แล้ว${categoryText} เพิ่ม ${insertedCount} รายการ${reusedText}`);
+      }
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setImportingScheduleTemplate(false);
+    }
+  };
+
+  const importScheduleTemplate = async () => {
+    await requestScheduleTemplateImport({
+      categoryIds: selectedTemplateCategoryIds,
+      closeModal: true,
+    });
+  };
+
+  const importFullScheduleTemplate = async () => {
+    await requestScheduleTemplateImport({ importAll: true });
   };
 
   const openEditTask = (task: Task) => {
@@ -1161,9 +1572,11 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       ...taskForm,
       ...progressPatch,
       project_id: selectedProject,
-      category: isHeading ? taskForm.name : parentTask?.name || "",
+      category: isHeading
+        ? parentTask ? getTaskCategoryName(parentTask, taskMap) || taskForm.name : taskForm.name
+        : parentTask ? getTaskCategoryName(parentTask, taskMap) || parentTask.name : taskForm.category,
       order_index: taskForm.order_index || String(sortedTasks.length + 1),
-      parent_task_id: isHeading ? "" : taskForm.parent_task_id,
+      parent_task_id: taskForm.parent_task_id,
       start: plannedStart,
       end: plannedEnd,
       planned_start: plannedStart,
@@ -1219,24 +1632,23 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     setMessage("");
 
     try {
-      const params = new URLSearchParams({
-        project_id: task.project_id,
-      });
+      const tasksToDelete = [task, ...(descendantTasksById.get(task.task_id) || [])];
+      const params = new URLSearchParams({ project_id: task.project_id });
       if (task.task_id) params.set("task_id", task.task_id);
       if (task._rowIndex) params.set("_rowIndex", String(task._rowIndex));
-      const res = await fetch(`/api/tasks?${params.toString()}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`/api/tasks?${params.toString()}`, { method: "DELETE" });
 
       if (!res.ok) {
         const json = await res.json();
         throw new Error(json.error || "Failed to delete task");
       }
 
+      const deletedIds = new Set(tasksToDelete.map((item) => item.task_id).filter(Boolean));
+      const deletedRowIndexes = new Set(tasksToDelete.map((item) => item._rowIndex).filter(Boolean));
       void mutateTasks((current) => current ? {
         ...current,
         data: current.data.filter((item) => !(
-          (task.task_id && item.task_id === task.task_id) || item._rowIndex === task._rowIndex
+          deletedIds.has(item.task_id) || deletedRowIndexes.has(item._rowIndex)
         )),
       } : current, { revalidate: false });
       void mutateTasks().catch(() => undefined);
@@ -1553,31 +1965,27 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
     }
   };
 
-  const scheduleTabs: { key: ActiveTab; label: string; detail: string; icon: React.ReactNode; count: number }[] = [
+  const scheduleTabs: { key: ActiveTab; label: string; compactLabel: string; detail: string; icon: React.ReactNode; count: number }[] = [
     {
       key: "tracker",
       label: "Task Tracker",
+      compactLabel: "ติดตามงาน",
       detail: "ติดตามงานย่อย",
       icon: <CheckSquare size={16} />,
-      count: tasks.filter((task) => !isHeadingTask(task)).length,
+      count: leafTasks.length,
     },
     {
       key: "plan",
       label: "ตารางแผนงาน",
-      detail: "H1 + งานย่อย",
+      compactLabel: "แผนงาน",
+      detail: "H1-H4 + งานจริง",
       icon: <FileSpreadsheet size={16} />,
-      count: visibleTaskRows.length,
-    },
-    {
-      key: "gantt",
-      label: "Gantt Chart",
-      detail: "Timeline + Milestone",
-      icon: <BarChart3 size={16} />,
-      count: milestones.length,
+      count: sortedTasks.length,
     },
     {
       key: "decisions",
       label: "รายการต้องตัดสินใจ",
+      compactLabel: "การตัดสินใจ",
       detail: "ลูกค้า + วิศวกร",
       icon: <ClipboardCheck size={16} />,
       count: waitingDecisionCount,
@@ -1585,62 +1993,72 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
   ];
 
   return (
-    <section className="schedule-print-surface space-y-5">
-      <div className="schedule-screen-only bg-white border border-gray-200 rounded-2xl shadow-sm p-4 flex flex-col gap-4">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          {showProjectSelector ? (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-              <label className="font-medium text-gray-700">โครงการ:</label>
-              <select
-                value={selectedProject}
-                onChange={(event) => setSelectedProject(event.target.value)}
-                className="px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-200 min-w-[280px]"
-              >
-                {projects.map((project) => (
-                  <option key={project.project_id} value={project.project_id}>
-                    {project.project_id} - {project.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : (
+    <section className="schedule-print-surface space-y-4">
+      <div className={`schedule-screen-only ${showPageHeader ? "schedule-page-heading" : "schedule-command-bar schedule-context-bar"}`}>
+        {showPageHeader && (
+          <div className="schedule-page-title">
+            <span className="schedule-page-title-icon"><CalendarRange size={23} /></span>
             <div className="min-w-0">
-              <h3 className="font-bold text-gray-900 truncate">{selectedProjectData?.name || selectedProject}</h3>
-              <p className="text-sm text-gray-500 truncate">
+              <h2>แผนงานก่อสร้าง</h2>
+              <p>ติดตามแผนงานจริงและความคืบหน้า</p>
+            </div>
+          </div>
+        )}
+
+        {showProjectSelector ? (
+          <div className="schedule-project-picker">
+            <label htmlFor="schedule-project-select">โครงการ</label>
+            <select
+              id="schedule-project-select"
+              value={selectedProject}
+              onChange={(event) => {
+                setSelectedProject(event.target.value);
+                setGanttFocusRange(null);
+              }}
+              aria-label="เลือกโครงการ"
+            >
+              {projects.map((project) => (
+                <option key={project.project_id} value={project.project_id}>
+                  {project.project_id} - {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="schedule-project-summary">
+            <div className="min-w-0">
+              <h3>{selectedProjectData?.name || selectedProject}</h3>
+              <p>
                 {selectedProjectData?.project_id || selectedProject} | {selectedProjectData?.client || "ไม่ระบุลูกค้า"} | {selectedProjectData?.status || "Planning"}
               </p>
             </div>
-          )}
-
-          <div className="grid w-full gap-2 rounded-2xl border border-gray-100 bg-gray-50 p-1.5 shadow-inner sm:w-auto sm:grid-cols-2 xl:grid-cols-4">
-            {scheduleTabs.map((tab) => {
-              const isActive = activeTab === tab.key;
-
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setActiveTab(tab.key)}
-                  className={`flex min-w-[168px] items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
-                    isActive ? "bg-orange-600 text-white shadow-sm" : "text-gray-500 hover:bg-white hover:text-gray-900"
-                  }`}
-                >
-                  <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${isActive ? "bg-white/15 text-white" : "bg-white text-gray-400"}`}>
-                    {tab.icon}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-extrabold leading-tight">{tab.label}</span>
-                    <span className={`mt-0.5 block truncate text-[11px] font-semibold leading-tight ${isActive ? "text-white/75" : "text-gray-400"}`}>
-                      {tab.detail}
-                    </span>
-                  </span>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-extrabold ${isActive ? "bg-white/20 text-white" : "bg-white text-gray-500"}`}>
-                    {tab.count}
-                  </span>
-                </button>
-              );
-            })}
+            <button type="button" onClick={copyRealtimeLink} disabled={sharing}>
+              {sharing ? <Loader2 size={15} className="animate-spin" /> : <Share2 size={15} />}
+              สร้างลิงก์ Realtime
+            </button>
           </div>
+        )}
+
+        <div className={`schedule-tabs ${showPageHeader ? "is-compact" : ""}`}>
+          {scheduleTabs.map((tab) => {
+            const isActive = activeTab === tab.key;
+
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={isActive ? "is-active" : ""}
+              >
+                <span className="schedule-tab-icon">{tab.icon}</span>
+                <span className="schedule-tab-copy">
+                  <strong>{showPageHeader ? tab.compactLabel : tab.label}</strong>
+                  {!showPageHeader && <small>{tab.detail}</small>}
+                </span>
+                <span className="schedule-tab-count">{tab.count}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -1650,9 +2068,31 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
         </div>
       )}
 
+      {shareUrl && (
+        <div className="schedule-screen-only flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:flex-row sm:items-center">
+          <input
+            readOnly
+            value={shareUrl}
+            onFocus={(event) => event.currentTarget.select()}
+            aria-label="ลิงก์ดูแผนงาน Realtime"
+            className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-emerald-200"
+          />
+          <a
+            href={shareUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white transition hover:bg-emerald-800"
+          >
+            <ExternalLink size={15} />
+            เปิดหน้าดู
+          </a>
+        </div>
+      )}
+
       {activeTab === "tracker" ? (
         <TaskTrackerPanel
-          tasks={sortedTasks}
+          tasks={leafTasks}
+          allTasks={sortedTasks}
           loading={isLoading}
           saving={saving}
           projectName={selectedProjectData?.name || "-"}
@@ -1661,15 +2101,56 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           onStatusChange={(task, status) => saveTaskPatch(task, buildTaskStatusPatch(status, task.percent_done), "อัปเดตสถานะงานเรียบร้อยแล้ว")}
         />
       ) : activeTab === "plan" ? (
+        <UnifiedScheduleWorkspace
+          project={selectedProjectData}
+          tasks={visibleTaskRows}
+          allTasks={sortedTasks}
+          milestones={sortedMilestones}
+          timeline={displayedTimeline}
+          fullTimeline={timeline}
+          focusRange={ganttFocusRange}
+          todayLeft={todayLeft}
+          loading={isLoading}
+          showDatedOnly={ganttDatedOnly}
+          expanded={ganttExpanded}
+          importingTemplate={importingScheduleTemplate}
+          exportingExcel={exportingExcel}
+          onCreateTask={() => openNewTask("subtask")}
+          onCreateHeading={() => openNewTask("heading")}
+          onCreateSubtask={(parentTaskId) => openNewTask("subtask", parentTaskId)}
+          onImportFullTemplate={importFullScheduleTemplate}
+          onOpenTemplate={openScheduleTemplateModal}
+          onExportExcel={handleExportExcel}
+          onPrint={() => handlePrint("gantt")}
+          onTimelineRangeChange={setGanttFocusRange}
+          onToggleDatedOnly={() => setGanttDatedOnly((value) => !value)}
+          onToggleExpanded={() => setGanttExpanded((value) => !value)}
+          onEditTask={openEditTask}
+          onSaveTaskPatch={saveTaskPatch}
+          onDeleteTask={setPendingDeleteTask}
+          onEditTaskDate={openDateEditTask}
+          onToggleHeading={toggleHeading}
+          onCreateMilestone={openNewMilestone}
+          onEditMilestone={openEditMilestone}
+        />
+      ) : false ? (
         <div className="schedule-screen-only bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
           <div className="px-5 py-5 border-l-4 border-orange-600 bg-white flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
             <div>
-              <h3 className="text-2xl font-bold text-gray-900">แผนงานโครงการ</h3>
+              <h3 className="text-2xl font-bold text-gray-900">แผนงานก่อสร้าง</h3>
               <p className="text-sm text-gray-500 mt-1">
                 {selectedProjectData?.name || "-"} | {selectedProjectData?.client || "ไม่ระบุลูกค้า"}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => openNewTask("subtask")}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#10294b] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0b1f39]"
+              >
+                <Plus size={16} />
+                เพิ่มงาน
+              </button>
               <button
                 type="button"
                 onClick={() => handlePrint("plan")}
@@ -1686,6 +2167,15 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                 <CalendarClock size={16} />
                 แก้วันที่เร็ว
               </button>
+              <button
+                type="button"
+                onClick={openScheduleTemplateModal}
+                disabled={importingScheduleTemplate}
+                className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:opacity-70"
+              >
+                {importingScheduleTemplate ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
+                สร้างร่างแผนงานจากแม่แบบ
+              </button>
             </div>
           </div>
 
@@ -1697,7 +2187,9 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
             <SummaryCard label="ความคืบหน้ารวม" value={`${stats.average}%`} tone="orange" />
           </div>
 
-          <div className="p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="schedule-board-grid">
+            <div className="schedule-plan-table-panel">
+              <div className="p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
               <h4 className="font-bold text-gray-900">รายการงาน</h4>
               <p className="text-sm text-gray-500">
@@ -1727,7 +2219,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
+              <div className="overflow-x-auto">
             <table className="w-full min-w-[1280px] text-sm">
               <thead className="bg-[#1d1d1d] text-white">
                 <tr className="bg-white text-gray-700">
@@ -1739,7 +2231,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                         className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:border-orange-300 hover:text-orange-700"
                       >
                         <Plus size={15} />
-                        เพิ่มงานหลัก
+                        เพิ่มหัวข้อหลัก
                       </button>
                       <button
                         type="button"
@@ -1750,7 +2242,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                         เพิ่มงานย่อย
                       </button>
                       <span className="text-xs font-medium text-gray-400">
-                        ใช้ปุ่ม + ในแถวงานหลักเพื่อเพิ่มงานย่อยใต้หัวข้อนั้นทันที
+                        ใช้ปุ่ม + ในแถวหัวข้อเพื่อเพิ่ม H2/H3/H4 หรืองานจริงใต้หัวข้อนั้นทันที
                       </span>
                     </div>
                   </th>
@@ -1788,33 +2280,45 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                   const isHeading = isHeadingTask(task);
                   const parentTaskName = getParentTaskName(task, taskMap);
                   const outlineNumber = getTaskOutlineNumber(task, visibleTaskRows, sortedTasks);
+                  const taskDepth = getTaskDepth(task, taskMap);
+                  const taskLevelLabel = getTaskLevelLabel(task, taskMap);
+                  const headingDisplay = getHeadingDisplay(taskDepth);
                   const isDropTarget = canDropPlanTask(task);
                   const isDraggingTask = Boolean(planDragTask && planDragTask.task_id === task.task_id);
 
                   if (isHeading) {
                     return (
-                      <tr key={task.task_id} className="border-b border-gray-200">
-                        <td colSpan={11} className="bg-slate-800 px-4 py-2 text-white">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
+                      <tr key={task.task_id} className={`border-b ${headingDisplay.border}`}>
+                        <td colSpan={11} className={`${headingDisplay.row} px-4 py-2`}>
+                          <div className="flex flex-wrap items-center justify-between gap-3" style={{ paddingLeft: `${Math.min(taskDepth, 5) * 30}px` }}>
                             <div className="flex min-w-0 items-center gap-2">
+                              <span className="w-10 shrink-0 text-right font-extrabold tabular-nums">{outlineNumber}</span>
                               <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   toggleHeading(task.task_id);
                                 }}
-                                className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 text-white hover:bg-white/20"
+                                className={`grid h-5 w-5 shrink-0 place-items-center rounded ${headingDisplay.toggle}`}
                                 title={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                                 aria-label={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                               >
-                                {task.is_collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                                {task.is_collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
                               </button>
-                              <span className="w-8 shrink-0 text-right font-extrabold">{outlineNumber}</span>
                               <span className="truncate text-base font-extrabold">{task.name}</span>
-                              <span className="rounded bg-white/15 px-2 py-0.5 text-xs font-bold">{task.summary_child_count || 0} งานย่อย</span>
-                              <span className="text-xs font-semibold text-white/75">{formatDateShort(task.start)} - {formatDateShort(task.end)}</span>
+                              <span className={`rounded px-2 py-0.5 text-xs font-bold ${headingDisplay.badge}`}>{taskLevelLabel}</span>
+                              <span className={`rounded px-2 py-0.5 text-xs font-bold ${headingDisplay.badge}`}>{task.summary_child_count || 0} งานย่อย</span>
+                              <span className={`text-xs font-semibold ${headingDisplay.meta}`}>{formatDateShort(task.start)} - {formatDateShort(task.end)}</span>
                             </div>
                             <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => openNewTask("heading", task.task_id)}
+                                className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-bold ${headingDisplay.secondaryButton}`}
+                              >
+                                <Plus size={14} />
+                                หัวข้อย่อย
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => openNewTask("subtask", task.task_id)}
@@ -1823,10 +2327,10 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                                 <Plus size={14} />
                                 งานย่อย
                               </button>
-                              <button onClick={() => openEditTask(task)} className="rounded-md p-1.5 text-white/75 hover:bg-white/10 hover:text-white" title="แก้ไข">
+                              <button onClick={() => openEditTask(task)} className={`rounded-md p-1.5 ${headingDisplay.editButton}`} title="แก้ไข">
                                 <Edit3 size={15} />
                               </button>
-                              <button onClick={() => setPendingDeleteTask(task)} className="rounded-md p-1.5 text-white/75 hover:bg-red-500 hover:text-white" title="ลบ">
+                              <button onClick={() => setPendingDeleteTask(task)} className={`rounded-md p-1.5 ${headingDisplay.deleteButton}`} title="ลบ">
                                 <Trash2 size={15} />
                               </button>
                             </div>
@@ -1895,7 +2399,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                       </div>
                     </td>
                     <td className="px-4 py-4">
-                      <div className={`${isHeading ? "text-base font-extrabold" : "font-bold"} text-gray-900 flex items-center gap-2`}>
+                      <div className={`${isHeading ? "text-base font-extrabold" : "font-bold"} text-gray-900 flex items-center gap-2`} style={{ paddingLeft: `${Math.min(taskDepth, 5) * 18}px` }}>
                         {isHeading && (
                           <button
                             type="button"
@@ -1917,7 +2421,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                         <span>{task.task_id}</span>
                         {isHeading && <span>{task.summary_child_count || 0} งานย่อย</span>}
                         <span className={`rounded px-2 py-0.5 font-semibold ${isHeading ? "bg-gray-900 text-white" : "bg-orange-50 text-orange-700"}`}>
-                          {isHeading ? "H1 หัวข้อหลัก" : "งานย่อย"}
+                          {taskLevelLabel}
                         </span>
                         {!isHeading && parentTaskName && <span>ใต้: {parentTaskName}</span>}
                       </div>
@@ -1951,6 +2455,15 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                     <td className="px-4 py-4 max-w-[220px] text-gray-500">{task.notes || "-"}</td>
                     <td className="px-4 py-4" onClick={(event) => event.stopPropagation()}>
                       <div className="flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openNewTask("subtask", task.task_id)}
+                          className="inline-flex items-center gap-1 rounded-lg bg-orange-50 px-2 py-1.5 text-xs font-extrabold text-orange-700 hover:bg-orange-100"
+                          title="เพิ่มงานย่อยใต้รายการนี้"
+                        >
+                          <Plus size={14} />
+                          งานย่อย
+                        </button>
                         <button onClick={() => openEditTask(task)} className="p-2 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg" title="แก้ไข">
                           <Edit3 size={16} />
                         </button>
@@ -1964,7 +2477,34 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
                 })}
               </tbody>
             </table>
+              </div>
+            </div>
+
+            <div className="schedule-gantt-board-panel">
+              <GanttPanel
+                tasks={ganttTaskRows}
+                milestones={sortedMilestones}
+                timeline={timeline}
+                todayLeft={todayLeft}
+                loading={isLoading}
+                onEditMilestone={openEditMilestone}
+                onEditTaskDate={openDateEditTask}
+                onToggleHeading={toggleHeading}
+                quickDateEdit={quickDateEdit}
+                showDatedOnly={ganttDatedOnly}
+                onToggleDatedOnly={() => setGanttDatedOnly((value) => !value)}
+                datedTaskCount={datedGanttTaskCount}
+                totalTaskCount={visibleTaskRows.length}
+                expanded={ganttExpanded}
+                onToggleExpanded={() => setGanttExpanded((value) => !value)}
+              />
+            </div>
           </div>
+
+          <aside className="grid grid-cols-1 gap-5 p-5 pt-0 lg:grid-cols-2">
+            <MilestonePanel milestones={sortedMilestones} onEdit={openEditMilestone} />
+            <OverallStatus stats={stats} totalTasks={stats.total} />
+          </aside>
         </div>
       ) : activeTab === "gantt" ? (
         <div className="schedule-screen-only space-y-5">
@@ -2005,7 +2545,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
 
           <div className="space-y-5">
             <GanttPanel
-              tasks={visibleTaskRows}
+              tasks={ganttTaskRows}
               milestones={sortedMilestones}
               timeline={timeline}
               todayLeft={todayLeft}
@@ -2014,6 +2554,12 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
               onEditTaskDate={openDateEditTask}
               onToggleHeading={toggleHeading}
               quickDateEdit={quickDateEdit}
+              showDatedOnly={ganttDatedOnly}
+              onToggleDatedOnly={() => setGanttDatedOnly((value) => !value)}
+              datedTaskCount={datedGanttTaskCount}
+              totalTaskCount={visibleTaskRows.length}
+              expanded={ganttExpanded}
+              onToggleExpanded={() => setGanttExpanded((value) => !value)}
             />
 
             <aside className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -2048,12 +2594,31 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       <GanttPrintDocument
         active={printTarget === "gantt"}
         project={selectedProjectData}
-        tasks={visibleTaskRows}
+        tasks={ganttTaskRows}
         milestones={sortedMilestones}
-        timeline={timeline}
-        stats={stats}
+        timeline={displayedTimeline}
         todayLeft={todayLeft}
       />
+
+      {showScheduleTemplateModal && (
+        <ScheduleTemplateModal
+          categories={scheduleTemplateCategories}
+          selectedCategoryIds={selectedTemplateCategoryIds}
+          loading={scheduleTemplateLoading}
+          importing={importingScheduleTemplate}
+          onToggleCategory={(categoryId) => {
+            setSelectedTemplateCategoryIds((current) => (
+              current.includes(categoryId)
+                ? current.filter((id) => id !== categoryId)
+                : [...current, categoryId]
+            ));
+          }}
+          onSelectAll={() => setSelectedTemplateCategoryIds(scheduleTemplateCategories.map((category) => category.id))}
+          onClear={() => setSelectedTemplateCategoryIds([])}
+          onClose={() => setShowScheduleTemplateModal(false)}
+          onImport={importScheduleTemplate}
+        />
+      )}
 
       {showTaskForm && (
         <TaskModal
@@ -2069,7 +2634,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
           } : undefined}
           onSubmit={saveTask}
           onChange={setTaskForm}
-          parentOptions={headingTasks}
+          parentOptions={parentTaskOptions}
         />
       )}
 
@@ -2111,7 +2676,7 @@ export default function SchedulePlanner({ projects }: { projects: Project[] }) {
       <ConfirmDialog
         open={Boolean(pendingDeleteTask)}
         title="ลบงาน?"
-        message={`ต้องการลบงาน "${pendingDeleteTask?.name || "-"}" หรือไม่`}
+        message={`ต้องการลบงาน "${pendingDeleteTask?.name || "-"}" หรือไม่${pendingDeleteTask && isHeadingTask(pendingDeleteTask) ? " ระบบจะลบหัวข้อย่อยและงานจริงใต้หัวข้อนี้ด้วย" : ""}`}
         confirmLabel="ลบ"
         cancelLabel="ยกเลิก"
         loading={saving}
@@ -2154,6 +2719,622 @@ function SummaryCard({ label, value, tone = "gray" }: { label: string; value: st
   );
 }
 
+function InlineScheduleCell({
+  value,
+  displayValue,
+  inputType = "text",
+  inputMin,
+  inputMax,
+  buttonClassName,
+  inputClassName,
+  ariaLabel,
+  required = false,
+  onCommit,
+}: {
+  value: string;
+  displayValue?: string;
+  inputType?: "text" | "date" | "number";
+  inputMin?: number;
+  inputMax?: number;
+  buttonClassName: string;
+  inputClassName?: string;
+  ariaLabel: string;
+  required?: boolean;
+  onCommit: (value: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [savingCell, setSavingCell] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    if (inputType === "text") inputRef.current?.select();
+  }, [editing, inputType]);
+
+  const finishEditing = async () => {
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      setDraft(value);
+      setEditing(false);
+      return;
+    }
+
+    const nextValue = draft.trim();
+    if ((required && !nextValue) || nextValue === value) {
+      setDraft(value);
+      setEditing(false);
+      return;
+    }
+
+    setSavingCell(true);
+    const saved = await onCommit(nextValue);
+    if (!saved) setDraft(value);
+    setSavingCell(false);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type={inputType}
+        min={inputMin}
+        max={inputMax}
+        value={draft}
+        disabled={savingCell}
+        aria-label={ariaLabel}
+        aria-busy={savingCell}
+        className={inputClassName || buttonClassName}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void finishEditing()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            cancelRef.current = true;
+            event.currentTarget.blur();
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={buttonClassName}
+      title={`${ariaLabel} (Enter เพื่อแก้ไข)`}
+      aria-label={ariaLabel}
+      onClick={() => {
+        setDraft(value);
+        setEditing(true);
+      }}
+    >
+      {(displayValue ?? value) || "-"}
+    </button>
+  );
+}
+
+function UnifiedScheduleWorkspace({
+  project,
+  tasks,
+  allTasks,
+  milestones,
+  timeline,
+  fullTimeline,
+  focusRange,
+  todayLeft,
+  loading,
+  showDatedOnly,
+  expanded,
+  importingTemplate,
+  exportingExcel,
+  onCreateTask,
+  onCreateHeading,
+  onCreateSubtask,
+  onImportFullTemplate,
+  onOpenTemplate,
+  onExportExcel,
+  onPrint,
+  onTimelineRangeChange,
+  onToggleDatedOnly,
+  onToggleExpanded,
+  onEditTask,
+  onSaveTaskPatch,
+  onDeleteTask,
+  onEditTaskDate,
+  onToggleHeading,
+  onCreateMilestone,
+  onEditMilestone,
+}: {
+  project?: Project;
+  tasks: Task[];
+  allTasks: Task[];
+  milestones: Milestone[];
+  timeline: Timeline;
+  fullTimeline: Timeline;
+  focusRange: TimelineFocusRange | null;
+  todayLeft: number | null;
+  loading: boolean;
+  showDatedOnly: boolean;
+  expanded: boolean;
+  importingTemplate: boolean;
+  exportingExcel: boolean;
+  onCreateTask: () => void;
+  onCreateHeading: () => void;
+  onCreateSubtask: (parentTaskId: string) => void;
+  onImportFullTemplate: () => void;
+  onOpenTemplate: () => void;
+  onExportExcel: () => void;
+  onPrint: () => void;
+  onTimelineRangeChange: (range: TimelineFocusRange | null) => void;
+  onToggleDatedOnly: () => void;
+  onToggleExpanded: () => void;
+  onEditTask: (task: Task) => void;
+  onSaveTaskPatch: (task: Task, patch: TaskPatch, successMessage: string) => Promise<boolean>;
+  onDeleteTask: (task: Task) => void;
+  onEditTaskDate: (task: Task) => void;
+  onToggleHeading: (taskId: string) => void;
+  onCreateMilestone: () => void;
+  onEditMilestone: (milestone: Milestone) => void;
+}) {
+  const LEFT_WIDTH = 932;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const monthInputRef = useRef<HTMLInputElement>(null);
+  const customStartInputRef = useRef<HTMLInputElement>(null);
+  const customEndInputRef = useRef<HTMLInputElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [chartViewportWidth, setChartViewportWidth] = useState(520);
+  const [rangePickerOpen, setRangePickerOpen] = useState(false);
+  const [rangeMode, setRangeMode] = useState<"month" | "custom">("month");
+  const [selectedMonth, setSelectedMonth] = useState(toInputDate(fullTimeline.start).slice(0, 7));
+  const [customStart, setCustomStart] = useState(focusRange?.start || toInputDate(fullTimeline.start));
+  const [customEnd, setCustomEnd] = useState(focusRange?.end || toInputDate(fullTimeline.end));
+  const [rangeError, setRangeError] = useState("");
+  const chartWidth = Math.round(chartViewportWidth * zoom);
+  const taskMap = useMemo(() => new Map(allTasks.map((task) => [task.task_id, task])), [allTasks]);
+  const schedulableTasks = useMemo(() => allTasks.filter((task) => !isHeadingTask(task)), [allTasks]);
+  const datedCount = useMemo(() => schedulableTasks.filter(hasTaskScheduleDates).length, [schedulableTasks]);
+  const canFilterDated = datedCount > 0;
+  const displayTasks = useMemo(
+    () => showDatedOnly && canFilterDated ? tasks.filter(hasTaskScheduleDates) : tasks,
+    [canFilterDated, showDatedOnly, tasks]
+  );
+  const milestonePositions = useMemo(() => milestones.flatMap((milestone) => {
+    const date = parseDate(milestone.date);
+    if (!date) return [];
+    return [{ milestone, left: percentBetween(date, timeline.start, timeline.totalDays) }];
+  }), [milestones, timeline]);
+
+  useEffect(() => {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setChartViewportWidth(Math.max(440, Math.floor(entry.contentRect.width - LEFT_WIDTH)));
+    });
+    observer.observe(scrollElement);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [expanded]);
+
+  const moveTimeline = (direction: number) => {
+    scrollRef.current?.scrollBy({ left: direction * 320, behavior: "smooth" });
+  };
+
+  const focusToday = () => {
+    if (todayLeft === null) {
+      const today = new Date();
+      onTimelineRangeChange({
+        start: toInputDate(new Date(today.getFullYear(), today.getMonth(), 1, 12)),
+        end: toInputDate(new Date(today.getFullYear(), today.getMonth() + 1, 0, 12)),
+      });
+      return;
+    }
+    if (!scrollRef.current) return;
+    const viewport = scrollRef.current.clientWidth;
+    const target = LEFT_WIDTH + (todayLeft / 100) * chartWidth - viewport / 2;
+    scrollRef.current.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+  };
+
+  const toggleRangePicker = () => {
+    if (!rangePickerOpen) {
+      const startValue = focusRange?.start || toInputDate(fullTimeline.start);
+      const endValue = focusRange?.end || toInputDate(fullTimeline.end);
+      setRangeMode(focusRange ? "custom" : "month");
+      setSelectedMonth(startValue.slice(0, 7));
+      setCustomStart(startValue);
+      setCustomEnd(endValue);
+      setRangeError("");
+    }
+    setRangePickerOpen((value) => !value);
+  };
+
+  const applyTimelineRange = () => {
+    if (rangeMode === "month") {
+      const monthValue = monthInputRef.current?.value || selectedMonth;
+      const [year, month] = monthValue.split("-").map(Number);
+      if (!year || !month) {
+        setRangeError("กรุณาเลือกเดือน");
+        return;
+      }
+      onTimelineRangeChange({
+        start: toInputDate(new Date(year, month - 1, 1, 12)),
+        end: toInputDate(new Date(year, month, 0, 12)),
+      });
+      setRangePickerOpen(false);
+      return;
+    }
+
+    const startValue = customStartInputRef.current?.value || customStart;
+    const endValue = customEndInputRef.current?.value || customEnd;
+    const start = parseDate(startValue);
+    const end = parseDate(endValue);
+    if (!start || !end) {
+      setRangeError("กรุณาระบุวันเริ่มและวันสิ้นสุด");
+      return;
+    }
+    if (end < start) {
+      setRangeError("วันสิ้นสุดต้องไม่น้อยกว่าวันเริ่ม");
+      return;
+    }
+    onTimelineRangeChange({ start: startValue, end: endValue });
+    setRangePickerOpen(false);
+  };
+
+  const resetTimelineRange = () => {
+    onTimelineRangeChange(null);
+    setRangeError("");
+    setRangePickerOpen(false);
+  };
+
+  const changeZoom = (next: number) => setZoom(clamp(next, 0.75, 1.75));
+
+  const saveInlineName = (task: Task, name: string) => onSaveTaskPatch(task, {
+    name,
+    ...(isHeadingTask(task) && !task.parent_task_id ? { category: name } : {}),
+  }, "อัปเดตชื่องานเรียบร้อยแล้ว");
+
+  const saveInlineAssignee = (task: Task, assignee: string) => onSaveTaskPatch(
+    task,
+    { assignee },
+    "อัปเดตผู้รับผิดชอบเรียบร้อยแล้ว"
+  );
+
+  const saveInlineDate = (task: Task, field: "start" | "end", value: string) => {
+    let start = field === "start" ? value : task.planned_start || task.start || "";
+    let end = field === "end" ? value : task.planned_end || task.end || "";
+    const startDate = parseDate(start);
+    const endDate = parseDate(end);
+
+    if (startDate && endDate && startDate > endDate) {
+      if (field === "start") end = value;
+      else start = value;
+    }
+
+    return onSaveTaskPatch(task, {
+      start,
+      end,
+      planned_start: start,
+      planned_end: end,
+      duration_days: daysBetween(start, end),
+    }, "อัปเดตวันที่ในแผนงานเรียบร้อยแล้ว");
+  };
+
+  const saveInlineProgress = (task: Task, progress: string) => onSaveTaskPatch(
+    task,
+    buildTaskProgressPatch(progress),
+    "อัปเดตความคืบหน้างานเรียบร้อยแล้ว"
+  );
+
+  const saveInlineNotes = (task: Task, notes: string) => onSaveTaskPatch(
+    task,
+    { notes },
+    "อัปเดตหมายเหตุเรียบร้อยแล้ว"
+  );
+
+  return (
+    <section className={`schedule-screen-only unified-schedule-workspace ${expanded ? "is-expanded" : ""}`}>
+      <header className="unified-schedule-titlebar">
+        <div className="min-w-0">
+          <h3>แผนงานก่อสร้าง</h3>
+          <p>{project?.name || "-"} · {project?.client || "ไม่ระบุลูกค้า"}</p>
+        </div>
+        <div className="unified-schedule-actions">
+          <button type="button" onClick={onCreateTask} className="is-primary">
+            <Plus size={17} /> เพิ่มงาน
+          </button>
+          <button
+            type="button"
+            onClick={onImportFullTemplate}
+            disabled={importingTemplate}
+            className="is-template-primary"
+            title="เติมแม่แบบแผนงานครบทุกหมวดจนถึงส่งมอบบ้าน โดยไม่สร้างรายการเดิมซ้ำ"
+          >
+            {importingTemplate ? <Loader2 size={17} className="animate-spin" /> : <CheckSquare size={17} />}
+            {importingTemplate ? "กำลังสร้าง..." : "สร้างทั้งโครงการ"}
+          </button>
+          <button type="button" onClick={onOpenTemplate} disabled={importingTemplate}>
+            <FileSpreadsheet size={17} /> เลือกบางหมวด
+          </button>
+          <button type="button" onClick={onExportExcel} disabled={exportingExcel} title="ดาวน์โหลดแผนงานและ Gantt เป็นไฟล์ Excel">
+            {exportingExcel ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
+            {exportingExcel ? "กำลังสร้าง..." : "Excel"}
+          </button>
+          <button type="button" onClick={onPrint} title="พิมพ์แผนงานตามช่วงเวลาที่กำลังแสดง">
+            <Printer size={17} /> พิมพ์ที่แสดง
+          </button>
+        </div>
+      </header>
+
+      <div className="unified-schedule-toolbar">
+        <div className="unified-schedule-row-actions">
+          <button type="button" onClick={onCreateHeading}><Plus size={15} /> หมวดงาน</button>
+          <button type="button" onClick={onCreateMilestone}><Flag size={15} /> Milestone</button>
+          <button
+            type="button"
+            onClick={onToggleDatedOnly}
+            disabled={!canFilterDated}
+            className={showDatedOnly && canFilterDated ? "is-active" : ""}
+            title={canFilterDated ? "แสดงเฉพาะงานจริงที่กำหนดวันที่แล้ว" : "ยังไม่มีงานจริงที่กำหนดวันที่"}
+          >
+            <CalendarDays size={15} /> มีวันที่ {datedCount}/{schedulableTasks.length}
+          </button>
+        </div>
+        <div className="unified-schedule-time-controls">
+          <button type="button" onClick={() => moveTimeline(-1)} title="เลื่อนไทม์ไลน์ไปก่อนหน้า" aria-label="เลื่อนไทม์ไลน์ไปก่อนหน้า"><ArrowDown className="rotate-90" size={17} /></button>
+          <button type="button" onClick={focusToday} className="is-today">วันนี้</button>
+          <button type="button" onClick={() => moveTimeline(1)} title="เลื่อนไทม์ไลน์ไปถัดไป" aria-label="เลื่อนไทม์ไลน์ไปถัดไป"><ArrowUp className="rotate-90" size={17} /></button>
+          <div className="unified-schedule-range-picker">
+            <button type="button" onClick={toggleRangePicker} className={`unified-schedule-range ${focusRange ? "is-focused" : ""}`} aria-expanded={rangePickerOpen}>
+              <CalendarRange size={16} /> {dateRangeLabel(timeline.start, timeline.end)}
+            </button>
+            {rangePickerOpen && (
+              <div className="unified-schedule-range-popover">
+                <div className="unified-schedule-range-popover-head">
+                  <strong>ช่วงเวลาที่แสดง</strong>
+                  <button type="button" onClick={() => setRangePickerOpen(false)} aria-label="ปิด"><X size={16} /></button>
+                </div>
+                <div className="unified-schedule-range-modes">
+                  <button type="button" onClick={() => { setRangeMode("month"); setRangeError(""); }} className={rangeMode === "month" ? "is-active" : ""}>เลือกเดือน</button>
+                  <button type="button" onClick={() => { setRangeMode("custom"); setRangeError(""); }} className={rangeMode === "custom" ? "is-active" : ""}>กำหนดเอง</button>
+                </div>
+                {rangeMode === "month" ? (
+                  <label className="unified-schedule-range-field">
+                    <span>เดือน</span>
+                    <input ref={monthInputRef} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                  </label>
+                ) : (
+                  <div className="unified-schedule-range-fields">
+                    <label className="unified-schedule-range-field">
+                      <span>วันเริ่ม</span>
+                      <input ref={customStartInputRef} type="date" value={customStart} onChange={(event) => setCustomStart(event.target.value)} />
+                    </label>
+                    <label className="unified-schedule-range-field">
+                      <span>วันสิ้นสุด</span>
+                      <input ref={customEndInputRef} type="date" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} />
+                    </label>
+                  </div>
+                )}
+                {rangeError && <p className="unified-schedule-range-error">{rangeError}</p>}
+                <div className="unified-schedule-range-actions">
+                  <button type="button" onClick={resetTimelineRange}>ทั้งโครงการ</button>
+                  <button type="button" onClick={applyTimelineRange} className="is-primary">แสดงช่วงนี้</button>
+                </div>
+              </div>
+            )}
+          </div>
+          <select value={zoom} onChange={(event) => setZoom(Number(event.target.value))} aria-label="ระดับการแสดงไทม์ไลน์">
+            <option value={0.8}>ย่อ</option>
+            <option value={1}>พอดี</option>
+            <option value={1.35}>ขยาย</option>
+            <option value={1.7}>ละเอียด</option>
+          </select>
+          <button type="button" onClick={() => changeZoom(zoom - 0.15)} title="ย่อไทม์ไลน์" aria-label="ย่อไทม์ไลน์"><ZoomOut size={17} /></button>
+          <button type="button" onClick={() => changeZoom(zoom + 0.15)} title="ขยายไทม์ไลน์" aria-label="ขยายไทม์ไลน์"><ZoomIn size={17} /></button>
+          <button type="button" onClick={onToggleExpanded} title={expanded ? "ออกจากเต็มจอ" : "เต็มจอ"} aria-label={expanded ? "ออกจากเต็มจอ" : "เต็มจอ"}>
+            {expanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+          </button>
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="unified-schedule-scroll">
+        <div className="unified-schedule-canvas" style={{ width: `${LEFT_WIDTH + chartWidth}px` }}>
+          <div className="unified-schedule-row unified-schedule-header" style={{ gridTemplateColumns: `${LEFT_WIDTH}px ${chartWidth}px` }}>
+            <div className="unified-schedule-left unified-schedule-left-columns">
+              <span>ลำดับ / งาน (WBS)</span>
+              <span>ผู้รับผิดชอบ</span>
+              <span>วันเริ่ม</span>
+              <span>วันสิ้นสุด</span>
+              <span>% งาน</span>
+              <span>หมายเหตุ</span>
+            </div>
+            <div className="unified-schedule-timeline-head" style={{ width: `${chartWidth}px` }}>
+              {timeline.monthGroups.map((month) => (
+                <span key={`${month.label}-${month.left}`} className="unified-schedule-month" style={{ left: `${month.left}%`, width: `${month.width}%` }}>
+                  {month.label}
+                </span>
+              ))}
+              <div className="unified-schedule-ticks">
+                {timeline.dayTicks.map((tick) => (
+                  <span key={tick.key} className={tick.left >= 97 ? "is-end" : ""} style={{ left: `${tick.left}%` }}>
+                    <small>{new Intl.DateTimeFormat("th-TH", { weekday: "short" }).format(tick.date)}</small>
+                    <strong>{tick.date.getDate()}</strong>
+                  </span>
+                ))}
+              </div>
+              {todayLeft !== null && <span className="unified-schedule-today-head" style={{ left: `${todayLeft}%` }}>วันนี้</span>}
+              {milestonePositions.map(({ milestone, left }) => (
+                <button
+                  key={milestone.milestone_id}
+                  type="button"
+                  className="unified-schedule-milestone-head"
+                  style={{ left: `${left}%`, backgroundColor: milestone.color || "#475569" }}
+                  title={`${milestone.title} · ${formatDateShort(milestone.date)}`}
+                  aria-label={`Milestone ${milestone.title}`}
+                  onClick={() => onEditMilestone(milestone)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="unified-schedule-loading"><Loader2 size={20} className="animate-spin" /> กำลังโหลดแผนงาน...</div>
+          ) : displayTasks.length === 0 ? (
+            <div className="unified-schedule-loading">ยังไม่มีงานที่แสดงในแผนงาน</div>
+          ) : displayTasks.map((task) => {
+            const isHeading = isHeadingTask(task);
+            const depth = getTaskDepth(task, taskMap);
+            const outlineNumber = getTaskOutlineNumber(task, tasks, allTasks);
+            const plannedStart = parseDate(task.planned_start) || parseDate(task.start) || parseDate(task.end);
+            const plannedEnd = parseDate(task.planned_end) || parseDate(task.end) || plannedStart;
+            const intersectsTimeline = Boolean(plannedStart && plannedEnd && plannedStart <= timeline.end && plannedEnd >= timeline.start);
+            const visibleStart = plannedStart ? maxDate(plannedStart, timeline.start) : timeline.start;
+            const visibleEnd = plannedEnd ? minDate(plannedEnd, timeline.end) : visibleStart;
+            const left = percentBetween(visibleStart, timeline.start, timeline.totalDays);
+            const right = percentBetween(visibleEnd, timeline.start, timeline.totalDays);
+            const plannedWidth = intersectsTimeline ? Math.max(0.9, right - left) : 0;
+            const barColor = getTaskCategoryColor(task, taskMap);
+
+            return (
+              <div
+                key={task.task_id}
+                className={`unified-schedule-row ${isHeading ? "is-heading" : ""}`}
+                style={{
+                  gridTemplateColumns: `${LEFT_WIDTH}px ${chartWidth}px`,
+                  ...(isHeading ? { "--heading-color": barColor } : {}),
+                } as React.CSSProperties}
+              >
+                <div className="unified-schedule-left unified-schedule-left-columns">
+                  <div className="unified-schedule-task-cell group" style={{ paddingLeft: `${12 + Math.min(depth, 5) * 16}px` }}>
+                    <span className="unified-schedule-wbs">{outlineNumber}</span>
+                    {isHeading && (
+                      <button type="button" onClick={() => onToggleHeading(task.task_id)} className="unified-schedule-collapse" aria-label={task.is_collapsed ? "เปิดหมวดงาน" : "ย่อหมวดงาน"}>
+                        {task.is_collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                      </button>
+                    )}
+                    <div className="unified-schedule-task-copy">
+                      <InlineScheduleCell
+                        value={task.name}
+                        buttonClassName="unified-schedule-task-name is-clickable"
+                        inputClassName="unified-schedule-task-name unified-schedule-cell-input is-name"
+                        ariaLabel={`แก้ไขชื่องาน ${task.name}`}
+                        required
+                        onCommit={(name) => saveInlineName(task, name)}
+                      />
+                    </div>
+                    <span className="unified-schedule-task-actions">
+                      {isHeading && <button type="button" onClick={() => onCreateSubtask(task.task_id)} title="เพิ่มงานย่อย"><Plus size={13} /></button>}
+                      <button type="button" onClick={() => onEditTask(task)} title="แก้ไขงาน"><Edit3 size={13} /></button>
+                      <button type="button" onClick={() => onDeleteTask(task)} title="ลบงาน"><Trash2 size={13} /></button>
+                    </span>
+                  </div>
+                  {isHeading ? (
+                    <span />
+                  ) : (
+                    <InlineScheduleCell
+                      value={task.assignee || ""}
+                      buttonClassName="unified-schedule-inline-edit"
+                      inputClassName="unified-schedule-cell-input"
+                      ariaLabel={`แก้ไขผู้รับผิดชอบของ ${task.name}`}
+                      onCommit={(assignee) => saveInlineAssignee(task, assignee)}
+                    />
+                  )}
+                  {isHeading ? (
+                    <span>{formatDateShort(task.planned_start || task.start)}</span>
+                  ) : (
+                    <InlineScheduleCell
+                      value={task.planned_start || task.start || ""}
+                      displayValue={formatDateShort(task.planned_start || task.start)}
+                      inputType="date"
+                      buttonClassName="unified-schedule-inline-edit is-date"
+                      inputClassName="unified-schedule-cell-input is-date"
+                      ariaLabel={`แก้ไขวันเริ่มของ ${task.name}`}
+                      onCommit={(start) => saveInlineDate(task, "start", start)}
+                    />
+                  )}
+                  {isHeading ? (
+                    <span>{formatDateShort(task.planned_end || task.end)}</span>
+                  ) : (
+                    <InlineScheduleCell
+                      value={task.planned_end || task.end || ""}
+                      displayValue={formatDateShort(task.planned_end || task.end)}
+                      inputType="date"
+                      buttonClassName="unified-schedule-inline-edit is-date"
+                      inputClassName="unified-schedule-cell-input is-date"
+                      ariaLabel={`แก้ไขวันสิ้นสุดของ ${task.name}`}
+                      onCommit={(end) => saveInlineDate(task, "end", end)}
+                    />
+                  )}
+                  {isHeading ? (
+                    <span className="unified-schedule-progress-value">{normalizeProgressValue(task.percent_done)}%</span>
+                  ) : (
+                    <InlineScheduleCell
+                      value={normalizeProgressValue(task.percent_done)}
+                      displayValue={`${normalizeProgressValue(task.percent_done)}%`}
+                      inputType="number"
+                      inputMin={0}
+                      inputMax={100}
+                      buttonClassName="unified-schedule-inline-edit is-progress"
+                      inputClassName="unified-schedule-cell-input is-progress"
+                      ariaLabel={`แก้ไขเปอร์เซ็นต์ความคืบหน้าของ ${task.name}`}
+                      onCommit={(progress) => saveInlineProgress(task, progress)}
+                    />
+                  )}
+                  <InlineScheduleCell
+                    value={task.notes || ""}
+                    buttonClassName="unified-schedule-inline-edit is-note"
+                    inputClassName="unified-schedule-cell-input is-note"
+                    ariaLabel={`แก้ไขหมายเหตุของ ${task.name}`}
+                    onCommit={(notes) => saveInlineNotes(task, notes)}
+                  />
+                </div>
+                <div
+                  className={`unified-schedule-chart-cell ${!isHeading ? "is-editable" : ""}`}
+                  onClick={() => !isHeading && onEditTaskDate(task)}
+                  title={isHeading ? undefined : "แก้ไขวันที่เริ่มและสิ้นสุด"}
+                >
+                  {timeline.dayTicks.map((tick) => <i key={tick.key} className="unified-schedule-gridline" style={{ left: `${tick.left}%` }} />)}
+                  {milestonePositions.map(({ milestone, left: milestoneLeft }) => (
+                    <i key={milestone.milestone_id} className="unified-schedule-milestone-line" style={{ left: `${milestoneLeft}%`, borderColor: milestone.color || "#94a3b8" }} />
+                  ))}
+                  {todayLeft !== null && <i className="unified-schedule-today-line" style={{ left: `${todayLeft}%` }} />}
+                  {intersectsTimeline && (
+                    <>
+                      <span
+                        className="unified-schedule-plan-bar"
+                        style={{ left: `${left}%`, width: `${plannedWidth}%` }}
+                        title={`แผน ${formatDateShort(task.planned_start || task.start)} - ${formatDateShort(task.planned_end || task.end)}`}
+                      />
+                      {isHeading && <span className="unified-schedule-end-marker" style={{ left: `${right}%` }} />}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <footer className="unified-schedule-legend" aria-label="คำอธิบายสัญลักษณ์">
+        <span><i className="is-plan" /> แผน</span>
+        <span><i className="is-milestone" /> เหตุการณ์สำคัญ (Milestone)</span>
+      </footer>
+    </section>
+  );
+}
+
 function GanttPanel({
   tasks,
   milestones,
@@ -2164,6 +3345,12 @@ function GanttPanel({
   onEditTaskDate,
   onToggleHeading,
   quickDateEdit = false,
+  showDatedOnly,
+  onToggleDatedOnly,
+  datedTaskCount,
+  totalTaskCount,
+  expanded,
+  onToggleExpanded,
 }: {
   tasks: Task[];
   milestones: Milestone[];
@@ -2174,17 +3361,50 @@ function GanttPanel({
   onEditTaskDate?: (task: Task) => void;
   onToggleHeading?: (taskId: string) => void;
   quickDateEdit?: boolean;
+  showDatedOnly: boolean;
+  onToggleDatedOnly: () => void;
+  datedTaskCount: number;
+  totalTaskCount: number;
+  expanded: boolean;
+  onToggleExpanded: () => void;
 }) {
   const taskMap = useMemo(() => new Map(tasks.map((task) => [task.task_id, task])), [tasks]);
+  const hiddenUndatedCount = Math.max(0, totalTaskCount - datedTaskCount);
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-      <div className="gantt-panel-heading px-5 py-5 border-l-4 border-orange-600">
-        <h3 className="text-2xl font-bold text-gray-900">แผนภูมิแกนต์ (Gantt Chart)</h3>
-        <p className="text-sm text-gray-500 mt-1">ช่วงเวลา: {dateRangeLabel(timeline.start, timeline.end)}</p>
+    <div className={`${expanded ? "fixed inset-4 z-[80] flex max-h-[calc(100vh-2rem)] flex-col" : "flex flex-col"} bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden`}>
+      <div className="gantt-panel-heading flex flex-col gap-4 border-l-4 border-orange-600 px-5 py-5 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900">แผนภูมิแกนต์ (Gantt Chart)</h3>
+          <p className="text-sm text-gray-500 mt-1">
+            ช่วงเวลา: {dateRangeLabel(timeline.start, timeline.end)}
+            {showDatedOnly && hiddenUndatedCount > 0 ? ` · ซ่อนงานที่ยังไม่ใส่วันที่ ${hiddenUndatedCount} รายการ` : ""}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onToggleDatedOnly}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold transition ${showDatedOnly ? "border-orange-300 bg-orange-50 text-orange-700" : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}
+            title="แสดงเฉพาะงานที่ใส่วันที่แล้ว"
+          >
+            <CalendarDays size={16} />
+            เฉพาะงานมีวันที่
+            <span className="rounded-md bg-white px-1.5 py-0.5 text-xs text-gray-500">{datedTaskCount}/{totalTaskCount}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700 transition hover:bg-gray-50"
+            title={expanded ? "ย่อ Gantt Chart" : "ขยาย Gantt Chart"}
+          >
+            {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            {expanded ? "ย่อ" : "ขยาย"}
+          </button>
+        </div>
       </div>
 
-      <div className="overflow-auto max-h-[620px] gantt-scroll">
+      <div className={`gantt-scroll min-h-0 overflow-auto ${expanded ? "flex-1" : "max-h-[620px]"}`}>
         <div className="min-w-[1560px]">
           <div className="grid grid-cols-[300px_1fr] bg-[#1d1d1d] text-white sticky top-0 z-30">
             <div className="px-5 py-5 font-bold border-r border-white/10 flex items-end">ชื่องาน / ผู้รับผิดชอบ</div>
@@ -2222,7 +3442,9 @@ function GanttPanel({
                 กำลังโหลด Gantt Chart...
               </div>
             ) : tasks.length === 0 ? (
-              <div className="h-80 grid place-items-center text-gray-400">ยังไม่มี task สำหรับโครงการนี้</div>
+              <div className="h-80 grid place-items-center text-gray-400">
+                {showDatedOnly ? "ยังไม่มีงานที่ใส่วันที่สำหรับ Gantt Chart" : "ยังไม่มี task สำหรับโครงการนี้"}
+              </div>
             ) : tasks.map((task) => {
               const taskStart = parseDate(task.start) || parseDate(task.end) || timeline.start;
               const taskEnd = parseDate(task.end) || taskStart;
@@ -2233,14 +3455,18 @@ function GanttPanel({
               const isHeading = isHeadingTask(task);
               const color = getTaskCategoryColor(task, taskMap);
               const hasTaskDates = Boolean(parseDate(task.start) || parseDate(task.end));
+              const taskDepth = getTaskDepth(task, taskMap);
+              const taskLevelLabel = getTaskLevelLabel(task, taskMap);
+              const headingDisplay = getHeadingDisplay(taskDepth);
+              const ganttTone = getGanttHeadingTone(taskDepth);
 
               return (
                 <div
                   key={task.task_id}
                   onClick={() => quickDateEdit && !isHeading && onEditTaskDate?.(task)}
-                  className={`grid grid-cols-[300px_1fr] min-h-[60px] border-b ${quickDateEdit && !isHeading ? "cursor-pointer hover:bg-orange-50/30" : ""} ${isHeading ? "border-slate-800 bg-slate-900 text-white" : "border-gray-100 gantt-child-row"}`}
+                  className={`grid grid-cols-[300px_1fr] min-h-[60px] border-b ${quickDateEdit && !isHeading ? "cursor-pointer hover:bg-orange-50/30" : ""} ${isHeading ? ganttTone.row : "border-gray-100 gantt-child-row"}`}
                 >
-                  <div className={`px-5 py-3 border-r flex items-center justify-between gap-3 ${isHeading ? "border-slate-700 bg-slate-900 text-white" : "border-gray-100 bg-white pl-12"}`}>
+                  <div className={`px-5 py-3 border-r flex items-center justify-between gap-3 ${isHeading ? ganttTone.left : "border-gray-100 bg-white"}`} style={{ paddingLeft: `${isHeading ? 18 + Math.min(taskDepth, 5) * 28 : 48 + Math.min(taskDepth, 5) * 16}px` }}>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         {isHeading && onToggleHeading && (
@@ -2250,18 +3476,18 @@ function GanttPanel({
                               event.stopPropagation();
                               onToggleHeading(task.task_id);
                             }}
-                            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/20 bg-white/10 text-white hover:bg-white/20"
+                            className={`grid h-5 w-5 shrink-0 place-items-center rounded ${headingDisplay.toggle}`}
                             title={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                             aria-label={task.is_collapsed ? "เปิดหัวข้อย่อย" : "ซ่อนหัวข้อย่อย"}
                           >
-                            {task.is_collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                            {task.is_collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
                           </button>
                         )}
-                        <span className={`gantt-category-dot ${isHeading ? "w-3 h-3 rounded-[3px]" : "w-2.5 h-2.5 rounded-full"}`} style={{ backgroundColor: isHeading ? "#f97316" : color, borderColor: isHeading ? "#fdba74" : color }} />
-                        <strong className={`${isHeading ? "text-base text-white" : "text-sm text-gray-900"} truncate`}>{task.name}</strong>
+                        <span className={`gantt-category-dot ${isHeading ? "w-3 h-3 rounded-[3px]" : "w-2.5 h-2.5 rounded-full"}`} style={{ backgroundColor: isHeading ? ganttTone.dot : color, borderColor: isHeading ? ganttTone.dot : color }} />
+                        <strong className={`${isHeading ? "text-base" : "text-sm text-gray-900"} truncate`}>{task.name}</strong>
                       </div>
-                      <div className={`mt-1 flex flex-wrap items-center gap-1.5 pl-5 text-xs ${isHeading ? "text-slate-300" : "text-gray-500"}`}>
-                        <span>{isHeading ? "H1 หัวข้อหลัก" : task.assignee || "-"}</span>
+                      <div className={`mt-1 flex flex-wrap items-center gap-1.5 pl-5 text-xs ${isHeading ? ganttTone.meta : "text-gray-500"}`}>
+                        <span>{isHeading ? taskLevelLabel : `${taskLevelLabel} • ${task.assignee || "-"}`}</span>
                         {!isHeading && task.linked_vo_id && (
                           <span className="rounded-md bg-orange-50 px-1.5 py-0.5 font-extrabold text-orange-700">
                             {task.vo_badge || "VO"} · {task.linked_vo_id}
@@ -2271,11 +3497,11 @@ function GanttPanel({
                     </div>
                     {!isHeading && <span className="px-2 py-1 bg-red-50 text-red-600 rounded-md text-xs font-bold">{progress}%</span>}
                   </div>
-                  <div className={`relative ${isHeading ? "bg-slate-950" : "bg-white"}`}>
+                  <div className={`relative ${isHeading ? ganttTone.chart : "bg-white"}`}>
                     {hasTaskDates ? (
                       <div
-                        className={`gantt-task-bar absolute top-1/2 -translate-y-1/2 rounded-md text-white text-xs font-bold flex items-center px-3 overflow-hidden shadow-sm ${isHeading ? "h-5" : "h-8"}`}
-                        style={{ left: `${left}%`, width: `${width}%`, backgroundColor: isHeading ? "#f97316" : color, borderColor: isHeading ? "#f97316" : color, boxShadow: `inset 0 0 0 999px ${isHeading ? "#f97316" : color}` }}
+                        className={`gantt-task-bar absolute top-1/2 -translate-y-1/2 rounded-md text-xs font-bold flex items-center px-3 overflow-hidden shadow-sm ${isHeading ? "h-5" : "h-8"}`}
+                        style={{ left: `${left}%`, width: `${width}%`, backgroundColor: isHeading ? ganttTone.bar : color, borderColor: isHeading ? ganttTone.bar : color, boxShadow: `inset 0 0 0 999px ${isHeading ? ganttTone.bar : color}`, color: isHeading ? ganttTone.barText : "#ffffff" }}
                         title={`${task.name}: ${formatDateShort(task.start)} - ${formatDateShort(task.end)}`}
                       >
                         {!isHeading && <span className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${progress}%` }} />}
@@ -2283,7 +3509,7 @@ function GanttPanel({
                       </div>
                     ) : (
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 rounded-md border border-dashed border-gray-200 px-3 py-1 text-xs font-semibold text-gray-400">
-                        ยังไม่มีงานย่อย
+                        ยังไม่ได้ใส่วันที่
                       </span>
                     )}
                   </div>
@@ -2752,6 +3978,7 @@ function GanttLegend() {
 
 function TaskTrackerPanel({
   tasks,
+  allTasks,
   loading,
   saving,
   projectName,
@@ -2760,6 +3987,7 @@ function TaskTrackerPanel({
   onStatusChange,
 }: {
   tasks: Task[];
+  allTasks: Task[];
   loading: boolean;
   saving: boolean;
   projectName: string;
@@ -2768,7 +3996,7 @@ function TaskTrackerPanel({
   onStatusChange: (task: Task, status: string) => Promise<boolean>;
 }) {
   const [draggedTask, setDraggedTask] = useState<Task | null>(null);
-  const taskMap = useMemo(() => new Map(tasks.map((task) => [task.task_id, task])), [tasks]);
+  const taskMap = useMemo(() => new Map(allTasks.map((task) => [task.task_id, task])), [allTasks]);
   const trackerTasks = useMemo(() => tasks.filter((task) => !isHeadingTask(task)), [tasks]);
 
   const handleDragStart = (event: React.DragEvent, task: Task) => {
@@ -2992,6 +4220,110 @@ function OverallStatus({ stats, totalTasks }: { stats: { done: number; average: 
   );
 }
 
+function ScheduleTemplateModal({
+  categories,
+  selectedCategoryIds,
+  loading,
+  importing,
+  onToggleCategory,
+  onSelectAll,
+  onClear,
+  onClose,
+  onImport,
+}: {
+  categories: ScheduleTemplateCategory[];
+  selectedCategoryIds: string[];
+  loading: boolean;
+  importing: boolean;
+  onToggleCategory: (categoryId: string) => void;
+  onSelectAll: () => void;
+  onClear: () => void;
+  onClose: () => void;
+  onImport: () => void;
+}) {
+  const selectedCount = categories
+    .filter((category) => selectedCategoryIds.includes(category.id))
+    .reduce((sum, category) => sum + category.taskCount, 0);
+
+  return (
+    <div className="schedule-screen-only schedule-modal-backdrop fixed inset-0 z-50 flex bg-black/40 backdrop-blur-sm">
+      <div className="schedule-modal-panel w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 p-5">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">เติมโครงสร้างแผนงานจากแม่แบบ</h3>
+            <p className="mt-1 text-sm text-gray-500">{selectedCategoryIds.length} หมวด | {selectedCount} รายการงาน</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="schedule-modal-body p-5">
+          <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800">
+            ระบบจะใช้หัวข้อเดิมและเติมเฉพาะระดับงานที่ขาด โดยไม่เปลี่ยนวันหรือความคืบหน้าของรายการเดิม
+          </p>
+          <div className="mb-4 flex flex-wrap gap-2">
+            <button type="button" onClick={onSelectAll} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:border-orange-300 hover:text-orange-700">
+              เลือกทั้งหมด
+            </button>
+            <button type="button" onClick={onClear} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:border-red-300 hover:text-red-600">
+              ล้างที่เลือก
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm font-semibold text-gray-500">
+              <Loader2 size={16} className="animate-spin" />
+              กำลังโหลดแม่แบบ
+            </div>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {categories.map((category) => {
+                const checked = selectedCategoryIds.includes(category.id);
+
+                return (
+                  <label
+                    key={category.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
+                      checked ? "border-orange-300 bg-orange-50" : "border-gray-200 bg-white hover:border-orange-200"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onToggleCategory(category.id)}
+                      className="mt-1 h-4 w-4 rounded border-gray-300 text-orange-600 focus:ring-orange-200"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-extrabold text-gray-900">{category.wbs} {category.name}</span>
+                      <span className="mt-1 block text-xs font-semibold text-gray-500">{category.taskCount} รายการ</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 justify-end gap-3 border-t border-gray-100 p-5">
+          <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100">
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={onImport}
+            disabled={importing || loading || selectedCategoryIds.length === 0}
+            className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700 disabled:opacity-70"
+          >
+            {importing ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
+            เติมโครงสร้างแผนงาน
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TaskModal({
   form,
   saving,
@@ -3009,69 +4341,73 @@ function TaskModal({
   onChange: React.Dispatch<React.SetStateAction<TaskForm>>;
   parentOptions: Task[];
 }) {
+  const parentTaskMap = new Map(parentOptions.map((task) => [task.task_id, task]));
+  const currentTaskId = form.task_id || "";
   const availableParents = parentOptions.filter((task) => (
-    task.task_id !== form.task_id && task._rowIndex !== form._rowIndex
+    task.task_id !== form.task_id &&
+    task._rowIndex !== form._rowIndex &&
+    !(() => {
+      if (!currentTaskId) return false;
+      let parentId = task.parent_task_id || "";
+      const seen = new Set<string>();
+      while (parentId && !seen.has(parentId)) {
+        if (parentId === currentTaskId) return true;
+        seen.add(parentId);
+        parentId = parentTaskMap.get(parentId)?.parent_task_id || "";
+      }
+      return false;
+    })()
   ));
   const isHeadingForm = form.task_type === "heading";
   const headingSelectValue = isHeadingForm && TASK_CATEGORIES.includes(form.name) ? form.name : CUSTOM_HEADING_VALUE;
 
   return (
-    <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl">
-        <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+    <div className="schedule-screen-only schedule-modal-backdrop fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex">
+      <div className="schedule-modal-panel bg-white rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl">
+        <div className="p-5 border-b border-gray-100 flex shrink-0 items-center justify-between">
           <h3 className="text-lg font-bold text-gray-900">{form.task_id || form._rowIndex ? "แก้ไขแผนงาน" : "เพิ่มแผนงาน"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="p-5 space-y-4">
+        <form onSubmit={onSubmit} className="schedule-modal-body p-5 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Field label="ประเภทงาน">
               <select
                 value={form.task_type}
-                onChange={(event) => onChange((prev) => ({
-                  ...prev,
-                  task_type: event.target.value,
-                  parent_task_id: event.target.value === "heading" ? "" : prev.parent_task_id,
-                  name: event.target.value === "heading" ? (TASK_CATEGORIES.includes(prev.name) ? prev.name : TASK_CATEGORIES[0]) : (TASK_CATEGORIES.includes(prev.name) ? "" : prev.name),
-                  category: event.target.value === "heading" ? (TASK_CATEGORIES.includes(prev.name) ? prev.name : TASK_CATEGORIES[0]) : "",
-                }))}
+                onChange={(event) => {
+                  const nextType = event.target.value;
+                  onChange((prev) => ({
+                    ...prev,
+                    task_type: nextType,
+                    name: nextType === "heading"
+                      ? prev.name || (prev.parent_task_id ? "" : TASK_CATEGORIES[0])
+                      : (TASK_CATEGORIES.includes(prev.name) ? "" : prev.name),
+                    category: nextType === "heading"
+                      ? (TASK_CATEGORIES.includes(prev.name) ? prev.name : prev.category)
+                      : prev.category,
+                  }));
+                }}
                 className="schedule-input"
               >
                 {TASK_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
               </select>
             </Field>
-            {isHeadingForm ? (
-              <Field label="หมวดงาน / H1">
-                <select
-                  value={headingSelectValue}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    onChange((prev) => ({
-                      ...prev,
-                      name: value === CUSTOM_HEADING_VALUE ? "" : value,
-                      category: value === CUSTOM_HEADING_VALUE ? "" : value,
-                    }));
-                  }}
-                  className="schedule-input"
-                >
-                  {TASK_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
-                  <option value={CUSTOM_HEADING_VALUE}>อื่นๆ / กรอกเอง</option>
-                </select>
-              </Field>
-            ) : (
-              <Field label="อยู่ใต้ H1">
-                <select
-                  value={form.parent_task_id}
-                  onChange={(event) => onChange((prev) => ({ ...prev, parent_task_id: event.target.value }))}
-                  className="schedule-input"
-                >
-                  <option value="">ไม่ระบุ</option>
-                  {availableParents.map((task) => <option key={task.task_id} value={task.task_id}>{task.name}</option>)}
-                </select>
-              </Field>
-            )}
+            <Field label="หัวข้อแม่">
+              <select
+                value={form.parent_task_id}
+                onChange={(event) => onChange((prev) => ({ ...prev, parent_task_id: event.target.value }))}
+                className="schedule-input"
+              >
+                <option value="">ไม่มี / เป็น H1</option>
+                {availableParents.map((task) => (
+                  <option key={task.task_id} value={task.task_id}>
+                    {getTaskLevelLabel(task, parentTaskMap)} - {task.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <Field label="ลำดับ">
               <input
                 type="number"
@@ -3083,9 +4419,29 @@ function TaskModal({
             </Field>
           </div>
 
+          {isHeadingForm && (
+            <Field label="ชื่อหัวข้อ / เลือกจากหมวดงาน">
+              <select
+                value={headingSelectValue}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  onChange((prev) => ({
+                    ...prev,
+                    name: value === CUSTOM_HEADING_VALUE ? "" : value,
+                    category: value === CUSTOM_HEADING_VALUE ? prev.category : value,
+                  }));
+                }}
+                className="schedule-input"
+              >
+                {TASK_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+                <option value={CUSTOM_HEADING_VALUE}>อื่นๆ / กรอกเอง</option>
+              </select>
+            </Field>
+          )}
+
           {(!isHeadingForm || headingSelectValue === CUSTOM_HEADING_VALUE) && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">{isHeadingForm ? "หัวข้อหลักอื่นๆ" : "ชื่องาน"}</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{isHeadingForm ? "ชื่อหัวข้ออื่นๆ" : "ชื่องาน"}</label>
               <input
                 autoFocus
                 required
@@ -3112,7 +4468,7 @@ function TaskModal({
 
           {isHeadingForm && (
             <div className="rounded-xl border border-orange-100 bg-orange-50 px-4 py-3 text-sm text-orange-700">
-              H1 เป็นหัวข้อหลักเท่านั้น วันที่ ระยะเวลา และความครบถ้วนจะคำนวณจากงานย่อยอัตโนมัติ
+              หัวข้อเป็นกลุ่มงานได้หลายชั้น เช่น H1/H2/H3 วันที่ ระยะเวลา และความคืบหน้าจะคำนวณจากงานจริงใต้หัวข้อนั้นอัตโนมัติ
             </div>
           )}
 
@@ -3194,9 +4550,9 @@ function TaskDateModal({
   onChange: React.Dispatch<React.SetStateAction<TaskDateForm>>;
 }) {
   return (
-    <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
-        <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+    <div className="schedule-screen-only schedule-modal-backdrop fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex">
+      <div className="schedule-modal-panel bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+        <div className="p-5 border-b border-gray-100 flex shrink-0 items-center justify-between">
           <div>
             <h3 className="text-lg font-bold text-gray-900">แก้ไขวันที่ task</h3>
             <p className="text-sm text-gray-500 mt-1">{task.name}</p>
@@ -3206,7 +4562,7 @@ function TaskDateModal({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="p-5 space-y-4">
+        <form onSubmit={onSubmit} className="schedule-modal-body p-5 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="วันที่เริ่ม">
               <input type="date" value={form.start} onChange={(event) => onChange((prev) => ({ ...prev, start: event.target.value }))} className="schedule-input" />
@@ -3258,16 +4614,16 @@ function MilestoneModal({
   onChange: React.Dispatch<React.SetStateAction<MilestoneForm>>;
 }) {
   return (
-    <div className="schedule-screen-only fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
-        <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+    <div className="schedule-screen-only schedule-modal-backdrop fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex">
+      <div className="schedule-modal-panel bg-white rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
+        <div className="p-5 border-b border-gray-100 flex shrink-0 items-center justify-between">
           <h3 className="text-lg font-bold text-gray-900">{form.milestone_id || form._rowIndex ? "แก้ไข Milestone" : "เพิ่ม Milestone"}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
             <X size={20} />
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="p-5 space-y-4">
+        <form onSubmit={onSubmit} className="schedule-modal-body p-5 space-y-4">
           <Field label="ชื่อ Milestone">
             <input required value={form.title} onChange={(event) => onChange((prev) => ({ ...prev, title: event.target.value }))} className="schedule-input" placeholder="เช่น งวดที่ 1 งานฐานราก" />
           </Field>
@@ -3553,6 +4909,7 @@ function PlanPrintDocument({ active, project, tasks, stats }: { active: boolean;
   const rowPages = chunkPlanPrintRows(tasks, PLAN_PRINT_ROWS_PER_PAGE);
   const totalPages = rowPages.length;
   const printedAt = new Intl.DateTimeFormat("th-TH", { dateStyle: "long" }).format(new Date());
+  const taskMap = new Map(tasks.map((task) => [task.task_id, task]));
 
   return (
     <div className={`schedule-print-doc plan-print-doc ${active ? "is-printing" : ""}`}>
@@ -3587,12 +4944,13 @@ function PlanPrintDocument({ active, project, tasks, stats }: { active: boolean;
               {rowTasks.map((task) => {
                 const isHeading = isHeadingTask(task);
                 const outline = getTaskOutlineNumber(task, tasks, tasks);
+                const taskDepth = getTaskDepth(task, taskMap);
 
                 if (isHeading) {
                   return (
-                    <tr key={task.task_id} className="print-heading-task">
+                    <tr key={task.task_id} className={`print-heading-task print-heading-depth-${Math.min(taskDepth, 2)}`}>
                       <td>{outline}</td>
-                      <td colSpan={8}>
+                      <td colSpan={8} style={{ paddingLeft: `${8 + Math.min(taskDepth, 5) * 18}px` }}>
                         <strong>{task.name}</strong>
                         <span>{task.summary_child_count || 0} งานย่อย | {formatDateShort(task.start)} - {formatDateShort(task.end)}</span>
                       </td>
@@ -3603,7 +4961,7 @@ function PlanPrintDocument({ active, project, tasks, stats }: { active: boolean;
                 return (
                   <tr key={task.task_id}>
                     <td>{outline}</td>
-                    <td className="print-child-task-name">{task.name}</td>
+                    <td className="print-child-task-name" style={{ paddingLeft: `${18 + Math.min(taskDepth, 5) * 14}px` }}>{task.name}</td>
                     <td>{task.assignee || "-"}</td>
                     <td>{formatDateShort(task.start)}</td>
                     <td>{formatDateShort(task.end)}</td>
@@ -3633,7 +4991,6 @@ function GanttPrintDocument({
   tasks,
   milestones,
   timeline,
-  stats,
   todayLeft,
 }: {
   active: boolean;
@@ -3641,10 +4998,8 @@ function GanttPrintDocument({
   tasks: Task[];
   milestones: Milestone[];
   timeline: Timeline;
-  stats: { average: number };
   todayLeft: number | null;
 }) {
-  const workTasks = tasks.filter((task) => !isHeadingTask(task));
   const printSegments = buildGanttPrintSegments(timeline);
   const rowPages = chunkList(tasks, GANTT_PRINT_ROWS_PER_PAGE);
   const totalPages = printSegments.length * rowPages.length;
@@ -3656,17 +5011,13 @@ function GanttPrintDocument({
         const pageNumber = segmentIndex * rowPages.length + rowPageIndex + 1;
         return (
           <section key={`${segment.index}-${rowPageIndex}`} className="gantt-print-page">
-            <PrintHeader title="High Resolution Gantt Chart / แผนภูมิแกนต์ความละเอียดสูง" project={project} />
+            <PrintHeader title="Construction Schedule / แผนงานก่อสร้าง WBS และ Gantt" project={project} />
             <PrintMetaGrid
               items={[
                 { label: "วันที่พิมพ์", value: printedAt },
-                { label: "ช่วงเวลาหน้านี้", value: dateRangeLabel(segment.start, segment.end) },
                 { label: "ช่วงเวลาโครงการ", value: dateRangeLabel(timeline.start, timeline.end) },
                 { label: "หน้า", value: `${pageNumber} / ${totalPages}` },
-                { label: "แถวในหน้านี้", value: rowTasks.length },
-                { label: "งานย่อยทั้งหมด", value: workTasks.length },
-                { label: "Milestone", value: milestones.length },
-                { label: "Progress รวม", value: `${stats.average}%` },
+                { label: "รายการในหน้านี้", value: `${rowTasks.length} / ${tasks.length}` },
               ]}
             />
             <GanttPrintSvg
@@ -3700,10 +5051,12 @@ function GanttPrintSvg({
   const taskMap = new Map(allTasks.map((task) => [task.task_id, task]));
   const ticks = buildGanttPrintTicks(segment);
   const monthMarkers = buildGanttPrintMonthMarkers(segment);
+  const monthLabels = monthMarkers.some((date) => toInputDate(date) === toInputDate(segment.start))
+    ? monthMarkers
+    : [segment.start, ...monthMarkers];
   const totalDays = Math.max(1, diffDays(segment.start, segment.end) + 1);
   const svgHeight = GANTT_PRINT_HEADER_HEIGHT + Math.max(1, tasks.length) * GANTT_PRINT_ROW_HEIGHT + 44;
   const chartX = GANTT_PRINT_LEFT_WIDTH;
-  const chartEndX = chartX + GANTT_PRINT_CHART_WIDTH;
   const rowStartY = GANTT_PRINT_HEADER_HEIGHT;
 
   const xForDate = (date: Date) => {
@@ -3719,19 +5072,25 @@ function GanttPrintSvg({
   const todayX = today && today >= segment.start && today <= segment.end ? xForDate(today) : null;
 
   return (
-    <svg className="gantt-print-svg" viewBox={`0 0 ${GANTT_PRINT_SVG_WIDTH} ${svgHeight}`} role="img" aria-label="High resolution Gantt chart">
+    <svg className="gantt-print-svg" viewBox={`0 0 ${GANTT_PRINT_SVG_WIDTH} ${svgHeight}`} role="img" aria-label="Construction schedule WBS and Gantt chart">
       <rect x="0" y="0" width={GANTT_PRINT_SVG_WIDTH} height={svgHeight} fill="#ffffff" />
-      <rect x="0" y="0" width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#111827" />
-      <rect x="0" y="0" width={GANTT_PRINT_LEFT_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#1f2937" />
-      <text x="18" y="31" fill="#ffffff" fontSize="18" fontWeight="800">Task / Owner / Dates</text>
-      <text x="18" y="58" fill="#d1d5db" fontSize="12">Rows {tasks.length} • Segment {segment.index}/{segment.total}</text>
+      <rect x="0" y="0" width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#f8fafc" />
+      <rect x="0" y="0" width={GANTT_PRINT_LEFT_WIDTH} height={GANTT_PRINT_HEADER_HEIGHT} fill="#ffffff" />
+      <line x1="0" y1={GANTT_PRINT_HEADER_HEIGHT} x2={GANTT_PRINT_SVG_WIDTH} y2={GANTT_PRINT_HEADER_HEIGHT} stroke="#cbd5e1" strokeWidth="1.5" />
+      <text x="18" y="31" fill="#0f172a" fontSize="17" fontWeight="800">WBS / งาน / ผู้รับผิดชอบ / วันที่</text>
+      <text x="18" y="57" fill="#64748b" fontSize="11">รายการในหน้านี้ {tasks.length} รายการ</text>
+      <g transform={`translate(${chartX + 18} 16)`}>
+        <line x1="0" y1="0" x2="28" y2="0" stroke="#f97316" strokeWidth="5" />
+        <text x="36" y="4" fill="#475569" fontSize="10" fontWeight="700">แผน</text>
+      </g>
 
-      {monthMarkers.map((date) => {
+      {monthLabels.map((date) => {
         const x = xForDate(date);
+        const alignEnd = x > chartX + GANTT_PRINT_CHART_WIDTH - 80;
         return (
           <g key={`month-${toInputDate(date)}`}>
-            <line x1={x} y1="0" x2={x} y2={svgHeight} stroke="#94a3b8" strokeWidth="1.4" strokeDasharray="5 5" />
-            <text x={x + 6} y="24" fill="#ffffff" fontSize="14" fontWeight="800">
+            <line x1={x} y1="34" x2={x} y2={svgHeight} stroke="#cbd5e1" strokeWidth="1.2" strokeDasharray="5 5" />
+            <text x={x + (alignEnd ? -6 : 6)} y="50" fill="#0f172a" fontSize="12" fontWeight="800" textAnchor={alignEnd ? "end" : "start"}>
               {new Intl.DateTimeFormat("th-TH", { month: "short", year: "2-digit" }).format(date)}
             </text>
           </g>
@@ -3740,10 +5099,11 @@ function GanttPrintSvg({
 
       {ticks.map((date) => {
         const x = xForDate(date);
+        const alignEnd = x > chartX + GANTT_PRINT_CHART_WIDTH - 45;
         return (
           <g key={`tick-${toInputDate(date)}`}>
-            <line x1={x} y1="44" x2={x} y2={svgHeight} stroke="#e5e7eb" strokeWidth="1" />
-            <text x={x + 4} y="65" fill="#e5e7eb" fontSize="11">
+            <line x1={x} y1="56" x2={x} y2={svgHeight} stroke="#e5e7eb" strokeWidth="1" />
+            <text x={x + (alignEnd ? -4 : 4)} y="73" fill="#64748b" fontSize="10" textAnchor={alignEnd ? "end" : "start"}>
               {new Intl.DateTimeFormat("th-TH", { day: "2-digit", month: "short" }).format(date)}
             </text>
           </g>
@@ -3765,55 +5125,43 @@ function GanttPrintSvg({
       {tasks.map((task, index) => {
         const y = rowStartY + index * GANTT_PRINT_ROW_HEIGHT;
         const isHeading = isHeadingTask(task);
+        const taskDepth = getTaskDepth(task, taskMap);
         const taskStart = parseDate(task.start) || parseDate(task.end);
         const taskEnd = parseDate(task.end) || taskStart;
-        const color = isHeading ? "#111827" : getTaskCategoryColor(task, taskMap);
-        const progress = clamp(Number(task.percent_done || 0));
-        const statusTone = getTaskStatusTone(task.status);
+        const categoryColor = getTaskCategoryColor(task, taskMap);
         const outline = getTaskOutlineNumber(task, allTasks, allTasks);
         const intersects = taskStart && taskEnd && taskStart <= segment.end && taskEnd >= segment.start;
         const barStart = taskStart ? maxDate(taskStart, segment.start) : segment.start;
         const barEnd = taskEnd ? minDate(taskEnd, segment.end) : segment.start;
         const barX = xForDate(barStart);
         const barW = Math.max(4, xForEndDate(barEnd) - barX);
-        const barY = y + (isHeading ? 15 : 10);
-        const barH = isHeading ? 10 : 18;
 
         return (
           <g key={`${task.task_id}-${index}`}>
-            <rect x="0" y={y} width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill={isHeading ? "#f8fafc" : (index % 2 === 0 ? "#ffffff" : "#fbfdff")} />
-            {isHeading ? <rect x="0" y={y} width={GANTT_PRINT_LEFT_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill="#111827" /> : null}
+            <rect x="0" y={y} width={GANTT_PRINT_SVG_WIDTH} height={GANTT_PRINT_ROW_HEIGHT} fill={isHeading ? `${categoryColor}14` : (index % 2 === 0 ? "#ffffff" : "#fbfdff")} />
+            {isHeading ? <rect x="0" y={y} width="5" height={GANTT_PRINT_ROW_HEIGHT} fill={categoryColor} /> : null}
             <line x1="0" y1={y + GANTT_PRINT_ROW_HEIGHT} x2={GANTT_PRINT_SVG_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#e5e7eb" strokeWidth="1" />
             <line x1={GANTT_PRINT_LEFT_WIDTH} y1={y} x2={GANTT_PRINT_LEFT_WIDTH} y2={y + GANTT_PRINT_ROW_HEIGHT} stroke="#cbd5e1" strokeWidth="1.4" />
-            <text x="16" y={y + 17} fill={isHeading ? "#ffffff" : "#111827"} fontSize="11" fontWeight="800">{outline}</text>
-            <text x="58" y={y + 17} fill={isHeading ? "#ffffff" : "#111827"} fontSize={isHeading ? "13" : "12"} fontWeight={isHeading ? "800" : "700"}>
-              {isHeading ? truncateText(task.name, 42) : truncateText(task.name, 28)}
+            <text x={16 + Math.min(taskDepth, 5) * 16} y={y + 15} fill={isHeading ? categoryColor : "#475569"} fontSize="11" fontWeight="800">{outline}</text>
+            <text x={58 + Math.min(taskDepth, 5) * 16} y={y + 15} fill="#111827" fontSize={isHeading ? "13" : "12"} fontWeight={isHeading ? "800" : "500"}>
+              {isHeading ? truncateText(task.name, Math.max(28, 52 - taskDepth * 4)) : truncateText(task.name, Math.max(24, 44 - taskDepth * 3))}
             </text>
-            <text x="58" y={y + 32} fill={isHeading ? "#cbd5e1" : "#64748b"} fontSize="10">
-              {isHeading ? `${task.summary_child_count || 0} tasks` : `${truncateText(task.assignee || "-", 18)} • ${formatDateShort(task.start)}-${formatDateShort(task.end)} • ${progress}%`}
+            <text x={58 + Math.min(taskDepth, 5) * 16} y={y + 29} fill="#64748b" fontSize="10">
+              {isHeading ? `${task.summary_child_count || 0} งานย่อย` : `${truncateText(task.assignee || "-", 18)} • ${formatDateShort(task.start)}-${formatDateShort(task.end)}`}
             </text>
-            {!isHeading ? (
-              <g>
-                <rect x="292" y={y + 9} width="102" height="18" rx="9" fill={statusTone.svgFill} stroke={statusTone.svgStroke} strokeWidth="1" />
-                <text x="343" y={y + 22} fill={statusTone.svgStroke} fontSize="9" fontWeight="800" textAnchor="middle">
-                  {TASK_STATUS_LABELS[task.status || "To Do"]}
-                </text>
-              </g>
-            ) : null}
             {intersects ? (
               <g>
-                <rect x={barX} y={barY} width={barW} height={barH} rx="5" fill={color} />
-                {!isHeading ? <rect x={barX} y={barY} width={Math.max(0, barW * (progress / 100))} height={barH} rx="5" fill="rgba(255,255,255,0.30)" /> : null}
-                {!isHeading ? (
-                  <text x={Math.min(barX + barW + 6, chartEndX - 28)} y={y + 24} fill="#111827" fontSize="10" fontWeight="800">
-                    {progress}%
+                <rect x={barX} y={y + 14} width={barW} height="6" rx="3" fill="#f97316" />
+                {isHeading && barW > 54 ? (
+                  <text x={barX + 8} y={y + 30} fill="#475569" fontSize="9" fontWeight="800">
+                    {truncateText(task.name, Math.max(8, Math.floor(barW / 8)))}
                   </text>
                 ) : null}
               </g>
-            ) : taskStart && taskEnd ? (
-              <text x={chartX + 10} y={y + 24} fill="#94a3b8" fontSize="10">outside this date segment</text>
             ) : (
-              <text x={chartX + 10} y={y + 24} fill="#94a3b8" fontSize="10">no planned date</text>
+              <text x={chartX + 10} y={y + 24} fill="#94a3b8" fontSize="10">
+                {taskStart && taskEnd ? "อยู่นอกช่วงที่เลือก" : "ยังไม่กำหนดวันที่"}
+              </text>
             )}
           </g>
         );

@@ -221,7 +221,7 @@ async function updateCustomerDecision(context: RouteContext, decision: CustomerD
     decision.decision_id || decision._rowIndex || "",
     patch,
     context.siteSheetId,
-    await getFallbackRowIndex(context, decision)
+    () => getFallbackRowIndex(context, decision)
   );
 }
 

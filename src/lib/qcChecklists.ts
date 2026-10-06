@@ -1,4 +1,5 @@
 import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+import { applyLineFlexTheme, LINE_FLEX_HERO_IMAGES } from "@/lib/lineFlexTheme";
 
 export type QcChecklistRecord = Record<string, string | number | undefined> & {
   _rowIndex?: number;
@@ -1216,7 +1217,7 @@ export function buildQcLineFlex({
     }] : []),
   ];
 
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `QC Checklist | ${projectName || projectId} | ${title}`,
     contents: {
@@ -1289,7 +1290,10 @@ export function buildQcLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.qc,
+    badgeText: "QC CHECKLIST",
+  });
 }
 
 export function buildQcApprovedLineFlex({
@@ -1311,7 +1315,7 @@ export function buildQcApprovedLineFlex({
 }) {
   const approvedDate = formatBangkokDateTime(approvedAt);
 
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `อนุมัติ QC Checklist แล้ว | ${projectName || projectId} | ${title}`,
     contents: {
@@ -1374,7 +1378,10 @@ export function buildQcApprovedLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.qc,
+    badgeText: "QC APPROVED",
+  });
 }
 
 function qcLineRow(label: string, value: string) {

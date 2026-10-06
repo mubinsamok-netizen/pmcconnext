@@ -196,7 +196,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         context.checklist.qc_id || context.checklist._rowIndex || "",
         patch,
         context.siteSheetId,
-        await getFallbackRowIndex(context.siteSheetId, context.checklist)
+        () => getFallbackRowIndex(context.siteSheetId, context.checklist)
       );
       await writeAuditLog({
         actor: { name: approvedBy, role: "Customer" },

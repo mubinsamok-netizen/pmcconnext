@@ -133,7 +133,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         context.round.round_id || context.round._rowIndex || "",
         patch,
         context.siteSheetId,
-        await getFallbackRowIndex(context.siteSheetId, context.round)
+        () => getFallbackRowIndex(context.siteSheetId, context.round)
       );
       await insert("Defect_Evidence", {
         evidence_id: makeId("DFE"),

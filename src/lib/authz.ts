@@ -5,6 +5,7 @@ import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRes
 import { getSupabaseTeamMembers, getSupabaseUserProjectAccess } from "@/lib/supabaseReadModel";
 
 type SessionUserLike = {
+  name?: string | null;
   email?: string | null;
   role?: string | null;
   googleSub?: string | null;
@@ -12,6 +13,8 @@ type SessionUserLike = {
 
 type ProjectLike = Record<string, unknown> & {
   project_id?: string;
+  pm_name?: unknown;
+  se_name?: unknown;
 };
 
 const ACCESS_CACHE_TTL_MS = 60 * 1000;
@@ -24,8 +27,17 @@ function normalizeEmail(email?: string | null) {
   return (email || "").trim().toLowerCase();
 }
 
+function normalizeText(value?: unknown) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isInactiveRecord(record: Record<string, unknown>) {
+  return normalizeText(record.active) === "false";
+}
+
 function accessCacheKey(user?: SessionUserLike | null) {
   return [
+    normalizeText(user?.name),
     normalizeEmail(user?.email),
     user?.googleSub || "",
     getAppRole(user?.role) || user?.role || "",
@@ -43,10 +55,12 @@ function collectAccessibleProjectIds({
   user,
   userSites,
   team,
+  projects,
 }: {
   user?: SessionUserLike | null;
   userSites: Record<string, unknown>[];
   team: Record<string, unknown>[];
+  projects: Record<string, unknown>[];
 }) {
   const email = normalizeEmail(user?.email);
   const googleSub = user?.googleSub || "";
@@ -55,36 +69,57 @@ function collectAccessibleProjectIds({
   userSites.forEach((site) => {
     const matchesEmail = email && normalizeEmail(String(site.email || "")) === email;
     const matchesGoogleSub = googleSub && String(site.google_sub || "") === googleSub;
-    if (site.active !== "FALSE" && (matchesEmail || matchesGoogleSub) && site.project_id) {
+    if (!isInactiveRecord(site) && (matchesEmail || matchesGoogleSub) && site.project_id) {
       parseProjectIds(site.project_id).forEach((projectId) => ids.add(projectId));
     }
   });
 
   const member = team.find((item) => (
-    normalizeEmail(String(item.email || "")) === email || (googleSub && String(item.google_sub || "") === googleSub)
+    !isInactiveRecord(item) &&
+    (normalizeEmail(String(item.email || "")) === email || (googleSub && String(item.google_sub || "") === googleSub))
   ));
 
   parseProjectIds(member?.project_ids).forEach((projectId) => ids.add(projectId));
+
+  const appRole = getAppRole(String(member?.role || user?.role || ""));
+  const assignedName = normalizeText(member?.name || user?.name);
+  if (assignedName && (appRole === "Engineer" || appRole === "Project Manager")) {
+    projects.forEach((project) => {
+      if (!project.project_id || isInactiveRecord(project)) return;
+
+      const isAssigned = appRole === "Engineer"
+        ? normalizeText(project.se_name) === assignedName
+        : normalizeText(project.pm_name) === assignedName;
+
+      if (isAssigned) ids.add(String(project.project_id));
+    });
+  }
 
   return ids;
 }
 
 async function getAccessibleProjectIdsFromSheets(user?: SessionUserLike | null) {
-  const [userSites, team] = await Promise.all([
+  const [userSites, team, projects] = await Promise.all([
     findAllMaster("UserSites"),
     findAllMaster("Team"),
+    findAllMaster("Projects"),
   ]);
 
-  return collectAccessibleProjectIds({ user, userSites, team });
+  return collectAccessibleProjectIds({ user, userSites, team, projects });
 }
 
 async function getAccessibleProjectIdsFromSupabase(user?: SessionUserLike | null) {
-  const [userSites, team] = await Promise.all([
+  const [userSites, team, projects] = await Promise.all([
     getSupabaseUserProjectAccess(),
     getSupabaseTeamMembers(),
+    findAllMaster("Projects"),
   ]);
 
-  return collectAccessibleProjectIds({ user, userSites, team });
+  return collectAccessibleProjectIds({ user, userSites, team, projects });
+}
+
+export function clearProjectAccessCache() {
+  accessibleProjectIdsCache.clear();
 }
 
 export async function getAccessibleProjectIds(user?: SessionUserLike | null) {

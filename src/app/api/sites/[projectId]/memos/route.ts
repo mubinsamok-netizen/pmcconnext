@@ -5,7 +5,7 @@ import { sendLineMessages } from "@/lib/line";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import {
   addCalendarDays,
@@ -98,7 +98,7 @@ async function updateSiteMemo(context: RouteContext, memo: MemoRecord, patch: Re
     memoId || memo._rowIndex || "",
     patch,
     context.siteSheetId,
-    memoId ? await getFallbackRowIndex(context, memo) : memo._rowIndex
+    memoId ? () => getFallbackRowIndex(context, memo) : memo._rowIndex
   );
 }
 
@@ -269,10 +269,13 @@ async function handleCreateMemo(body: Record<string, unknown>, context: RouteCon
   if (!title || !detail) return NextResponse.json({ error: "กรุณากรอกเรื่องและรายละเอียด Memo" }, { status: 400 });
 
   const memoId = makeId("MEMO");
+  const timestamp = new Date().toISOString();
   const attachments = await uploadMemoFiles(context, memoId, "Attachments", parseUploads(body.attachment_uploads));
   const hasTimeImpact = boolText(body.has_time_impact);
   const payload = {
     memo_id: memoId,
+    created_at: timestamp,
+    updated_at: timestamp,
     project_id: context.project.project_id,
     document_no: "",
     memo_type: textValue(body.memo_type) || "customer_notice",
@@ -325,8 +328,8 @@ async function handleUpdateMemo(body: Record<string, unknown>, context: RouteCon
   if (forbidden) return forbidden;
 
   const memoId = textValue(body.memo_id);
-  const data = await getMemoData(context);
-  const memo = data.memos.find((item) => item.memo_id === memoId);
+  const memos = await findAll("Site_Memos", context.siteSheetId) as unknown as MemoRecord[];
+  const memo = memos.find((item) => item.memo_id === memoId && item.project_id === context.project.project_id);
   if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
 
   const title = textValue(body.title);

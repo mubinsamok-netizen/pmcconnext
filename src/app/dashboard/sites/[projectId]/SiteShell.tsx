@@ -13,6 +13,7 @@ export function SiteShell({
   description,
   icon: Icon,
   wide = false,
+  hideHeader = false,
   children,
 }: {
   project: SitePageProject;
@@ -21,20 +22,23 @@ export function SiteShell({
   description: string;
   icon: ComponentType<{ size?: number; className?: string }>;
   wide?: boolean;
+  hideHeader?: boolean;
   children?: ReactNode;
 }) {
   return (
     <div className={`${wide ? "max-w-[1680px]" : "max-w-6xl"} mx-auto min-w-0 space-y-6`}>
-      <div className="schedule-screen-only flex flex-col gap-1">
-        <div className="min-w-0">
-          <div className="inline-flex items-center gap-2 text-sm font-semibold text-orange-600">
-            <Icon size={16} />
-            {eyebrow}
+      {!hideHeader && (
+        <div className="schedule-screen-only flex flex-col gap-1">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-2 text-sm font-semibold text-orange-600">
+              <Icon size={16} />
+              {eyebrow}
+            </div>
+            <h2 className="text-2xl font-bold text-gray-900 mt-1">{title}</h2>
+            <p className="text-gray-500">{description}</p>
           </div>
-          <h2 className="text-2xl font-bold text-gray-900 mt-1">{title}</h2>
-          <p className="text-gray-500">{description}</p>
         </div>
-      </div>
+      )}
 
       {children || (
         <div className="schedule-screen-only bg-white rounded-2xl border border-dashed border-gray-200 p-10 text-center">

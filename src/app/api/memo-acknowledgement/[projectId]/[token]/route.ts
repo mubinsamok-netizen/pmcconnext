@@ -226,7 +226,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         context.memo.memo_id || context.memo._rowIndex || "",
         { ...patch, ...refreshedPdf },
         context.siteSheetId,
-        await getFallbackRowIndex(context.siteSheetId, context.memo)
+        () => getFallbackRowIndex(context.siteSheetId, context.memo)
       );
       await writeAuditLog({
         actor: { name: acknowledgedBy, role: "Customer" },

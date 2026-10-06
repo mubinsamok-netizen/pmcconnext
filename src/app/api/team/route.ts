@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
+import { clearProjectAccessCache } from "@/lib/authz";
 import { getAppRole } from "@/lib/roles";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
@@ -103,6 +104,7 @@ export async function POST(req: Request) {
       })
     )));
 
+    clearProjectAccessCache();
     return NextResponse.json({ success: true, data: result.inserted });
   } catch (error: unknown) {
     console.error("Failed to create team member:", error);
@@ -176,6 +178,7 @@ export async function DELETE(req: Request) {
       );
     }
 
+    clearProjectAccessCache();
     return NextResponse.json({
       success: true,
       data: {
@@ -255,6 +258,7 @@ export async function PUT(req: Request) {
       })
     )));
 
+    clearProjectAccessCache();
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     console.error("Failed to update team member:", error);

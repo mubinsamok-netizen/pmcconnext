@@ -898,11 +898,22 @@ function toVoItemDb(data: Record<string, SheetValue>) {
     "vo_id",
     "project_id",
     "item_no",
+    "row_type",
     "description",
     "unit",
   ]);
 
-  ["quantity", "unit_price", "amount"].forEach((key) => {
+  [
+    "sort_order",
+    "parent_item_no",
+    "quantity",
+    "unit_price",
+    "material_unit_price",
+    "material_amount",
+    "labor_unit_price",
+    "labor_amount",
+    "amount",
+  ].forEach((key) => {
     if (data[key] !== undefined) payload[key] = numberOrNull(data[key]);
   });
   return payload;

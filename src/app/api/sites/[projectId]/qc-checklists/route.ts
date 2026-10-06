@@ -135,7 +135,7 @@ async function updateQcChecklist(context: RouteContext, checklist: QcChecklistRe
     checklist.qc_id || checklist._rowIndex || "",
     patch,
     context.siteSheetId,
-    await getFallbackRowIndex(context, checklist)
+    () => getFallbackRowIndex(context, checklist)
   );
 }
 

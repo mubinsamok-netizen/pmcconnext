@@ -17,9 +17,11 @@ type TopBarUser = {
 };
 
 function getPageTitle(pathname: string) {
+  if (pathname.includes("/payment-requests")) return "ระบบเบิกเงิน";
   if (pathname.startsWith("/dashboard/sites/")) return "Site Workspace";
   if (pathname.startsWith("/dashboard/projects")) return "Projects";
   if (pathname.startsWith("/dashboard/sales-crm")) return "Sales CRM";
+  if (pathname.startsWith("/dashboard/contractors")) return "ฐานข้อมูลช่าง";
   if (pathname.startsWith("/dashboard/team")) return "Team Management";
   if (pathname.startsWith("/dashboard/schedule")) return "Schedule";
   return "Workspace";

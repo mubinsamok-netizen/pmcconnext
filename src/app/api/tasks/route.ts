@@ -39,6 +39,34 @@ function mergeTaskRows<T extends Record<string, string | number | undefined>>(pr
   return Array.from(merged.values());
 }
 
+function getTaskDeleteTargets<T extends Record<string, string | number | undefined>>(tasks: T[], taskId: string, rowIndex: string) {
+  const target = tasks.find((task) => (
+    (taskId && String(task.task_id || "") === taskId) ||
+    (rowIndex && String(task._rowIndex || "") === rowIndex)
+  ));
+  if (!target) return [];
+
+  const childrenByParent = new Map<string, T[]>();
+  tasks.forEach((task) => {
+    const parentId = String(task.parent_task_id || "");
+    if (!parentId) return;
+    const current = childrenByParent.get(parentId) || [];
+    current.push(task);
+    childrenByParent.set(parentId, current);
+  });
+
+  const targets: T[] = [];
+  const visit = (task: T) => {
+    const id = String(task.task_id || "");
+    targets.push(task);
+    if (!id) return;
+    (childrenByParent.get(id) || []).forEach(visit);
+  };
+
+  visit(target);
+  return targets.reverse();
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -173,13 +201,30 @@ export async function DELETE(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(projectId);
-    const fallbackRowIndex = isSupabaseBackend()
-      ? rowIndex || undefined
-      : rowIndex || (taskId ? await findTaskRowIndex(sheetId, projectId, taskId) : undefined);
-    const rowKey = isSupabaseBackend() && taskId ? taskId : rowIndex || taskId;
-    await deleteRow("Tasks", rowKey, sheetId, fallbackRowIndex);
+    const readSheetsTasks = async () => filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
+    const tasks = taskId
+      ? isSupabaseReadEnabled("site")
+        ? await readWithSheetsFallback("tasks", async () => {
+          const supabaseTasks = await getSupabaseTasks(projectId);
+          if (!shouldFallbackToSheets()) return supabaseTasks;
+          return mergeTaskRows(supabaseTasks, await readSheetsTasks());
+        }, readSheetsTasks)
+        : await readSheetsTasks()
+      : await readSheetsTasks();
+    const targets = getTaskDeleteTargets(tasks, taskId, rowIndex);
+    const deleteTargets = targets.length ? targets : [{ task_id: taskId, _rowIndex: rowIndex, project_id: projectId || undefined }];
 
-    return NextResponse.json({ success: true });
+    for (const target of deleteTargets) {
+      const currentTaskId = String(target.task_id || "");
+      const currentRowIndex = String(target._rowIndex || "");
+      const fallbackRowIndex = isSupabaseBackend()
+        ? currentRowIndex || undefined
+        : currentRowIndex || (currentTaskId ? await findTaskRowIndex(sheetId, projectId, currentTaskId) : undefined);
+      const rowKey = isSupabaseBackend() && currentTaskId ? currentTaskId : currentRowIndex || currentTaskId;
+      await deleteRow("Tasks", rowKey, sheetId, fallbackRowIndex);
+    }
+
+    return NextResponse.json({ success: true, deleted_count: deleteTargets.length });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }

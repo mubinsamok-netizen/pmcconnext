@@ -434,7 +434,7 @@ export default function LifecycleWorkspace({
   const currentStatusLabel = lifecycleStatusOptions.find((option) => option.value === lifecycleForm.current_status)?.label || lifecycleForm.current_status;
   const currentStatusDestination = getStatusDestination(lifecycleForm.current_status, projectId);
 
-  const saveJson = async (key: string, body: Record<string, string>, next: () => Promise<unknown>, successMessage: string) => {
+  const saveJson = async (key: string, body: Record<string, string>, next: typeof mutateLifecycle, successMessage: string) => {
     if (!isAdmin) return;
     setLoading(key);
     setMessage(null);
@@ -446,7 +446,16 @@ export default function LifecycleWorkspace({
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(result.error || "บันทึกข้อมูลไม่สำเร็จ");
-      await next();
+      if (result.data) {
+        await next(result, { revalidate: false });
+        if (key === "lifecycle") {
+          setLifecycleForm(normalizeDateFields({ ...emptyLifecycle, ...result.data }, lifecycleDateFields));
+        } else {
+          setWarrantyForm(normalizeDateFields({ ...emptyWarranty, ...result.data }, warrantyDateFields));
+        }
+      } else {
+        await next();
+      }
       setMessage(successMessage);
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "บันทึกข้อมูลไม่สำเร็จ");

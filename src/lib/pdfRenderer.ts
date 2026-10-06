@@ -7,7 +7,7 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 
-let sarabunCssPromise: Promise<string> | null = null;
+let thaiSarabunCssPromise: Promise<string> | null = null;
 
 function shouldUseServerlessChromium() {
   return (
@@ -70,43 +70,39 @@ async function resolveChromePath() {
   return configuredPath;
 }
 
-async function loadSarabunFontCss() {
-  const cssUrl = "https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&display=swap";
-  const cssResponse = await fetch(cssUrl, {
-    headers: {
-      "user-agent": "Mozilla/5.0 Chrome PDF Renderer",
-    },
-  });
-  if (!cssResponse.ok) throw new Error(`Failed to load Sarabun CSS: ${cssResponse.status}`);
-
-  const css = await cssResponse.text();
-  const fontUrls = Array.from(css.matchAll(/url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g)).map((match) => match[1]);
-  const uniqueUrls = Array.from(new Set(fontUrls));
-  const replacements = new Map<string, string>();
-
-  await Promise.all(uniqueUrls.map(async (fontUrl) => {
-    const response = await fetch(fontUrl);
-    if (!response.ok) throw new Error(`Failed to load Sarabun font: ${response.status}`);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    replacements.set(fontUrl, `data:font/woff2;base64,${buffer.toString("base64")}`);
-  }));
-
-  return css.replace(/url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g, (_match, fontUrl: string) => {
-    return `url(${replacements.get(fontUrl) || fontUrl})`;
-  });
+async function loadThaiSarabunFontCss() {
+  const fontDirectory = path.join(process.cwd(), "public", "fonts");
+  const [regular, bold] = await Promise.all([
+    fs.readFile(path.join(fontDirectory, "THSarabunNew.ttf")),
+    fs.readFile(path.join(fontDirectory, "THSarabunNew-Bold.ttf")),
+  ]);
+  return `
+    @font-face {
+      font-family: "TH Sarabun New";
+      src: url(data:font/ttf;base64,${regular.toString("base64")}) format("truetype");
+      font-style: normal;
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: "TH Sarabun New";
+      src: url(data:font/ttf;base64,${bold.toString("base64")}) format("truetype");
+      font-style: normal;
+      font-weight: 600 900;
+    }
+  `;
 }
 
-async function getSarabunFontCss() {
-  sarabunCssPromise ||= loadSarabunFontCss().catch((error) => {
-    sarabunCssPromise = null;
-    console.warn("Sarabun font embedding failed; Chrome may fall back to system fonts:", error);
+async function getThaiSarabunFontCss() {
+  thaiSarabunCssPromise ||= loadThaiSarabunFontCss().catch((error) => {
+    thaiSarabunCssPromise = null;
+    console.warn("TH Sarabun New embedding failed; Chrome may fall back to system fonts:", error);
     return "";
   });
-  return sarabunCssPromise;
+  return thaiSarabunCssPromise;
 }
 
 async function prepareHtml(html: string) {
-  const fontCss = await getSarabunFontCss();
+  const fontCss = await getThaiSarabunFontCss();
   const printCss = `
     <style>
       ${fontCss}
@@ -115,7 +111,7 @@ async function prepareHtml(html: string) {
         print-color-adjust: exact !important;
       }
       body, table, th, td, input, textarea, select, button {
-        font-family: "Sarabun", "Noto Sans Thai", "Tahoma", "Arial", sans-serif !important;
+        font-family: "TH Sarabun New", "Sarabun", "Noto Sans Thai", "Tahoma", "Arial", sans-serif !important;
       }
     </style>
   `;
@@ -142,19 +138,25 @@ async function renderWithPuppeteer(html: string) {
         "--disable-web-security",
         "--font-render-hinting=medium",
       ],
-      defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 1 },
+      defaultViewport: { width: 1600, height: 2000, deviceScaleFactor: 1 },
       executablePath: await chromium.executablePath(),
       headless: true,
+      protocolTimeout: 120000,
     });
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
+    await page.emulateMediaType("print");
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(async () => {
+      for (const image of Array.from(document.images)) {
+        await image.decode().catch(() => undefined);
+      }
+    });
     const pdf = await page.pdf({
       printBackground: true,
       preferCSSPageSize: true,
-      tagged: true,
-      timeout: 60000,
+      timeout: 120000,
     });
 
     return Buffer.from(pdf);
@@ -188,9 +190,11 @@ export async function renderHtmlToPdfBuffer(html: string, fileName = "report") {
       "--disable-dev-shm-usage",
       "--no-sandbox",
       "--print-to-pdf-no-header",
+      "--no-pdf-header-footer",
       `--print-to-pdf=${pdfPath}`,
       "--run-all-compositor-stages-before-draw",
       "--virtual-time-budget=1500",
+      "--force-device-scale-factor=2",
       htmlUrl,
     ], { timeout: 60000, windowsHide: true });
 

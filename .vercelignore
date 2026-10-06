@@ -1,5 +1,8 @@
 output/
+outputs/
 scratch/
 scratch-test.png
 test-output.png
 test-output.pptx
+src/app/design-preview/
+.next-*/

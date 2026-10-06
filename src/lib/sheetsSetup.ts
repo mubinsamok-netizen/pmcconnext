@@ -49,6 +49,42 @@ export const MASTER_SCHEMA = {
     "auth_provider",
     "last_login_at",
   ],
+  Contractors: [
+    "contractor_id",
+    "name",
+    "nickname",
+    "phone",
+    "line_id",
+    "work_categories",
+    "service_area",
+    "employment_type",
+    "rate_note",
+    "source",
+    "status",
+    "team_size",
+    "notes",
+    "active",
+    "created_at",
+    "updated_at",
+  ],
+  LaborRates: [
+    "rate_id",
+    "category",
+    "work_name",
+    "description",
+    "unit",
+    "min_rate",
+    "standard_rate",
+    "max_rate",
+    "area",
+    "price_scope",
+    "effective_date",
+    "source",
+    "notes",
+    "active",
+    "created_at",
+    "updated_at",
+  ],
   UserSites: [
     "user_site_id",
     "email",
@@ -110,6 +146,49 @@ export const MASTER_SCHEMA = {
     "created_at",
     "updated_at",
     "next_follow_up_date",
+  ],
+  PaymentRequests: [
+    "request_id",
+    "project_id",
+    "request_type",
+    "document_no",
+    "title",
+    "request_date",
+    "status",
+    "payee_name",
+    "payee_tax_id",
+    "payee_address",
+    "bank_name",
+    "bank_account_no",
+    "bank_account_name",
+    "contractor_id",
+    "work_package",
+    "claim_period",
+    "contract_amount",
+    "previous_claim_amount",
+    "subtotal",
+    "vat_rate",
+    "vat_amount",
+    "wht_rate",
+    "wht_amount",
+    "retention_rate",
+    "retention_amount",
+    "advance_deduction",
+    "other_deduction",
+    "net_amount",
+    "paid_amount",
+    "items_json",
+    "attachments_json",
+    "notes",
+    "email_subject",
+    "email_body",
+    "pdf_file_id",
+    "pdf_url",
+    "pdf_file_name",
+    "created_by_name",
+    "created_by_email",
+    "created_at",
+    "updated_at",
   ],
 };
 
@@ -628,6 +707,13 @@ export const SITE_SCHEMA = {
     "amount",
     "created_at",
     "updated_at",
+    "sort_order",
+    "row_type",
+    "parent_item_no",
+    "material_unit_price",
+    "material_amount",
+    "labor_unit_price",
+    "labor_amount",
   ],
   VO_Documents: [
     "document_id",
@@ -698,6 +784,74 @@ type EnsureSchemaResult = { success: true } | { success: false; error: unknown }
 
 const SCHEMA_CACHE_TTL_MS = 10 * 60 * 1000;
 const schemaEnsureCache = new Map<string, { expiresAt: number; promise?: Promise<EnsureSchemaResult> }>();
+
+const LEGACY_VO_ITEM_HEADERS = [
+  "item_id",
+  "vo_id",
+  "project_id",
+  "item_no",
+  "description",
+  "unit",
+  "quantity",
+  "unit_price",
+  "amount",
+  "created_at",
+  "updated_at",
+] as const;
+
+// Rows written while an old sheet still had the legacy header used this physical order.
+const STRUCTURED_VO_ITEM_WRITE_HEADERS = [
+  "item_id",
+  "vo_id",
+  "project_id",
+  "item_no",
+  "sort_order",
+  "row_type",
+  "parent_item_no",
+  "description",
+  "unit",
+  "quantity",
+  "unit_price",
+  "material_unit_price",
+  "material_amount",
+  "labor_unit_price",
+  "labor_amount",
+  "amount",
+  "created_at",
+  "updated_at",
+] as const;
+
+function voItemSourceHeaders(currentHeaders: string[], targetHeaders: string[], row: unknown[]) {
+  const appendedRowTypeIndex = targetHeaders.indexOf("row_type");
+  const appendedRowType = String(row[appendedRowTypeIndex] || "");
+  if (["group", "group_add", "group_deduct", "detail", "note"].includes(appendedRowType)) {
+    return targetHeaders;
+  }
+
+  const structuredRowType = String(row[STRUCTURED_VO_ITEM_WRITE_HEADERS.indexOf("row_type")] || "");
+  if (["group", "group_add", "group_deduct", "detail", "note"].includes(structuredRowType)) {
+    return STRUCTURED_VO_ITEM_WRITE_HEADERS;
+  }
+
+  const currentHeaderIsStructured = currentHeaders[4] === "sort_order" && currentHeaders[5] === "row_type";
+  return currentHeaderIsStructured ? LEGACY_VO_ITEM_HEADERS : currentHeaders;
+}
+
+export function migrateSheetRows(
+  sheetName: string,
+  currentHeaders: string[],
+  targetHeaders: string[],
+  rows: unknown[][],
+) {
+  return rows.map((row) => {
+    const sourceHeaders = sheetName === "VO_Items"
+      ? voItemSourceHeaders(currentHeaders, targetHeaders, row)
+      : currentHeaders;
+    const valuesByHeader = new Map<string, unknown>();
+    sourceHeaders.forEach((header, index) => valuesByHeader.set(header, row[index] ?? ""));
+    return targetHeaders.map((header) => valuesByHeader.get(header) ?? "");
+  });
+}
 
 function getSchemaCacheKey(spreadsheetId: string, schema: SheetSchema) {
   const signature = Object.entries(schema)
@@ -791,13 +945,24 @@ async function ensureSchemaForUncached(spreadsheetId: string, schema: SheetSchem
           headers.some((header, index) => currentHeaders[index] !== header);
 
         if (headerMismatch) {
-          console.log(`Updating headers for ${sheetName}`);
+          console.log(`Migrating headers for ${sheetName}`);
+          const valuesRes = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: sheetName,
+          });
+          const currentRows = valuesRes.data.values || [];
+          const migratedRows = migrateSheetRows(
+            sheetName,
+            currentHeaders.map((header) => String(header || "")),
+            Array.from(headers),
+            currentRows.slice(1),
+          );
           await sheets.spreadsheets.values.update({
             spreadsheetId,
             range: `${sheetName}!A1`,
             valueInputOption: "USER_ENTERED",
             requestBody: {
-              values: [Array.from(headers)],
+              values: [Array.from(headers), ...migratedRows],
             },
           });
         }

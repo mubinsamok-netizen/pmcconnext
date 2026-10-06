@@ -3,6 +3,7 @@
 import {
   Archive,
   ExternalLink,
+  FileText,
   FileUp,
   Image as ImageIcon,
   Paperclip,
@@ -11,8 +12,9 @@ import {
   RefreshCw,
   Search,
   StickyNote,
+  X,
 } from "lucide-react";
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 
@@ -106,6 +108,67 @@ function isImage(attachment: Attachment) {
 
 function imageSrc(attachment: Attachment) {
   return attachment.file_id ? `/api/drive/files/${encodeURIComponent(attachment.file_id)}` : attachment.file_url || "";
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function SelectedFilePreviews({ files, onRemove }: { files: File[]; onRemove: (index: number) => void }) {
+  const previews = useMemo(() => files.map((file, index) => ({
+    file,
+    url: file.type.startsWith("image/") || file.type === "application/pdf" ? URL.createObjectURL(file) : "",
+    key: `${file.name}-${file.size}-${file.lastModified}-${index}`,
+  })), [files]);
+
+  useEffect(() => () => {
+    previews.forEach(({ url }) => {
+      if (url) URL.revokeObjectURL(url);
+    });
+  }, [previews]);
+
+  if (previews.length === 0) return null;
+
+  return (
+    <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-2" aria-live="polite">
+      <div className="flex items-center justify-between gap-2 px-1">
+        <span className="text-xs font-bold text-gray-700">ไฟล์ที่เลือก</span>
+        <span className="text-[11px] font-semibold text-gray-400">{files.length} ไฟล์</span>
+      </div>
+      {previews.map(({ file, url, key }, index) => {
+        const image = file.type.startsWith("image/");
+        return (
+          <div key={key} className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border border-gray-200 bg-white p-2">
+            <div className="grid h-14 w-14 place-items-center overflow-hidden rounded-md bg-gray-100">
+              {image && url ? (
+                // eslint-disable-next-line @next/next/no-img-element -- Browser object URLs preview local files before upload.
+                <img src={url} alt={`ตัวอย่าง ${file.name}`} className="h-full w-full object-cover" />
+              ) : (
+                <FileText size={22} className={file.type === "application/pdf" ? "text-red-500" : "text-gray-400"} />
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-bold text-gray-800">{file.name}</p>
+              <p className="mt-1 text-[11px] font-medium text-gray-400">{formatBytes(file.size)}</p>
+            </div>
+            <div className="flex items-center gap-1">
+              {url ? (
+                <a href={url} target="_blank" rel="noreferrer" className="rounded-md border border-gray-200 px-2 py-1.5 text-[11px] font-bold text-gray-600 hover:text-orange-600">
+                  Preview
+                </a>
+              ) : null}
+              <button type="button" onClick={() => onRemove(index)} className="grid h-7 w-7 place-items-center rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600" aria-label={`นำ ${file.name} ออก`} title="นำไฟล์ออก">
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function EmptyState() {
@@ -215,8 +278,10 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [message, setMessage] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const notes = useMemo(() => data?.data || [], [data?.data]);
   const filtered = useMemo(() => {
@@ -238,6 +303,22 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
   const activeCount = notes.filter((note) => String(note.archived || "") !== "TRUE").length;
   const attachmentCount = notes.reduce((sum, note) => sum + parseAttachments(note.attachments_json).length, 0);
 
+  async function applySavedNote(saved: SiteNote | undefined) {
+    if (!saved?.note_id) {
+      await mutate();
+      return;
+    }
+    await mutate((current) => ({
+      ...current,
+      success: true,
+      data: [saved, ...(current?.data || []).filter((note) => note.note_id !== saved.note_id)]
+        .sort((a, b) => {
+          const pinnedDelta = Number(b.pinned === "TRUE") - Number(a.pinned === "TRUE");
+          return pinnedDelta || new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime();
+        }),
+    }), { revalidate: false });
+  }
+
   function createNote(formData: FormData) {
     setMessage("");
     startTransition(async () => {
@@ -246,12 +327,24 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.error) throw new Error(payload.error || "บันทึกไม่สำเร็จ");
         formRef.current?.reset();
-        await mutate();
+        setSelectedFiles([]);
+        await applySavedNote(payload.data);
         setMessage("บันทึกหน้างานเรียบร้อยแล้ว");
       } catch (err) {
         setMessage(err instanceof Error ? err.message : "บันทึกไม่สำเร็จ");
       }
     });
+  }
+
+  function removeSelectedFile(index: number) {
+    const nextFiles = selectedFiles.filter((_, fileIndex) => fileIndex !== index);
+    setSelectedFiles(nextFiles);
+
+    if (fileInputRef.current) {
+      const transfer = new DataTransfer();
+      nextFiles.forEach((file) => transfer.items.add(file));
+      fileInputRef.current.files = transfer.files;
+    }
   }
 
   function patchNote(note: SiteNote, patch: Record<string, unknown>) {
@@ -264,7 +357,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.error) throw new Error(payload.error || "อัปเดตไม่สำเร็จ");
-        await mutate();
+        await applySavedNote(payload.data);
       } catch (err) {
         setMessage(err instanceof Error ? err.message : "อัปเดตไม่สำเร็จ");
       }
@@ -318,9 +411,17 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
             <input name="follow_up_date" type="date" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" />
             <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-3 text-sm font-bold text-gray-600 hover:bg-gray-50">
               <FileUp size={16} />
-              แนบรูป/ไฟล์
-              <input name="files" type="file" multiple className="sr-only" />
+              {selectedFiles.length > 0 ? `เลือกแล้ว ${selectedFiles.length} ไฟล์` : "แนบรูป/ไฟล์"}
+              <input
+                ref={fileInputRef}
+                name="files"
+                type="file"
+                multiple
+                className="sr-only"
+                onChange={(event) => setSelectedFiles(Array.from(event.currentTarget.files || []))}
+              />
             </label>
+            <SelectedFilePreviews files={selectedFiles} onRemove={removeSelectedFile} />
             <label className="flex items-center gap-2 rounded-lg bg-orange-50 px-3 py-2 text-sm font-bold text-orange-700">
               <input name="pinned" type="checkbox" className="h-4 w-4 rounded border-orange-300" />
               ปักหมุดบันทึกนี้

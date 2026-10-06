@@ -2,7 +2,6 @@
 
 import { AlertTriangle, Building2, Calendar, Filter, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
-import Image from "next/image";
 import { useSession } from "next-auth/react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
@@ -262,13 +261,21 @@ function getFilterTitle(filter: ResponsibilityFilter) {
 
 function extractDriveFileId(url?: string) {
   if (!url) return "";
-  return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
+  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
+}
+
+function looksLikeDriveFileId(value?: string) {
+  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
 }
 
 function getCoverSrc(project: Project) {
-  const fileId = project.cover_file_id || extractDriveFileId(project.cover_url);
+  const coverFileId = String(project.cover_file_id || "").trim();
+  const coverUrl = String(project.cover_url || "").trim();
+  const fileId = looksLikeDriveFileId(coverFileId)
+    ? coverFileId
+    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
   if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
-  return project.cover_url || "";
+  return coverUrl;
 }
 
 function ProjectCover({
@@ -317,12 +324,10 @@ function ProjectCover({
 
   return (
     <>
-      <Image
+      {/* eslint-disable-next-line @next/next/no-img-element -- Project covers may come from Drive proxy or legacy external URLs. */}
+      <img
         src={src}
         alt={alt}
-        fill
-        unoptimized
-        sizes="(max-width: 1280px) 100vw, 380px"
         onError={() => setFailed(true)}
         className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       />

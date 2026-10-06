@@ -81,7 +81,7 @@ export async function PUT(req: Request) {
     }
 
     const { sheetId } = await getProjectContext(project_id);
-    const fallbackRowIndex = legacyRowIndex || (materialId ? await findMaterialRowIndex(sheetId, project_id, materialId) : undefined);
+    const fallbackRowIndex = legacyRowIndex || (materialId ? () => findMaterialRowIndex(sheetId, project_id, materialId) : undefined);
     const rowKey = isSupabaseBackend() && materialId ? materialId : legacyRowIndex || materialId;
     await update("Materials", rowKey, { ...updates, ...(materialId ? { material_id: materialId } : {}) }, sheetId, fallbackRowIndex);
 

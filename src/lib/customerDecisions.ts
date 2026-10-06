@@ -1,4 +1,5 @@
 import { formatBangkokDateTime } from "@/lib/bangkokDateTime";
+import { applyLineFlexTheme, LINE_FLEX_HERO_IMAGES } from "@/lib/lineFlexTheme";
 
 export type CustomerDecisionRecord = Record<string, string | number | undefined> & {
   _rowIndex?: number;
@@ -245,7 +246,7 @@ export function buildCustomerDecisionLineFlex({
     }] : []),
   ];
 
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `รายการต้องตัดสินใจ | ${projectName || projectId} | ${title}`,
     contents: {
@@ -318,7 +319,10 @@ export function buildCustomerDecisionLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.customerDecision,
+    badgeText: "DECISION",
+  });
 }
 
 export function buildCustomerDecisionApprovedLineFlex({
@@ -339,7 +343,7 @@ export function buildCustomerDecisionApprovedLineFlex({
   pdfUrl?: string;
 }) {
   const approvedDate = formatBangkokDateTime(decidedAt);
-  return {
+  return applyLineFlexTheme({
     type: "flex",
     altText: `ยืนยันรายการที่ต้องตัดสินใจแล้ว | ${projectName || projectId} | ${title}`,
     contents: {
@@ -397,7 +401,10 @@ export function buildCustomerDecisionApprovedLineFlex({
         },
       } : {}),
     },
-  };
+  }, {
+    heroImageUrl: LINE_FLEX_HERO_IMAGES.customerDecision,
+    badgeText: "DECISION APPROVED",
+  });
 }
 
 function customerDecisionLineInfoRow(label: string, value: string) {

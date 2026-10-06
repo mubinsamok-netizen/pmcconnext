@@ -42,7 +42,15 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Project has no site sheet", status: 400 as const };
   }
 
-  if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
+  if (!isSupabaseBackend()) {
+    const schemaResult = await ensureSchema(siteSheetId);
+    if (!schemaResult.success) {
+      return {
+        error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้งเพื่อป้องกันข้อมูลคลาดเคลื่อน",
+        status: 503 as const,
+      };
+    }
+  }
 
   return { session, project, siteSheetId };
 }

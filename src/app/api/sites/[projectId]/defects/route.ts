@@ -144,7 +144,7 @@ async function updateDefectRound(context: RouteContext, round: DefectRoundRecord
     roundId || round._rowIndex || "",
     patch,
     context.siteSheetId,
-    roundId ? await fallbackRowIndex(context.siteSheetId, "Defect_Rounds", "round_id", roundId, round._rowIndex) : round._rowIndex
+    roundId ? () => fallbackRowIndex(context.siteSheetId, "Defect_Rounds", "round_id", roundId, round._rowIndex) : round._rowIndex
   );
 }
 
@@ -155,7 +155,7 @@ async function updateDefectItem(context: RouteContext, item: DefectItemRecord, p
     itemId || item._rowIndex || "",
     patch,
     context.siteSheetId,
-    itemId ? await fallbackRowIndex(context.siteSheetId, "Defect_Items", "item_id", itemId, item._rowIndex) : item._rowIndex
+    itemId ? () => fallbackRowIndex(context.siteSheetId, "Defect_Items", "item_id", itemId, item._rowIndex) : item._rowIndex
   );
 }
 

@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@e965/xlsx": "^0.20.3",
     "@netlify/plugin-nextjs": "^5.15.10",
     "@sparticuz/chromium": "^148.0.0",
     "@types/leaflet": "^1.9.21",
@@ -21,6 +22,7 @@
     "puppeteer-core": "^24.42.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sharp": "^0.34.5",
     "swr": "^2.4.1"
   },
   "devDependencies": {
