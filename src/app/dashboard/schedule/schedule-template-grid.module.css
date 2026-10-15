@@ -1,0 +1,43 @@
+.editor { display: flex; flex: 1; flex-direction: column; min-height: 0; color: #10294b; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-block: 1px solid #dbe3ed; background: #f8fafc; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.tools button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 6px 9px; border: 1px solid #dbe3ed; border-radius: 5px; background: white; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.tools button:hover:not(:disabled) { border-color: #f97316; color: #c2410c; background: #fff7ed; }
+.tools button:focus-visible { outline: 2px solid #ea580c; outline-offset: 2px; }
+.tools button:disabled { opacity: .4; cursor: not-allowed; }
+.divider { height: 22px; width: 1px; background: #dbe3ed; margin: 0 3px; }
+.hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px; font-size: 11px; color: #64748b; background: white; }
+.hint strong { color: #10294b; white-space: nowrap; }
+.notice { padding: 8px 16px; background: #fff7ed; border-top: 1px solid #fed7aa; color: #9a3412; font-size: 12px; }
+.scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; background: white; }
+.table { width: 100%; min-width: 820px; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.table th { position: sticky; top: 0; z-index: 2; height: 40px; padding: 8px; background: #10294b; color: white; text-align: left; border-right: 1px solid #31445f; font-size: 12px; font-weight: 600; }
+.table th:first-child { text-align: center; }
+.table td { height: 40px; padding: 0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; background: #fff; }
+.table .heading td { background: #eef3f9; font-weight: 650; }
+.table .root td { background: #dde7f3; border-bottom-color: #c2cfdf; }
+.table tr:hover td { background: #f0f7ff; }
+.table .selected td { background: #fff0d9; }
+.table .active .wbs { color: #c2410c; box-shadow: inset 3px 0 #f97316; }
+.table input:not([type=checkbox]) { width: 100%; min-width: 0; height: 39px; padding: 7px 8px; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; outline: none; }
+.table input:not([type=checkbox]):focus { background: #fff; box-shadow: inset 0 0 0 2px #f97316; color: #10294b; }
+.table input::placeholder { color: #94a3b8; font-weight: 400; }
+.table input[type=checkbox] { width: 15px; height: 15px; accent-color: #ea580c; cursor: pointer; vertical-align: middle; }
+.table .check { text-align: center; }
+.table .wbs { padding: 0 8px; color: #64748b; font-size: 11px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.nameCell { display: flex; align-items: center; min-width: 0; }
+.nameCell button { display: grid; place-items: center; width: 22px; height: 28px; flex-shrink: 0; border-radius: 4px; }
+.nameCell button:hover { background: #cbd5e1; }
+.treeSpacer { width: 22px; flex-shrink: 0; }
+.table .notes { font-weight: 400; font-size: 12px; }
+.table .type { padding: 0 8px; color: #64748b; font-size: 11px; font-weight: 500; }
+.empty { padding: 48px 24px; text-align: center; color: #64748b; }
+.statusBar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; padding: 7px 16px; border-top: 1px solid #dbe3ed; background: #f8fafc; color: #64748b; font-size: 11px; }
+.confirm { margin: auto; width: min(400px, calc(100% - 32px)); border: 0; border-radius: 12px; padding: 24px; color: #10294b; box-shadow: 0 20px 80px #0004; }
+.confirm::backdrop { background: #0006; }
+.confirm h4 { font-size: 17px; font-weight: 700; }
+.confirm p { margin: 12px 0 20px; font-size: 14px; color: #64748b; }
+.confirm > div { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm button { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+.confirm button:last-child { background: #dc2626; border-color: #dc2626; color: white; }
+@media (max-width: 640px) { .toolbar { padding: 8px; } .hint, .statusBar { padding-inline: 10px; } .tools button { min-height: 36px; } }

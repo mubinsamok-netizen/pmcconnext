@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { findAllRaw, insertMany } from "@/lib/sheetsCrud";
-import { ensureSchema } from "@/lib/sheetsSetup";
-import { getProjectContext } from "@/lib/siteContext";
-import { SCHEDULE_TEMPLATE_CATEGORIES, SCHEDULE_TEMPLATE_TASKS } from "@/lib/scheduleTemplateData";
-import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { SCHEDULE_TEMPLATE_CATEGORIES, SCHEDULE_TEMPLATE_TASKS, type ScheduleTemplateTask } from "@/lib/scheduleTemplateData";
+import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
+import { randomUUID } from "node:crypto";
+import { getSiteApiContext } from "@/lib/siteApi";
+import { listSavedScheduleTemplates } from "@/lib/scheduleTemplateStore";
+import { templateStructure } from "@/lib/scheduleTemplates";
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Internal server error";
@@ -16,7 +18,7 @@ function filterProjectTasks<T extends Record<string, string | number | undefined
 }
 
 function makeTaskId(index: number) {
-  return `TSK-TPL-${Date.now().toString(36).toUpperCase()}-${index.toString(36).toUpperCase()}`;
+  return `TSK-TPL-${randomUUID()}-${index}`;
 }
 
 const CATEGORY_ROOT_ALIASES: Record<string, string[]> = {
@@ -89,40 +91,56 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const projectId = String(body.project_id || "").trim();
+    if (!projectId) return NextResponse.json({ error: "Missing project_id" }, { status: 400 });
+    const context = await getSiteApiContext(projectId);
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+
+    const templateId = String(body.template_id || "builtin");
+    let categories = [...SCHEDULE_TEMPLATE_CATEGORIES] as Array<{ id: string }>;
+    let templateTasks: ScheduleTemplateTask[] = [...SCHEDULE_TEMPLATE_TASKS];
+    if (templateId !== "builtin") {
+      const saved = (await listSavedScheduleTemplates()).find((template) => template.id === templateId);
+      if (!saved) return NextResponse.json({ error: "ไม่พบแม่แบบที่เลือก" }, { status: 404 });
+      const structure = templateStructure(saved.items);
+      categories = structure.categories;
+      templateTasks = structure.tasks;
+    }
     const importAllCategories = body.import_all === true;
     const selectedCategoryIds: string[] = importAllCategories
-      ? SCHEDULE_TEMPLATE_CATEGORIES.map((category) => category.id)
+      ? categories.map((category) => category.id)
       : Array.isArray(body.category_ids)
-        ? body.category_ids.map((categoryId: unknown) => String(categoryId))
+        ? body.category_ids.map((categoryId: unknown) => {
+          const id = String(categoryId);
+          // The library identifies groups by their root item; retain legacy category IDs too.
+          return templateId === "builtin"
+            ? templateTasks.find((task) => !task.parentTemplateId && task.templateId === id)?.categoryId || id
+            : id;
+        })
         : [];
-
-    if (!projectId) {
-      return NextResponse.json({ error: "Missing project_id" }, { status: 400 });
-    }
 
     if (selectedCategoryIds.length === 0) {
       return NextResponse.json({ error: "Select at least one template category" }, { status: 400 });
     }
 
-    const categoryIdSet = new Set<string>(SCHEDULE_TEMPLATE_CATEGORIES.map((category) => category.id));
-    const validCategoryIds = selectedCategoryIds.filter((categoryId: string) => categoryIdSet.has(categoryId));
+    const categoryIdSet = new Set<string>(categories.map((category) => category.id));
+    const validCategoryIds = [...new Set(selectedCategoryIds.filter((categoryId: string) => categoryIdSet.has(categoryId)))];
 
     if (validCategoryIds.length === 0) {
       return NextResponse.json({ error: "No valid template categories selected" }, { status: 400 });
     }
 
-    const { sheetId } = await getProjectContext(projectId);
-    if (!isSupabaseBackend()) await ensureSchema(sheetId);
+    const sheetId = context.siteSheetId;
 
     const readSheetsTasks = async () => filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
     const existingTasks = isSupabaseReadEnabled("site")
       ? await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks)
       : await readSheetsTasks();
 
-    const selected = SCHEDULE_TEMPLATE_TASKS
+    const selected = templateTasks
       .filter((task) => validCategoryIds.includes(task.categoryId))
       .sort((a, b) => a.order - b.order);
     const templateIdToTaskId = new Map<string, string>();
+    const reusedTaskIds = new Set<string>();
     const taskRows: Array<Record<string, string>> = [];
     let reusedCount = 0;
     let generatedIdIndex = 0;
@@ -133,7 +151,10 @@ export async function POST(req: Request) {
       const rootTemplate = categoryTasks.find((task) => !task.parentTemplateId);
       if (!rootTemplate) continue;
 
-      const existingRoot = findExistingCategoryRoot(existingTasks, categoryId, rootTemplate.categoryName);
+      const availableRoots = existingTasks.filter((task) => !reusedTaskIds.has(String(task.task_id)));
+      const existingRoot = templateId === "builtin"
+        ? findExistingCategoryRoot(availableRoots, categoryId, rootTemplate.categoryName)
+        : findExistingTemplateTask(availableRoots, rootTemplate.name, "");
       const rootBaseOrder = existingRoot ? getTaskOrderValue(existingRoot) : appendOrder + 1;
       let categoryInsertIndex = 0;
 
@@ -141,9 +162,10 @@ export async function POST(req: Request) {
         const parentTaskId = task.parentTemplateId ? templateIdToTaskId.get(task.parentTemplateId) || "" : "";
         const existingTask = task.templateId === rootTemplate.templateId && existingRoot
           ? existingRoot
-          : findExistingTemplateTask(existingTasks, task.name, parentTaskId);
+          : findExistingTemplateTask(existingTasks.filter((item) => !reusedTaskIds.has(String(item.task_id))), task.name, parentTaskId);
 
         if (existingTask?.task_id) {
+          reusedTaskIds.add(String(existingTask.task_id));
           templateIdToTaskId.set(task.templateId, String(existingTask.task_id));
           reusedCount += 1;
           continue;

@@ -37,6 +37,10 @@ function fixture({ backend = "supabase", fallback = "sheets", databaseFails = fa
     SUPABASE_EXPERIMENTAL_SITE_READS: "true",
   });
   const dependencies = {
+    "node:crypto": require("node:crypto"),
+    "@/lib/siteApi": { getSiteApiContext: async () => ({ siteSheetId: "missing-legacy-sheet" }) },
+    "@/lib/scheduleTemplateStore": { listSavedScheduleTemplates: async () => [] },
+    "@/lib/scheduleTemplates": loadTs("src/lib/scheduleTemplates.ts"),
     "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
     "@/lib/sheetsCrud": {
       findAllRaw: async () => {
@@ -76,6 +80,14 @@ function fixture({ backend = "supabase", fallback = "sheets", databaseFails = fa
 
 const importRequest = () => ({ json: async () => ({ project_id: "P-1", import_all: true }) });
 const listRequest = { url: "http://localhost/api/tasks?project_id=P-1" };
+
+test("standard categories selected by the new library import using root item IDs", async () => {
+  const f = fixture();
+  const root = f.template.SCHEDULE_TEMPLATE_TASKS.find((task) => !task.parentTemplateId);
+  const result = await f.importer.POST({ json: async () => ({ project_id: "P-1", template_id: "builtin", category_ids: [root.templateId] }) });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.count, f.template.SCHEDULE_TEMPLATE_TASKS.filter((task) => task.categoryId === root.categoryId).length);
+});
 
 test("full schedule creation and reload succeed with a missing legacy sheet; repeating import reuses tasks", async () => {
   const f = fixture();
@@ -191,6 +203,10 @@ test("full template passes through the real write mapper with valid root and chi
   });
   const template = loadTs("src/lib/scheduleTemplateData.ts");
   const importer = loadTs("src/app/api/tasks/template/route.ts", {
+    "node:crypto": require("node:crypto"),
+    "@/lib/siteApi": { getSiteApiContext: async () => ({ siteSheetId: "missing-sheet" }) },
+    "@/lib/scheduleTemplateStore": { listSavedScheduleTemplates: async () => [] },
+    "@/lib/scheduleTemplates": loadTs("src/lib/scheduleTemplates.ts"),
     "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
     "@/lib/sheetsCrud": crud,
     "@/lib/sheetsSetup": setup,

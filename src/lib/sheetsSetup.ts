@@ -1,6 +1,7 @@
 import { drive, MASTER_SHEET_ID, sheets, SHEET_ID } from "./google";
 
 export const MASTER_SCHEMA = {
+  ScheduleTemplates: ["template_id", "name", "items_json", "created_by", "created_at"],
   Projects: [
     "project_id",
     "name",

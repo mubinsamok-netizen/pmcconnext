@@ -42,6 +42,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import { CUSTOMER_DECISION_PHASES, CUSTOMER_DECISION_STATUSES } from "@/lib/customerDecisions";
 import { fetcher } from "@/lib/fetcher";
 import { downloadScheduleWorkbook } from "@/lib/scheduleExcel";
+import ScheduleTemplateLibrary from "./ScheduleTemplateLibrary";
 
 type Project = {
   project_id: string;
@@ -177,13 +178,6 @@ type CustomerDecisionForm = {
 type ApiListResponse<T> = {
   success: boolean;
   data: T[];
-};
-
-type ScheduleTemplateCategory = {
-  id: string;
-  wbs: string;
-  name: string;
-  taskCount: number;
 };
 
 type CustomerDecisionResponse = ApiListResponse<CustomerDecision> & {
@@ -1023,7 +1017,6 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const [taskForm, setTaskForm] = useState<TaskForm>(emptyTaskForm);
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(emptyMilestoneForm);
   const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
-  const [selectedTemplateCategoryIds, setSelectedTemplateCategoryIds] = useState<string[]>([]);
   const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
   const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");
   const [saving, setSaving] = useState(false);
@@ -1056,17 +1049,14 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const taskKey = selectedProject ? `/api/tasks?project_id=${selectedProject}` : null;
   const milestoneKey = selectedProject ? `/api/milestones?project_id=${selectedProject}` : null;
   const decisionKey = selectedProject && activeTab === "decisions" ? `/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions` : null;
-  const scheduleTemplateKey = showScheduleTemplateModal ? "/api/tasks/template" : null;
 
   const { data: taskRes, isLoading: tasksLoading, mutate: mutateTasks } = useSWR<ApiListResponse<Task>>(taskKey, fetcher);
   const { data: milestoneRes, isLoading: milestonesLoading, mutate: mutateMilestones } = useSWR<ApiListResponse<Milestone>>(milestoneKey, fetcher);
   const { data: decisionRes, isLoading: decisionsLoading, mutate: mutateDecisions } = useSWR<CustomerDecisionResponse>(decisionKey, fetcher);
-  const { data: scheduleTemplateRes, isLoading: scheduleTemplateLoading } = useSWR<ApiListResponse<ScheduleTemplateCategory>>(scheduleTemplateKey, fetcher);
 
   const tasks = useMemo(() => (taskRes?.data ?? []).map(normalizeTask), [taskRes?.data]);
   const milestones = useMemo(() => milestoneRes?.data ?? [], [milestoneRes?.data]);
   const decisions = useMemo(() => decisionRes?.data ?? [], [decisionRes?.data]);
-  const scheduleTemplateCategories = useMemo(() => scheduleTemplateRes?.data ?? [], [scheduleTemplateRes?.data]);
   const collapsedHeadings = useMemo(() => collapsedByProject[selectedProject] || {}, [collapsedByProject, selectedProject]);
 
   const sortedTasks = useMemo(() => sortTaskList(tasks), [tasks]);
@@ -1286,20 +1276,19 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
 
   const openScheduleTemplateModal = () => {
     setMessage("");
-    setSelectedTemplateCategoryIds([]);
     setShowScheduleTemplateModal(true);
   };
 
   const requestScheduleTemplateImport = async ({
     categoryIds,
+    templateId = "builtin",
     importAll = false,
-    closeModal = false,
   }: {
     categoryIds?: string[];
+    templateId?: string;
     importAll?: boolean;
-    closeModal?: boolean;
   }) => {
-    if (!selectedProject || importingScheduleTemplate || (!importAll && !categoryIds?.length)) return;
+    if (!selectedProject || importingScheduleTemplate || (!importAll && !categoryIds?.length)) return false;
 
     setImportingScheduleTemplate(true);
     setMessage("");
@@ -1310,6 +1299,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: selectedProject,
+          template_id: templateId,
           ...(importAll ? { import_all: true } : { category_ids: categoryIds }),
         }),
       });
@@ -1329,7 +1319,6 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
         data: [...current.data, ...importedTasks],
       } : current, { revalidate: false });
       void mutateTasks().catch(() => undefined);
-      if (closeModal) setShowScheduleTemplateModal(false);
       const insertedCount = json.count ?? importedTasks.length;
       const reusedText = json.reused_count ? ` และใช้รายการเดิม ${json.reused_count} รายการ` : "";
       if (importAll && insertedCount === 0 && json.reused_count) {
@@ -1339,18 +1328,13 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
         const categoryText = json.category_count ? ` ${json.category_count} หมวด` : "";
         setMessage(`${actionLabel}แล้ว${categoryText} เพิ่ม ${insertedCount} รายการ${reusedText}`);
       }
+      return true;
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
+      return false;
     } finally {
       setImportingScheduleTemplate(false);
     }
-  };
-
-  const importScheduleTemplate = async () => {
-    await requestScheduleTemplateImport({
-      categoryIds: selectedTemplateCategoryIds,
-      closeModal: true,
-    });
   };
 
   const importFullScheduleTemplate = async () => {
@@ -2174,7 +2158,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
                 className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:opacity-70"
               >
                 {importingScheduleTemplate ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
-                สร้างร่างแผนงานจากแม่แบบ
+                แม่แบบแผนงาน
               </button>
             </div>
           </div>
@@ -2601,22 +2585,13 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
       />
 
       {showScheduleTemplateModal && (
-        <ScheduleTemplateModal
-          categories={scheduleTemplateCategories}
-          selectedCategoryIds={selectedTemplateCategoryIds}
-          loading={scheduleTemplateLoading}
+        <ScheduleTemplateLibrary
+          key={selectedProject}
+          projectName={selectedProjectData?.name || "โครงการนี้"}
+          projectTasks={sortedTasks}
           importing={importingScheduleTemplate}
-          onToggleCategory={(categoryId) => {
-            setSelectedTemplateCategoryIds((current) => (
-              current.includes(categoryId)
-                ? current.filter((id) => id !== categoryId)
-                : [...current, categoryId]
-            ));
-          }}
-          onSelectAll={() => setSelectedTemplateCategoryIds(scheduleTemplateCategories.map((category) => category.id))}
-          onClear={() => setSelectedTemplateCategoryIds([])}
           onClose={() => setShowScheduleTemplateModal(false)}
-          onImport={importScheduleTemplate}
+          onImport={(templateId, categoryIds) => requestScheduleTemplateImport({ templateId, categoryIds })}
         />
       )}
 
@@ -3067,7 +3042,7 @@ function UnifiedScheduleWorkspace({
             {importingTemplate ? "กำลังสร้าง..." : "สร้างทั้งโครงการ"}
           </button>
           <button type="button" onClick={onOpenTemplate} disabled={importingTemplate}>
-            <FileSpreadsheet size={17} /> เลือกบางหมวด
+            <FileSpreadsheet size={17} /> แม่แบบแผนงาน
           </button>
           <button type="button" onClick={onExportExcel} disabled={exportingExcel} title="ดาวน์โหลดแผนงานและ Gantt เป็นไฟล์ Excel">
             {exportingExcel ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
@@ -4214,110 +4189,6 @@ function OverallStatus({ stats, totalTasks }: { stats: { done: number; average: 
             งานเสร็จแล้ว
           </span>
           <strong>{stats.done} / {totalTasks}</strong>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ScheduleTemplateModal({
-  categories,
-  selectedCategoryIds,
-  loading,
-  importing,
-  onToggleCategory,
-  onSelectAll,
-  onClear,
-  onClose,
-  onImport,
-}: {
-  categories: ScheduleTemplateCategory[];
-  selectedCategoryIds: string[];
-  loading: boolean;
-  importing: boolean;
-  onToggleCategory: (categoryId: string) => void;
-  onSelectAll: () => void;
-  onClear: () => void;
-  onClose: () => void;
-  onImport: () => void;
-}) {
-  const selectedCount = categories
-    .filter((category) => selectedCategoryIds.includes(category.id))
-    .reduce((sum, category) => sum + category.taskCount, 0);
-
-  return (
-    <div className="schedule-screen-only schedule-modal-backdrop fixed inset-0 z-50 flex bg-black/40 backdrop-blur-sm">
-      <div className="schedule-modal-panel w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 p-5">
-          <div>
-            <h3 className="text-lg font-bold text-gray-900">เติมโครงสร้างแผนงานจากแม่แบบ</h3>
-            <p className="mt-1 text-sm text-gray-500">{selectedCategoryIds.length} หมวด | {selectedCount} รายการงาน</p>
-          </div>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="schedule-modal-body p-5">
-          <p className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800">
-            ระบบจะใช้หัวข้อเดิมและเติมเฉพาะระดับงานที่ขาด โดยไม่เปลี่ยนวันหรือความคืบหน้าของรายการเดิม
-          </p>
-          <div className="mb-4 flex flex-wrap gap-2">
-            <button type="button" onClick={onSelectAll} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:border-orange-300 hover:text-orange-700">
-              เลือกทั้งหมด
-            </button>
-            <button type="button" onClick={onClear} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:border-red-300 hover:text-red-600">
-              ล้างที่เลือก
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm font-semibold text-gray-500">
-              <Loader2 size={16} className="animate-spin" />
-              กำลังโหลดแม่แบบ
-            </div>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {categories.map((category) => {
-                const checked = selectedCategoryIds.includes(category.id);
-
-                return (
-                  <label
-                    key={category.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${
-                      checked ? "border-orange-300 bg-orange-50" : "border-gray-200 bg-white hover:border-orange-200"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => onToggleCategory(category.id)}
-                      className="mt-1 h-4 w-4 rounded border-gray-300 text-orange-600 focus:ring-orange-200"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-extrabold text-gray-900">{category.wbs} {category.name}</span>
-                      <span className="mt-1 block text-xs font-semibold text-gray-500">{category.taskCount} รายการ</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="flex shrink-0 justify-end gap-3 border-t border-gray-100 p-5">
-          <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100">
-            ยกเลิก
-          </button>
-          <button
-            type="button"
-            onClick={onImport}
-            disabled={importing || loading || selectedCategoryIds.length === 0}
-            className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700 disabled:opacity-70"
-          >
-            {importing ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
-            เติมโครงสร้างแผนงาน
-          </button>
         </div>
       </div>
     </div>
