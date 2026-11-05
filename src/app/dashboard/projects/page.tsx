@@ -285,6 +285,7 @@ function ProjectCover({
   projectId,
   status,
   progress,
+  loading,
 }: {
   src: string;
   alt: string;
@@ -292,6 +293,7 @@ function ProjectCover({
   projectId: string;
   status: string;
   progress: number;
+  loading: "eager" | "lazy";
 }) {
   const [failed, setFailed] = useState(false);
   const style = getStatusStyle(status);
@@ -328,6 +330,7 @@ function ProjectCover({
       <img
         src={src}
         alt={alt}
+        loading={loading}
         onError={() => setFailed(true)}
         className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       />
@@ -553,7 +556,7 @@ export default function ProjectsPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-3">
-        {filteredProjects.map((project) => {
+        {filteredProjects.map((project, index) => {
           const status = getStatus(project.status);
           const statusStyle = getStatusStyle(status);
           const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
@@ -582,6 +585,7 @@ export default function ProjectsPage() {
                     projectId={project.project_id}
                     status={status}
                     progress={progress}
+                    loading={index === 0 ? "eager" : "lazy"}
                   />
                   <div className={`absolute left-4 top-4 rounded-full border px-3.5 py-1.5 text-sm font-extrabold shadow-sm backdrop-blur ${statusStyle.badge}`}>
                     {status}
