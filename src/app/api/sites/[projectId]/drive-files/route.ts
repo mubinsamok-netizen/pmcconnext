@@ -16,7 +16,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const files = await listDriveFolderFiles(driveFolderId, {
       recursive: true,
       maxDepth: 4,
-      pageSize: 100,
+      pageSize: 500,
       maxFiles: 500,
     });
 
