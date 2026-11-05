@@ -17,9 +17,11 @@ import {
 import NextImage from "next/image";
 import { useMemo, useRef, useState, useTransition, type ComponentType } from "react";
 import useSWR from "swr";
+import PaginationControls from "@/components/PaginationControls";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
 import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
+import { usePagination } from "@/lib/usePagination";
 
 type ProjectDocument = Record<string, string | number | undefined> & {
   document_id: string;
@@ -572,6 +574,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
         .includes(normalized);
     });
   }, [activePhotoFolder, activeTab, files, query]);
+  const pagination = usePagination(filteredFiles, 20, JSON.stringify([projectId, activeTab, query, activePhotoFolder]));
   const photoFolders = useMemo(() => {
     const folderCounts = new Map<string, number>();
     files.filter(isPhotoFile).forEach((file) => {
@@ -612,6 +615,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
         });
 
         setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
+        pagination.setPage(1);
         formRef.current?.reset();
         await documents.mutate((current) => ({
           success: true,
@@ -681,7 +685,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <aside className="space-y-4">
+        <aside className="min-w-0 space-y-4">
           <form
             ref={formRef}
             className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
@@ -741,7 +745,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           </div>
         </aside>
 
-        <section className="space-y-4">
+        <section className="min-w-0 space-y-4">
           <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap gap-2">
@@ -800,15 +804,25 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             </div>
           ) : null}
 
+          {!isLoading && (
+            <PaginationControls
+              page={pagination.page}
+              pageSize={pagination.pageSize}
+              total={pagination.total}
+              onPageChange={pagination.setPage}
+              label="แบ่งหน้าไฟล์"
+            />
+          )}
+
           {isLoading ? (
             <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm font-semibold text-gray-500">
               <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
               กำลังโหลดไฟล์
             </div>
           ) : activeTab === "photos" ? (
-            <PhotoGallery files={filteredFiles.filter(isPhotoFile)} onPreview={setPreviewFile} />
+            <PhotoGallery files={pagination.items.filter(isPhotoFile)} onPreview={setPreviewFile} />
           ) : (
-            <FilesTable files={filteredFiles} />
+            <FilesTable files={pagination.items} />
           )}
 
           <div className="grid gap-3 md:grid-cols-3">

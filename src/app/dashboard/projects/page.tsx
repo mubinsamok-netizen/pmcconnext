@@ -6,10 +6,12 @@ import { useSession } from "next-auth/react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import PaginationControls from "@/components/PaginationControls";
 import { fetcher } from "@/lib/fetcher";
 import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
 import { isForemanRole } from "@/lib/siteAccess";
+import { usePagination } from "@/lib/usePagination";
 
 type Project = {
   project_id: string;
@@ -453,6 +455,7 @@ export default function ProjectsPage() {
       return engineer === engineerFilter;
     });
   }, [engineerFilter, projects, responsibilityFilter, team]);
+  const pagination = usePagination(filteredProjects, 10, JSON.stringify([responsibilityFilter, engineerFilter]));
   const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
     ? getAllLabel(responsibilityFilter)
     : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
@@ -555,8 +558,16 @@ export default function ProjectsPage() {
         </div>
       </div>
 
+      <PaginationControls
+        page={pagination.page}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        onPageChange={pagination.setPage}
+        label="แบ่งหน้าไซต์งาน"
+      />
+
       <div className="grid grid-cols-1 gap-3">
-        {filteredProjects.map((project, index) => {
+        {pagination.items.map((project, index) => {
           const status = getStatus(project.status);
           const statusStyle = getStatusStyle(status);
           const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
