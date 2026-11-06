@@ -26,4 +26,6 @@ Health uses the sheet ID already present in the authorized project record, avoid
 
 ## Compatibility
 
+Credentials login reads the existing Sheets Team table directly without waiting for master-schema setup. The reader already maps existing headers in memory. Fresh account reads, disabled-account/password checks and the awaited successful-login stamp are retained; Google sign-in and setup/write flows are unchanged. This removes schema metadata/header round trips on a cold schema cache, not the time needed to validate credentials or load site records. An existing master Team table is required, as with other read-only routes.
+
 `GET /api/projects` without a mode retains its existing behavior for other consumers. Writes, authorization rules, pagination sizes and file endpoints are unchanged. Both stages use the existing SWR behavior; this is not a cross-request server health cache.

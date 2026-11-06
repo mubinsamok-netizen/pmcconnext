@@ -143,13 +143,13 @@ test("both list stages require a session, while legacy full reads remain unchang
 
 const account = () => ({ member_id: "M1", _rowIndex: "M1", name: "Test", email: "test@example.invalid", password: "test-password", role: "Engineer", active: "TRUE", avatar_url: "avatar", google_sub: "G1", auth_provider: "credentials" });
 function authFixture({ supabase = true, user = account(), stamp = async () => {} } = {}) {
-  const calls = { credentials: [], masterReads: 0, rawReads: 0, stamps: 0 };
+  const calls = { credentials: [], masterReads: 0, rawReads: 0, stamps: 0, schemaSetups: 0 };
   const options = loadTs("src/lib/authOptions.ts", {
     "next-auth/providers/credentials": { default: (config) => ({ ...config, id: "credentials" }) },
     "next-auth/providers/google": { default: (config) => ({ ...config, id: "google" }) },
     "@/lib/roles": loadTs("src/lib/roles.ts"),
     "@/lib/supabaseRest": { isSupabaseBackend: () => supabase },
-    "@/lib/sheetsSetup": { ensureMasterSchema: async () => {} },
+    "@/lib/sheetsSetup": { ensureMasterSchema: async () => { calls.schemaSetups++; } },
     "@/lib/sheetsCrud": {
       findAllMaster: async () => { calls.masterReads++; return user ? [user] : []; },
       findAllMasterRaw: async () => { calls.rawReads++; return user ? [user] : []; },
@@ -198,6 +198,20 @@ test("credentials are read fresh and the existing Sheets backend still works", a
   await sheets.authorize({ email: "test@example.invalid", password: "test-password" });
   assert.equal(sheets.calls.rawReads, 1);
   assert.equal(sheets.calls.credentials.length, 0);
+  assert.equal(sheets.calls.schemaSetups, 0);
+});
+
+test("Sheets credentials stay fresh without schema work and still reject changed passwords", async () => {
+  const user = account();
+  const fixture = authFixture({ supabase: false, user });
+  assert.equal((await fixture.authorize({ email: user.email, password: user.password })).id, "M1");
+  user.password = "changed-password";
+  await assert.rejects(fixture.authorize({ email: user.email, password: "test-password" }), /Invalid password/);
+  user.active = "FALSE";
+  await assert.rejects(fixture.authorize({ email: user.email, password: user.password }), /บัญชีนี้ถูกปิด/);
+  assert.equal(fixture.calls.rawReads, 3);
+  assert.equal(fixture.calls.stamps, 1);
+  assert.equal(fixture.calls.schemaSetups, 0);
 });
 
 test("Google sign-in reuses the validated user for JWT and preserves session identity", async () => {

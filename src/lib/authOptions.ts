@@ -59,7 +59,7 @@ async function getCredentialsTeamUserByEmail(email: string) {
     return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
   }
 
-  await ensureMasterSchema();
+  // Login reads existing Team headers directly; schema setup belongs to setup/write flows.
   const users = await findAllMasterRaw("Team") as TeamRecord[];
   return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
 }
