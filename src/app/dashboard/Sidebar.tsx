@@ -119,10 +119,11 @@ export default function Sidebar({
 
   const sidebarContent = (isMobile: boolean) => (
     <>
-      <div className={`h-[64px] flex items-center border-b border-gray-100 ${collapsed && !isMobile ? "justify-center px-0" : "justify-between px-5"}`}>
+      <div className={`h-[64px] flex items-center gap-2 border-b border-gray-100 ${collapsed && !isMobile ? "justify-center px-0" : "justify-between px-5"}`}>
         {(!collapsed || isMobile) && (
-          <div className="flex items-center">
-            <Image src="/logo.png" alt="PMC CONNEXT" width={160} height={32} className="object-contain" priority />
+          <div className="flex min-w-0 items-center gap-2">
+            <Image src="/logo.png" alt="PMC CONNEXT" width={160} height={32} className="h-auto min-w-0 object-contain" priority />
+            <span className="shrink-0 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-bold text-orange-700">UAT</span>
           </div>
         )}
 
@@ -130,7 +131,7 @@ export default function Sidebar({
           <button
             type="button"
             onClick={onMobileClose}
-            className="grid h-9 w-9 place-items-center rounded-xl text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
             title="ปิดเมนู"
             aria-label="ปิดเมนู"
           >
@@ -140,7 +141,7 @@ export default function Sidebar({
           <button
             type="button"
             onClick={toggleCollapse}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
           >
             {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
           </button>
