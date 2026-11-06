@@ -63,6 +63,21 @@ rate must be measured after deployment access is granted.
 
 ## Compatibility
 
+### Authorization read deduplication
+
+The authorization helper accepts the caller's complete project list (or its existing
+Promise). The list endpoint, site API context and server project guard reuse that
+source instead of reading Projects again for Engineer/Project Manager assignments.
+Staff/Foreman grants need only UserSites and Team; Projects is read only when the
+effective stored member role/name requires assignment matching. Existing grants,
+role aliases, active-record rules, fallback behavior and the 60-second per-user access
+cache are retained. Admin already bypassed authorization table reads.
+
+Dashboard layout, server project guards and site overview share `getCurrentSession`,
+using React `cache` for one server render only. A new HTTP request obtains its own
+session. API Route Handlers still check the session independently; site membership,
+Admin-only actions and module guards are retained.
+
 Credentials login reads the existing Sheets Team table directly without waiting for master-schema setup. The reader already maps existing headers in memory. Fresh account reads, disabled-account/password checks and the awaited successful-login stamp are retained; Google sign-in and setup/write flows are unchanged. This removes schema metadata/header round trips on a cold schema cache, not the time needed to validate credentials or load site records. An existing master Team table is required, as with other read-only routes.
 
 `GET /api/projects` without a mode retains its existing uncached enrichment behavior for other consumers. Write payloads, authorization rules, pagination sizes and file endpoints are unchanged.

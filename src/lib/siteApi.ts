@@ -23,9 +23,10 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Admin only", status: 403 as const };
   }
 
+  const projectSource = findAllMaster("Projects") as unknown as Promise<SiteApiProject[]>;
   const [canAccess, projects] = await Promise.all([
-    canAccessProject(projectId, session.user),
-    findAllMaster("Projects") as unknown as Promise<SiteApiProject[]>,
+    canAccessProject(projectId, session.user, projectSource),
+    projectSource,
   ]);
   if (!canAccess) return { error: "Forbidden", status: 403 as const };
 

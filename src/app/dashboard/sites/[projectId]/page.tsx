@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getServerSession } from "next-auth";
+import { getCurrentSession } from "@/lib/currentSession";
 import type { ComponentType, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -26,7 +26,6 @@ import {
 } from "lucide-react";
 import SiteWeatherCard from "@/components/SiteWeatherCard";
 import SiteCalendarPanel, { type SiteCalendarEvent } from "./SiteCalendarPanel";
-import { authOptions } from "@/lib/authOptions";
 import type { MasterProject } from "@/lib/masterProjects";
 import { getMasterProject } from "@/lib/masterProjects";
 import { findAllBatch } from "@/lib/sheetsCrud";
@@ -1226,7 +1225,7 @@ export default async function SiteDashboardPage({
   const [dashboard, weather, session] = await Promise.all([
     getDashboardData(project),
     getSiteWeather(project),
-    getServerSession(authOptions),
+    getCurrentSession(),
   ]);
   const isForeman = isForemanRole(session?.user?.role);
   const remainingDays = daysUntil(project.end_date);

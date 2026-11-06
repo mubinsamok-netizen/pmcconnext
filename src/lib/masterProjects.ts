@@ -1,6 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/authOptions";
+import { getCurrentSession } from "@/lib/currentSession";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { canAccessSiteSegment } from "@/lib/siteAccess";
 import { findAllMaster } from "./sheetsCrud";
@@ -73,7 +72,7 @@ export async function getMasterProjects() {
 }
 
 export async function getMasterProject(projectId: string, options: { siteSegment?: string } = {}) {
-  const session = await getServerSession(authOptions);
+  const session = await getCurrentSession();
   if (!session?.user) {
     redirect("/");
   }
@@ -95,7 +94,7 @@ export async function getMasterProject(projectId: string, options: { siteSegment
 
   if (
     !project ||
-    !(await canAccessProject(decodedProjectId, session.user)) ||
+    !(await canAccessProject(decodedProjectId, session.user, projects)) ||
     !canAccessSiteSegment(session.user.role, options.siteSegment || "")
   ) {
     notFound();
