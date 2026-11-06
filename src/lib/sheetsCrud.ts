@@ -354,13 +354,19 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
   return findAllFromSiteCache(spreadsheetId, String(tableName));
 }
 
-export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: string = SHEET_ID) {
+export async function findAllBatch(
+  tableNames: SiteTable[],
+  spreadsheetId: string = SHEET_ID,
+  options: { projectId?: string } = {}
+) {
   const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
   const result = {} as Record<SiteTable, SheetRow[]>;
   const pendingTables: string[] = [];
   const pendingPromises: Promise<void>[] = [];
   const now = Date.now();
-  const supabaseProjectId = shouldUseSupabase() ? await resolveSiteProjectId(spreadsheetId) : "";
+  const supabaseProjectId = shouldUseSupabase()
+    ? textValue(options.projectId) || await resolveSiteProjectId(spreadsheetId)
+    : "";
 
   uniqueTableNames.forEach((tableName) => {
     const supabaseConfig = getSupabaseSiteConfig(tableName);

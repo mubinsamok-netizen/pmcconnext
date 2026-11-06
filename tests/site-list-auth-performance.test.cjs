@@ -24,9 +24,9 @@ function loadTs(relativePath, dependencies = {}) {
   return loaded.exports;
 }
 
-function projectRoute({ authenticated = true } = {}) {
+function projectRoute({ authenticated = true, backend = "supabase" } = {}) {
   const projects = Array.from({ length: 22 }, (_, index) => ({
-    project_id: `P-${index + 1}`, name: `Site ${index + 1}`, active: index === 21 ? "FALSE" : "TRUE",
+    project_id: `P-${index + 1}`, site_sheet_id: `P-${index + 1}`, name: `Site ${index + 1}`, active: index === 21 ? "FALSE" : "TRUE",
   }));
   const reads = [];
   let projectReads = 0;
@@ -36,17 +36,18 @@ function projectRoute({ authenticated = true } = {}) {
     "@/lib/authOptions": {},
     "@/lib/authz": { filterProjectsForUser: async (rows) => rows.filter((row) => row.project_id !== "P-21") },
     "@/lib/siteAccess": {}, "@/lib/drive": {}, "@/lib/google": {},
-    "@/lib/siteContext": { getProjectContext: async (id) => ({ sheetId: id }) },
+    "@/lib/siteContext": { getProjectContext: async () => { throw new Error("Must reuse the authorized project instead of reading master projects again"); } },
     "@/lib/projectLifecycle": loadTs("src/lib/projectLifecycle.ts"),
-    "@/lib/supabaseRest": { isSupabaseBackend: () => true, isSupabaseReadEnabled: () => true, readWithSheetsFallback: async (_, read) => read() },
+    "@/lib/supabaseRest": { isSupabaseBackend: () => backend === "supabase", isSupabaseReadEnabled: () => backend === "supabase", readWithSheetsFallback: async (_, read) => read() },
     "@/lib/supabaseReadModel": { getSupabaseProjects: async () => { projectReads++; return projects; } },
     "@/lib/supabaseSchema": { isSupabaseSiteSchemaMode: () => false },
-    "@/lib/sheetsCrud": { findAllBatch: async (tables, id) => {
+    "@/lib/sheetsCrud": { findAllMaster: async () => { projectReads++; return projects; }, findAllBatch: async (tables, id, options) => {
       reads.push(id);
+      assert.equal(options.projectId, id);
       assert.deepEqual(Array.from(tables), ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"]);
       return { Tasks: [{ project_id: id, task_id: "T1", percent_done: 50 }] };
     } },
-    "@/lib/sheetsSetup": {},
+    "@/lib/sheetsSetup": { ensureMasterSchema: async () => { throw new Error("Read-only GET must not run schema setup"); } },
   });
   return { get: (query = "") => route.GET({ url: `https://app.invalid/api/projects${query}` }), reads, projectReads: () => projectReads };
 }
@@ -57,6 +58,46 @@ test("basic project list returns accessible sites without any health reads", asy
   assert.equal(response.status, 200);
   assert.equal(response.body.data.length, 20);
   assert.equal(fixture.reads.length, 0);
+});
+
+test("Sheets list and health reuse existing project metadata without schema setup", async () => {
+  const fixture = projectRoute({ backend: "sheets" });
+  assert.equal((await fixture.get("?mode=basic")).status, 200);
+  assert.equal(fixture.projectReads(), 1);
+  const response = await fixture.get("?mode=health&projectId=P-1");
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data[0].percent_done, "50");
+  assert.equal(fixture.projectReads(), 2);
+  assert.deepEqual(fixture.reads, ["P-1"]);
+});
+
+test("shared-schema health batches scope all four reads and keep legacy callers unchanged", async () => {
+  const calls = [];
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./google": { MASTER_SHEET_ID: "master", SHEET_ID: "default", sheets: {} },
+    "./sheetsSetup": { MASTER_SCHEMA: {}, SITE_SCHEMA: {} },
+    "./supabaseCrud": {
+      getSupabaseSiteConfig: (table) => ({ table }),
+      findAllSupabase: async (config, projectId) => {
+        calls.push({ table: config.table, projectId });
+        const rows = [{ project_id: "P-1" }, { project_id: "P-2" }];
+        return projectId ? rows.filter((row) => row.project_id === projectId) : rows;
+      },
+    },
+    "./supabaseRest": { isSupabaseBackend: () => true, shouldFallbackToSheets: () => false },
+    "./supabaseSchema": { isSupabaseSiteSchemaMode: () => false },
+  });
+  const tables = ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"];
+  const rows = await crud.findAllBatch(tables, "existing-sheet", { projectId: "P-1" });
+  assert.equal(calls.length, 4);
+  assert.ok(calls.every((call) => call.projectId === "P-1"));
+  for (const table of tables) {
+    assert.equal(rows[table].length, 1);
+    assert.equal(rows[table][0].project_id, "P-1");
+  }
+  const legacy = await crud.findAllBatch(["Tasks"], "existing-sheet");
+  assert.equal(calls.at(-1).projectId, "");
+  assert.equal(legacy.Tasks.length, 2);
 });
 
 test("health reads only the requested accessible current-page projects", async () => {

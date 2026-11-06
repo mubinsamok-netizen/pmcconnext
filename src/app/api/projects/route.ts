@@ -5,7 +5,6 @@ import { clearProjectAccessCache, filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
 import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
-import { getProjectContext } from "@/lib/siteContext";
 import {
   getAlertState,
   getLifecycleReminderTargets,
@@ -298,8 +297,15 @@ async function enrichProjectWithHealth(project: SheetRecord) {
   }
 
   try {
-    const { sheetId } = await getProjectContext(projectId);
-    const rows = await findAllBatch(["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"], sheetId) as Record<string, SheetRecord[]>;
+    const sheetId = String(project.site_sheet_id || "").trim();
+    if (!sheetId && !isSupabaseBackend()) {
+      throw new Error(`Project ${projectId} has no site sheet`);
+    }
+    const rows = await findAllBatch(
+      ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"],
+      sheetId || projectId,
+      { projectId }
+    ) as Record<string, SheetRecord[]>;
     const tasks = rows.Tasks || [];
     const dailyReports = rows.Daily_Reports || [];
     const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
@@ -336,7 +342,6 @@ export async function GET(req: Request) {
     }
 
     const readSheetsProjects = async () => {
-      if (!isSupabaseBackend()) await ensureMasterSchema();
       return await findAllMaster("Projects");
     };
 
