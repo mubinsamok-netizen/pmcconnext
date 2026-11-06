@@ -108,6 +108,7 @@ test("health reads only the requested accessible current-page projects", async (
   assert.equal(response.body.data.length, 10);
   assert.equal(fixture.reads.length, 10);
   assert.ok(response.body.data.every((row) => row.percent_done === "50"));
+  assert.ok(response.body.data.every((row) => row.name === undefined && row.site_sheet_id === undefined));
 });
 
 test("health omits forbidden, inactive and unknown sites and deduplicates IDs", async () => {
@@ -134,7 +135,9 @@ test("both list stages require a session, while legacy full reads remain unchang
   }
   assert.equal(denied.projectReads(), 0);
   const legacy = projectRoute();
-  assert.equal((await legacy.get()).body.data.length, 20);
+  const legacyResponse = await legacy.get();
+  assert.equal(legacyResponse.body.data.length, 20);
+  assert.equal(legacyResponse.body.data[0].name, "Site 1");
   assert.equal(legacy.reads.length, 20);
 });
 

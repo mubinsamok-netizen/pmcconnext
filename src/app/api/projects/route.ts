@@ -45,6 +45,11 @@ type ProjectLifecycleAlert = {
 };
 
 const DAILY_REPORT_STALE_DAYS = 7;
+const PROJECT_HEALTH_FIELDS: Array<keyof ProjectHealth> = [
+  "percent_done", "tasks_count", "completed_tasks", "overdue_tasks", "delay_days", "progress_source",
+  "daily_reports_count", "last_daily_report_date", "daily_report_missing_days", "daily_report_alert",
+  "lifecycle_alerts_count", "lifecycle_alerts_json",
+];
 
 function withSiteStorageMetadata(project: SheetRecord) {
   const projectId = String(project.project_id || "").trim();
@@ -290,7 +295,7 @@ function calculateLifecycleAlerts(projectId: string, lifecycle?: SheetRecord, wa
   };
 }
 
-async function enrichProjectWithHealth(project: SheetRecord) {
+async function enrichProjectWithHealth(project: SheetRecord): Promise<SheetRecord & ProjectHealth> {
   const projectId = String(project.project_id || "").trim();
   if (!projectId) {
     return { ...project, ...calculateProjectHealth(project, []) };
@@ -358,6 +363,15 @@ export async function GET(req: Request) {
       ? accessibleProjects.filter((project) => requestedProjectIds.has(String(project.project_id)))
       : accessibleProjects;
     const projectsWithHealth = await Promise.all(healthProjects.map(enrichProjectWithHealth));
+    if (mode === "health") {
+      return NextResponse.json({
+        success: true,
+        data: projectsWithHealth.map((project) => ({
+          project_id: project.project_id,
+          ...Object.fromEntries(PROJECT_HEALTH_FIELDS.map((field) => [field, project[field]])),
+        })),
+      });
+    }
     return NextResponse.json({ success: true, data: projectsWithHealth.map(withSiteStorageMetadata) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

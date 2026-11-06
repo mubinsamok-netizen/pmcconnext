@@ -8,6 +8,7 @@ import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import PaginationControls from "@/components/PaginationControls";
 import ProjectsSkeleton, { ProjectHealthSkeleton } from "@/components/ProjectsSkeleton";
+import ProjectHealthLoader from "@/components/ProjectHealthLoader";
 import { fetcher } from "@/lib/fetcher";
 import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
@@ -461,12 +462,7 @@ export default function ProjectsPage() {
     });
   }, [engineerFilter, projects, responsibilityFilter, team]);
   const pagination = usePagination(filteredProjects, 10, JSON.stringify([responsibilityFilter, engineerFilter]));
-  const healthParams = new URLSearchParams({ mode: "health" });
-  pagination.items.forEach((project) => healthParams.append("projectId", project.project_id));
-  const health = useSWR<ProjectsResponse>(pagination.items.length ? `/api/projects?${healthParams}` : null, fetcher);
-  const healthById = new Map((health.data?.data || []).map((project) => [project.project_id, project]));
   const loadError = error || data?.error;
-  const healthError = health.error || health.data?.error;
   const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
     ? getAllLabel(responsibilityFilter)
     : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
@@ -571,13 +567,6 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      {healthError && (
-        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          <span>ไม่สามารถโหลดความคืบหน้าได้ ข้อมูลไซต์งานยังเปิดดูได้ตามปกติ</span>
-          <button type="button" onClick={() => void health.mutate()} className="font-bold underline">ลองโหลดความคืบหน้าอีกครั้ง</button>
-        </div>
-      )}
-
       <PaginationControls
         page={pagination.page}
         pageSize={pagination.pageSize}
@@ -587,8 +576,9 @@ export default function ProjectsPage() {
       />
 
       <div className="grid grid-cols-1 gap-3">
-        {pagination.items.map((basicProject, index) => {
-          const projectHealth = healthById.get(basicProject.project_id);
+        {pagination.items.map((basicProject, index) => (
+          <ProjectHealthLoader key={basicProject.project_id} projectId={basicProject.project_id}>
+          {({ data: projectHealth, failed: healthError, retry }) => {
           const project = projectHealth ? { ...basicProject, ...projectHealth } : basicProject;
           const status = getStatus(project.status);
           const statusStyle = getStatusStyle(status);
@@ -697,6 +687,13 @@ export default function ProjectsPage() {
                 </div>
               </Link>
 
+              {healthError && (
+                <div role="alert" className="flex flex-wrap items-center gap-3 border-t border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <span>ไม่สามารถโหลดความคืบหน้าของไซต์นี้ได้</span>
+                  <button type="button" onClick={retry} className="font-bold underline">ลองโหลดความคืบหน้าอีกครั้ง</button>
+                </div>
+              )}
+
               {!isForeman && (
               <div className="absolute right-4 top-4 z-10 flex items-center gap-2 xl:left-[276px] xl:right-auto">
                 <Link
@@ -721,7 +718,9 @@ export default function ProjectsPage() {
               )}
             </div>
           );
-        })}
+          }}
+          </ProjectHealthLoader>
+        ))}
 
         {isLoading && projects.length === 0 && <ProjectsSkeleton />}
 
