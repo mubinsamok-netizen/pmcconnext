@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import PaginationControls from "@/components/PaginationControls";
+import ProjectsSkeleton, { ProjectHealthSkeleton } from "@/components/ProjectsSkeleton";
 import { fetcher } from "@/lib/fetcher";
 import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
@@ -55,6 +56,7 @@ type ProjectLifecycleAlert = {
 type ProjectsResponse = {
   success: boolean;
   data: Project[];
+  error?: string;
 };
 
 type TeamMember = {
@@ -395,13 +397,16 @@ function HealthPill({
 
 export default function ProjectsPage() {
   const { data: session } = useSession();
-  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects", fetcher);
+  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
   const isAdmin = getAppRole(session?.user?.role) === "Admin";
-  const { data: teamData } = useSWR<TeamResponse>(isAdmin ? "/api/team" : null, fetcher);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
   const [responsibilityFilter, setResponsibilityFilter] = useState<ResponsibilityFilter>(FILTER_SITE_ENGINEER);
   const [engineerFilter, setEngineerFilter] = useState(ALL_ENGINEERS);
+  const { data: teamData, isLoading: teamLoading } = useSWR<TeamResponse>(
+    isAdmin && responsibilityFilter === FILTER_TEAM_ACCESS ? "/api/team" : null,
+    fetcher
+  );
   const projects = useMemo(() => data?.data || [], [data?.data]);
   const team = useMemo(() => teamData?.data || [], [teamData?.data]);
   const isForeman = isForemanRole(session?.user?.role);
@@ -456,6 +461,12 @@ export default function ProjectsPage() {
     });
   }, [engineerFilter, projects, responsibilityFilter, team]);
   const pagination = usePagination(filteredProjects, 10, JSON.stringify([responsibilityFilter, engineerFilter]));
+  const healthParams = new URLSearchParams({ mode: "health" });
+  pagination.items.forEach((project) => healthParams.append("projectId", project.project_id));
+  const health = useSWR<ProjectsResponse>(pagination.items.length ? `/api/projects?${healthParams}` : null, fetcher);
+  const healthById = new Map((health.data?.data || []).map((project) => [project.project_id, project]));
+  const loadError = error || data?.error;
+  const healthError = health.error || health.data?.error;
   const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
     ? getAllLabel(responsibilityFilter)
     : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
@@ -499,7 +510,7 @@ export default function ProjectsPage() {
         )}
       </div>
 
-      {error && (
+      {loadError && (
         <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
           ไม่สามารถดึงข้อมูลไซต์งานจาก Master Sheet ได้
         </div>
@@ -534,6 +545,8 @@ export default function ProjectsPage() {
             </select>
             <select
               value={engineerFilter}
+              disabled={responsibilityFilter === FILTER_TEAM_ACCESS && teamLoading}
+              aria-busy={responsibilityFilter === FILTER_TEAM_ACCESS && teamLoading}
               onChange={(event) => setEngineerFilter(event.target.value)}
               className="h-10 min-w-[260px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
               aria-label={getFilterTitle(responsibilityFilter)}
@@ -558,6 +571,13 @@ export default function ProjectsPage() {
         </div>
       </div>
 
+      {healthError && (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <span>ไม่สามารถโหลดความคืบหน้าได้ ข้อมูลไซต์งานยังเปิดดูได้ตามปกติ</span>
+          <button type="button" onClick={() => void health.mutate()} className="font-bold underline">ลองโหลดความคืบหน้าอีกครั้ง</button>
+        </div>
+      )}
+
       <PaginationControls
         page={pagination.page}
         pageSize={pagination.pageSize}
@@ -567,7 +587,9 @@ export default function ProjectsPage() {
       />
 
       <div className="grid grid-cols-1 gap-3">
-        {pagination.items.map((project, index) => {
+        {pagination.items.map((basicProject, index) => {
+          const projectHealth = healthById.get(basicProject.project_id);
+          const project = projectHealth ? { ...basicProject, ...projectHealth } : basicProject;
           const status = getStatus(project.status);
           const statusStyle = getStatusStyle(status);
           const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
@@ -646,6 +668,12 @@ export default function ProjectsPage() {
                 </div>
 
                 <div className="flex min-w-0 flex-col justify-between gap-4 border-t border-slate-100 bg-slate-50/60 p-5 xl:border-l xl:border-t-0 xl:p-6">
+                  {!projectHealth ? (
+                    healthError
+                      ? <p className="text-sm text-slate-500">ยังไม่สามารถแสดงความคืบหน้าได้</p>
+                      : <ProjectHealthSkeleton />
+                  ) : (
+                  <>
                   <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-3 text-[15px] font-bold text-slate-700">
                       <span className="truncate">ความก้าวหน้าโครงการ</span>
@@ -664,6 +692,8 @@ export default function ProjectsPage() {
                       tone={overdueTasks > 0 ? "red" : "green"}
                     />
                   </div>
+                  </>
+                  )}
                 </div>
               </Link>
 
@@ -693,19 +723,15 @@ export default function ProjectsPage() {
           );
         })}
 
-        {isLoading && (
-          <div className="col-span-full flex items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
-            <span>กำลังโหลดไซต์งาน...</span>
-          </div>
-        )}
+        {isLoading && projects.length === 0 && <ProjectsSkeleton />}
 
-        {projects.length === 0 && !isLoading && !error && (
+        {projects.length === 0 && !isLoading && !loadError && (
           <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
             ยังไม่มีไซต์งานใน Master Sheet
           </div>
         )}
 
-        {projects.length > 0 && filteredProjects.length === 0 && !isLoading && !error && (
+        {projects.length > 0 && filteredProjects.length === 0 && !isLoading && !loadError && (
           <div className="col-span-full rounded-2xl border border-dashed border-orange-200 bg-orange-50/40 py-12 text-center text-orange-700">
             ไม่มีไซต์งานของ {activeEngineerLabel}
           </div>

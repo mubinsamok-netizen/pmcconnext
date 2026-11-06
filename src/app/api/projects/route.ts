@@ -327,6 +327,14 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const requestedProjectIds = new Set(searchParams.getAll("projectId"));
+    if (mode === "health" && requestedProjectIds.size > 10) {
+      return NextResponse.json({ error: "Request up to 10 projects at a time" }, { status: 400 });
+    }
+    if (mode === "health" && requestedProjectIds.size === 0) {
+      return NextResponse.json({ success: true, data: [] });
+    }
+
     const readSheetsProjects = async () => {
       if (!isSupabaseBackend()) await ensureMasterSchema();
       return await findAllMaster("Projects");
@@ -341,7 +349,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, data: accessibleProjects.map(withSiteStorageMetadata) });
     }
 
-    const projectsWithHealth = await Promise.all(accessibleProjects.map(enrichProjectWithHealth));
+    const healthProjects = mode === "health"
+      ? accessibleProjects.filter((project) => requestedProjectIds.has(String(project.project_id)))
+      : accessibleProjects;
+    const projectsWithHealth = await Promise.all(healthProjects.map(enrichProjectWithHealth));
     return NextResponse.json({ success: true, data: projectsWithHealth.map(withSiteStorageMetadata) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

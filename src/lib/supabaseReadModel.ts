@@ -597,9 +597,14 @@ export async function getSupabaseTeamMembers() {
   }));
 }
 
-export async function getSupabaseTeamMemberCredentials() {
+export async function getSupabaseTeamMemberCredentials(email: string) {
+  const literalEmail = email.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const rows = await supabaseSelect<SupabaseTeamMember>("team_members", {
+    select: "member_id,name,email,password,role,active,google_sub,avatar_url,auth_provider",
+    // Match one literal email, preserving case-insensitive and legacy whitespace handling.
+    email: `imatch.^[[:space:]]*${literalEmail}[[:space:]]*$`,
     order: "name.asc",
+    limit: "1",
   }, {
     schema: getSupabaseMasterSchema(),
   });

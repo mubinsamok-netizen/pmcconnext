@@ -55,7 +55,7 @@ async function getTeamUserByEmail(email: string) {
 
 async function getCredentialsTeamUserByEmail(email: string) {
   if (isSupabaseBackend()) {
-    const users = await getSupabaseTeamMemberCredentials() as TeamRecord[];
+    const users = await getSupabaseTeamMemberCredentials(normalizeEmail(email)) as TeamRecord[];
     return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
   }
 
@@ -234,7 +234,11 @@ export const authOptions: AuthOptions = {
         token.authProvider = (user as { authProvider?: string }).authProvider || account?.provider || token.authProvider || "credentials";
       }
 
-      if (account?.provider === "google" && token.email) {
+      if (account?.provider === "google" && user) {
+        token.picture = user.image || token.picture;
+      }
+
+      if (account?.provider === "google" && !user && token.email) {
         const teamUser = await getTeamUserByEmail(String(token.email));
         if (teamUser) {
           token.userId = String(teamUser.member_id || token.userId || "");

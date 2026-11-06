@@ -141,7 +141,7 @@ export default function GlobalLoadingIndicator() {
     }
   }, [pathname]);
 
-  if (!visible) return null;
+  if (!visible || pathname === "/dashboard/projects") return null;
 
   return (
     <div className="pmc-global-loading" role="status" aria-live="polite" aria-label="กำลังโหลด">
