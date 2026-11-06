@@ -29,6 +29,7 @@ import {
 import type { ComponentType } from "react";
 import { getAppRole } from "@/lib/roles";
 import { canAccessSiteSegment } from "@/lib/siteAccess";
+import UatBadge from "@/components/UatBadge";
 
 type SidebarUser = {
   name?: string | null;
@@ -123,7 +124,7 @@ export default function Sidebar({
         {(!collapsed || isMobile) && (
           <div className="flex min-w-0 items-center gap-2">
             <Image src="/logo.png" alt="PMC CONNEXT" width={160} height={32} className="h-auto min-w-0 object-contain" priority />
-            <span className="shrink-0 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-bold text-orange-700">UAT</span>
+            <UatBadge />
           </div>
         )}
 

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Kanit } from "next/font/google";
 import Script from "next/script";
 import { Providers } from "@/components/Providers";
+import { UAT_LABEL } from "@/lib/appVersion";
 import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
@@ -12,7 +13,7 @@ const kanit = Kanit({
 });
 
 export const metadata: Metadata = {
-  title: "PMC CONNEXT",
+  title: `PMC CONNEXT | ${UAT_LABEL}`,
   description: "Construction Operations Platform",
 };
 

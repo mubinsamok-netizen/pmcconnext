@@ -15,6 +15,7 @@ import {
   EyeOff
 } from "lucide-react";
 import { signIn } from "next-auth/react";
+import UatBadge from "@/components/UatBadge";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -96,10 +97,11 @@ export default function LoginPage() {
           <div className="pmc-auth-mobile-bg" />
 
           <div className="pmc-auth-card">
-            <div className="pmc-auth-logo-block">
+            <div className="pmc-auth-logo-block flex-col items-center gap-2">
               <span className="pmc-auth-logo-wrap">
                 <Image src="/pichayamongkol-logo-transparent.png" alt="Pichayamongkol Construction" width={320} height={76} priority className="pmc-auth-logo" />
               </span>
+              <UatBadge />
             </div>
 
             <button
