@@ -1,3 +1,5 @@
+import { invalidateProjectListForWrite } from "./projectListCache";
+
 type SupabaseReadScope = "projects" | "auth" | "admin" | "site";
 type SupabaseRestOptions = {
   schema?: string;
@@ -127,8 +129,12 @@ async function supabaseWrite<T>(
     throw new Error(`Supabase ${init.method} failed for ${table}: ${response.status} ${detail}`);
   }
 
-  if (response.status === 204) return [] as T[];
-  return await response.json() as T[];
+  const rows = response.status === 204 ? [] : await response.json() as T[];
+  const scopes = [init.body?.project_id, ...rows.map((row: unknown) => (
+    row && typeof row === "object" ? (row as Record<string, unknown>).project_id : undefined
+  ))].filter((value): value is string => typeof value === "string" && Boolean(value));
+  invalidateProjectListForWrite(table, scopes);
+  return rows as T[];
 }
 
 export async function supabaseInsert<T>(

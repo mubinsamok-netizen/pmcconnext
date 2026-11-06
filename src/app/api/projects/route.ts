@@ -15,7 +15,8 @@ import {
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
-import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { readCachedProjectList, readCachedProjectHealth } from "@/lib/projectListCache";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -295,33 +296,36 @@ function calculateLifecycleAlerts(projectId: string, lifecycle?: SheetRecord, wa
   };
 }
 
-async function enrichProjectWithHealth(project: SheetRecord): Promise<SheetRecord & ProjectHealth> {
+async function enrichProjectWithHealth(project: SheetRecord, cacheHealth = false): Promise<SheetRecord & ProjectHealth> {
   const projectId = String(project.project_id || "").trim();
   if (!projectId) {
     return { ...project, ...calculateProjectHealth(project, []) };
   }
 
   try {
-    const sheetId = String(project.site_sheet_id || "").trim();
-    if (!sheetId && !isSupabaseBackend()) {
-      throw new Error(`Project ${projectId} has no site sheet`);
-    }
-    const rows = await findAllBatch(
-      ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"],
-      sheetId || projectId,
-      { projectId }
-    ) as Record<string, SheetRecord[]>;
-    const tasks = rows.Tasks || [];
-    const dailyReports = rows.Daily_Reports || [];
-    const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
-    const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
-    const projectTasks = tasks.filter((task) => task.project_id === projectId);
-    return {
-      ...project,
-      ...calculateProjectHealth(project, projectTasks),
-      ...calculateDailyReportHealth(project, dailyReports),
-      ...calculateLifecycleAlerts(projectId, lifecycle, warranty),
+    const loadHealth = async (): Promise<ProjectHealth> => {
+      const sheetId = String(project.site_sheet_id || "").trim();
+      if (!sheetId && !isSupabaseBackend()) {
+        throw new Error(`Project ${projectId} has no site sheet`);
+      }
+      const rows = await findAllBatch(
+        ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"],
+        sheetId || projectId,
+        { projectId, ...(cacheHealth ? { fresh: true } : {}) }
+      ) as Record<string, SheetRecord[]>;
+      const tasks = rows.Tasks || [];
+      const dailyReports = rows.Daily_Reports || [];
+      const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
+      const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
+      const projectTasks = tasks.filter((task) => task.project_id === projectId);
+      return {
+        ...calculateProjectHealth(project, projectTasks),
+        ...calculateDailyReportHealth(project, dailyReports),
+        ...calculateLifecycleAlerts(projectId, lifecycle, warranty),
+      };
     };
+    const health = cacheHealth ? await readCachedProjectHealth(project, loadHealth) : await loadHealth();
+    return { ...project, ...health };
   } catch (error: unknown) {
     console.warn(`Failed to calculate progress for ${project.project_id}:`, error);
     return { ...project, ...calculateProjectHealth(project, []) };
@@ -346,13 +350,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, data: [] });
     }
 
-    const readSheetsProjects = async () => {
-      return await findAllMaster("Projects");
-    };
+    const cachedMode = mode === "basic" || mode === "health";
+    const readSheetsProjects = () => cachedMode ? findAllMasterRaw("Projects") : findAllMaster("Projects");
 
-    const projects = isSupabaseReadEnabled("projects")
+    const loadProjects = async () => isSupabaseReadEnabled("projects")
       ? await readWithSheetsFallback("projects", getSupabaseProjects, readSheetsProjects)
-      : await readSheetsProjects();
+      : readSheetsProjects();
+    const projects = cachedMode ? await readCachedProjectList(loadProjects) : await loadProjects();
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
     if (mode === "basic") {
@@ -362,7 +366,7 @@ export async function GET(req: Request) {
     const healthProjects = mode === "health"
       ? accessibleProjects.filter((project) => requestedProjectIds.has(String(project.project_id)))
       : accessibleProjects;
-    const projectsWithHealth = await Promise.all(healthProjects.map(enrichProjectWithHealth));
+    const projectsWithHealth = await Promise.all(healthProjects.map((project) => enrichProjectWithHealth(project, cachedMode)));
     if (mode === "health") {
       return NextResponse.json({
         success: true,

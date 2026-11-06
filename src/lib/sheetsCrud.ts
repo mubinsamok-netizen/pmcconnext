@@ -10,6 +10,7 @@ import {
 } from "./supabaseCrud";
 import { isSupabaseBackend, shouldFallbackToSheets } from "./supabaseRest";
 import { isSupabaseSiteSchemaMode, resolveSupabaseProjectId } from "./supabaseSchema";
+import { invalidateProjectListForWrite } from "./projectListCache";
 
 // Convert A1 notation column index (0-based) to Letter
 const colToLetter = (col: number) => {
@@ -60,6 +61,7 @@ function isQuotaExceeded(error: unknown) {
 }
 
 function clearMasterReadCache(tableName?: MasterTable) {
+  if (tableName) invalidateProjectListForWrite(String(tableName));
   if (!tableName) {
     masterReadCache.clear();
     return;
@@ -72,6 +74,7 @@ function getReadCacheKey(spreadsheetId: string, tableName: string) {
 }
 
 function clearSiteReadCache(spreadsheetId: string, tableName?: string) {
+  if (tableName) invalidateProjectListForWrite(tableName, [spreadsheetId]);
   if (!tableName) {
     Array.from(siteReadCache.keys())
       .filter((key) => key.startsWith(`${spreadsheetId}:`))
@@ -357,7 +360,7 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
 export async function findAllBatch(
   tableNames: SiteTable[],
   spreadsheetId: string = SHEET_ID,
-  options: { projectId?: string } = {}
+  options: { projectId?: string; fresh?: boolean } = {}
 ) {
   const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
   const result = {} as Record<SiteTable, SheetRow[]>;
@@ -379,7 +382,9 @@ export async function findAllBatch(
           .catch((error) => {
             if (!shouldFallbackToSheets()) throw error;
             warnSupabaseFallback(`batch read ${tableName}`, error);
-            return findAllFromSiteCache(spreadsheetId, tableName).then((rows) => {
+            return (options.fresh
+              ? findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA)
+              : findAllFromSiteCache(spreadsheetId, tableName)).then((rows) => {
               result[tableName as SiteTable] = rows;
             });
           })
@@ -388,7 +393,7 @@ export async function findAllBatch(
     }
 
     const cacheKey = getReadCacheKey(spreadsheetId, tableName);
-    const cached = siteReadCache.get(cacheKey);
+    const cached = options.fresh ? undefined : siteReadCache.get(cacheKey);
 
     if (cached?.rows && cached.expiresAt > now) {
       result[tableName as SiteTable] = cached.rows;
@@ -422,7 +427,7 @@ export async function findAllBatch(
         });
       })
       .catch((error) => {
-        if (isQuotaExceeded(error)) {
+        if (!options.fresh && isQuotaExceeded(error)) {
           const recoverableTables = pendingTables.filter((tableName) => {
             const cached = siteReadCache.get(getReadCacheKey(spreadsheetId, tableName));
             return Boolean(cached?.rows && cached.staleUntil > Date.now());

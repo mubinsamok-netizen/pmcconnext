@@ -398,7 +398,10 @@ function HealthPill({
 
 export default function ProjectsPage() {
   const { data: session } = useSession();
-  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher);
+  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>("/api/projects?mode=basic", fetcher, {
+    // Recheck the server cache when returning after editing a project.
+    dedupingInterval: 0,
+  });
   const isAdmin = getAppRole(session?.user?.role) === "Admin";
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);

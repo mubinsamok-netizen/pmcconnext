@@ -6,7 +6,7 @@ const vm = require("node:vm");
 const { test } = require("node:test");
 const ts = require("typescript");
 
-function loadTs(relativePath, dependencies = {}) {
+function loadTs(relativePath, dependencies = {}, env = {}) {
   const filename = path.resolve(__dirname, "..", relativePath);
   const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -15,8 +15,9 @@ function loadTs(relativePath, dependencies = {}) {
   const loaded = { exports: {} };
   vm.runInNewContext(source, {
     module: loaded, exports: loaded.exports, URL, URLSearchParams, Error,
-    console: { ...console, error() {}, warn() {} }, process: { env: {} },
+    console: { ...console, error() {}, warn() {} }, process: { env }, fetch: dependencies.fetch,
     require(name) {
+      if ((name === "./projectListCache" || name === "@/lib/projectListCache") && !Object.hasOwn(dependencies, name)) return { invalidateProjectListForWrite() {}, readCachedProjectList: (load) => load(), readCachedProjectHealth: (_, load) => load() };
       assert.ok(Object.hasOwn(dependencies, name), `Unexpected dependency: ${name}`);
       return dependencies[name];
     },
@@ -24,25 +25,27 @@ function loadTs(relativePath, dependencies = {}) {
   return loaded.exports;
 }
 
-function projectRoute({ authenticated = true, backend = "supabase" } = {}) {
+function projectRoute({ authenticated = true, backend = "supabase", cache, allowed = () => true, healthRead = async () => {} } = {}) {
   const projects = Array.from({ length: 22 }, (_, index) => ({
     project_id: `P-${index + 1}`, site_sheet_id: `P-${index + 1}`, name: `Site ${index + 1}`, active: index === 21 ? "FALSE" : "TRUE",
   }));
   const reads = [];
   let projectReads = 0;
   const route = loadTs("src/app/api/projects/route.ts", {
+    ...(cache ? { "@/lib/projectListCache": cache } : {}),
     "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
     "next-auth": { getServerSession: async () => authenticated ? { user: { role: "Staff" } } : null },
     "@/lib/authOptions": {},
-    "@/lib/authz": { filterProjectsForUser: async (rows) => rows.filter((row) => row.project_id !== "P-21") },
+    "@/lib/authz": { filterProjectsForUser: async (rows) => rows.filter((row) => row.project_id !== "P-21" && allowed(row)) },
     "@/lib/siteAccess": {}, "@/lib/drive": {}, "@/lib/google": {},
     "@/lib/siteContext": { getProjectContext: async () => { throw new Error("Must reuse the authorized project instead of reading master projects again"); } },
     "@/lib/projectLifecycle": loadTs("src/lib/projectLifecycle.ts"),
     "@/lib/supabaseRest": { isSupabaseBackend: () => backend === "supabase", isSupabaseReadEnabled: () => backend === "supabase", readWithSheetsFallback: async (_, read) => read() },
     "@/lib/supabaseReadModel": { getSupabaseProjects: async () => { projectReads++; return projects; } },
     "@/lib/supabaseSchema": { isSupabaseSiteSchemaMode: () => false },
-    "@/lib/sheetsCrud": { findAllMaster: async () => { projectReads++; return projects; }, findAllBatch: async (tables, id, options) => {
+    "@/lib/sheetsCrud": { findAllMasterRaw: async () => { projectReads++; return projects; }, findAllMaster: async () => { projectReads++; return projects; }, findAllBatch: async (tables, id, options) => {
       reads.push(id);
+      await healthRead(id);
       assert.equal(options.projectId, id);
       assert.deepEqual(Array.from(tables), ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"]);
       return { Tasks: [{ project_id: id, task_id: "T1", percent_done: 50 }] };
@@ -248,4 +251,150 @@ test("credentials query selects login fields and treats email punctuation as lit
     assert.ok(!regex.test(`other${email.trim()}`));
     if (email.includes("+")) assert.ok(!regex.test("aaaa+b_Xanything@example.invalid"));
   }
+});
+
+function cacheFixture(env = {}) {
+  const entries = new Map();
+  const invalidations = [];
+  let clock = 0;
+  const cache = loadTs("src/lib/projectListCache.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/cache": {
+      unstable_cache: (load, parts, options) => async () => {
+        const key = parts.join("|");
+        const hit = entries.get(key);
+        if (hit && hit.until > clock) return hit.value;
+        const value = await load(); // Failed loads are deliberately not stored.
+        entries.set(key, { value, tags: options.tags, until: clock + options.revalidate * 1000 });
+        return value;
+      },
+      revalidateTag: (tag, profile) => {
+        assert.equal(profile.expire, 0);
+        invalidations.push(tag);
+        for (const [key, value] of entries) if (value.tags.includes(tag)) entries.delete(key);
+      },
+    },
+  }, env);
+  return { cache, invalidations, advance: (ms) => { clock += ms; } };
+}
+
+test("basic and health hits skip source reads, but authorization is still applied on every response", async () => {
+  const { cache } = cacheFixture();
+  let visible = true;
+  const fixture = projectRoute({ backend: "sheets", cache, allowed: () => visible });
+  await fixture.get("?mode=basic");
+  await fixture.get("?mode=basic");
+  await fixture.get("?mode=health&projectId=P-1");
+  await fixture.get("?mode=health&projectId=P-1");
+  assert.equal(fixture.projectReads(), 1);
+  assert.deepEqual(fixture.reads, ["P-1"]);
+  visible = false;
+  assert.equal((await fixture.get("?mode=basic")).body.data.length, 0);
+  assert.equal((await fixture.get("?mode=health&projectId=P-1")).body.data.length, 0);
+  assert.deepEqual(fixture.reads, ["P-1"]);
+});
+
+test("health invalidation refreshes only the affected site; project writes invalidate list and all health", async () => {
+  const { cache } = cacheFixture();
+  const fixture = projectRoute({ cache });
+  for (const id of ["P-1", "P-2"]) await fixture.get(`?mode=health&projectId=${id}`);
+  cache.invalidateProjectListForWrite("Tasks", ["P-1"]);
+  for (const id of ["P-1", "P-2"]) await fixture.get(`?mode=health&projectId=${id}`);
+  assert.deepEqual(fixture.reads, ["P-1", "P-2", "P-1"]);
+  assert.equal(fixture.projectReads(), 1);
+  cache.invalidateProjectListForWrite("projects");
+  await fixture.get("?mode=health&projectId=P-2");
+  assert.equal(fixture.projectReads(), 2);
+  assert.equal(fixture.reads.length, 4);
+});
+
+test("cache expires, isolates backends and does not retain failed health fallbacks", async () => {
+  const env = { DATA_BACKEND: "sheets" };
+  const { cache, advance } = cacheFixture(env);
+  let fail = true;
+  const fixture = projectRoute({ cache, healthRead: async () => { if (fail) throw new Error("source unavailable"); } });
+  assert.equal((await fixture.get("?mode=health&projectId=P-1")).body.data[0].percent_done, "0");
+  fail = false;
+  assert.equal((await fixture.get("?mode=health&projectId=P-1")).body.data[0].percent_done, "50");
+  assert.equal(fixture.reads.length, 2);
+  advance(61000);
+  await fixture.get("?mode=health&projectId=P-1");
+  assert.equal(fixture.reads.length, 3);
+  env.DATA_BACKEND = "supabase";
+  await fixture.get("?mode=health&projectId=P-1");
+  assert.equal(fixture.projectReads(), 3);
+});
+
+test("Supabase mutations invalidate after success, while failures and unrelated tables do not invalidate", async () => {
+  const { cache, invalidations } = cacheFixture();
+  let status = 200;
+  const rest = loadTs("src/lib/supabaseRest.ts", {
+    "./projectListCache": cache,
+    fetch: async () => ({ status, ok: status < 400, json: async () => [{ project_id: "P-1" }], text: async () => "failed" }),
+  }, { SUPABASE_URL: "https://db.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only" });
+  await rest.supabasePatch("tasks", "task_id", "T1", {});
+  assert.equal(invalidations.length, 1);
+  await rest.supabaseDelete("daily_reports", "report_id", "R1");
+  await rest.supabaseInsert("project_lifecycle", { project_id: "P-1" });
+  await rest.supabaseInsert("project_warranty", { project_id: "P-1" });
+  assert.equal(invalidations.length, 4);
+  await rest.supabaseInsert("team_members", {});
+  assert.equal(invalidations.length, 4);
+  status = 500;
+  await assert.rejects(rest.supabaseInsert("projects", {}), /Supabase POST failed/);
+  assert.equal(invalidations.length, 4);
+});
+
+test("fresh health batch bypasses a warmed Sheets row cache after an external instance write", async () => {
+  let reads = 0;
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./projectListCache": { invalidateProjectListForWrite() {} },
+    "./google": { SHEET_ID: "site", sheets: { spreadsheets: { values: { batchGet: async () => ({ data: { valueRanges: [{ values: [["project_id", "percent_done"], ["P-1", String(++reads)]] }] } }) } } } },
+    "./sheetsSetup": { SITE_SCHEMA: {}, MASTER_SCHEMA: {} },
+    "./supabaseRest": { isSupabaseBackend: () => false },
+    "./supabaseCrud": { getSupabaseSiteConfig: () => null },
+    "./supabaseSchema": {},
+  });
+  assert.equal((await crud.findAllBatch(["Tasks"], "site")).Tasks[0].percent_done, "1");
+  assert.equal((await crud.findAllBatch(["Tasks"], "site")).Tasks[0].percent_done, "1");
+  assert.equal((await crud.findAllBatch(["Tasks"], "site", { fresh: true })).Tasks[0].percent_done, "2");
+  assert.equal(reads, 2);
+});
+
+test("successful Sheets writes invalidate site/list cache, while failed writes keep the original error", async () => {
+  const invalidated = [];
+  let fail = false;
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./projectListCache": { invalidateProjectListForWrite: (...args) => invalidated.push(args) },
+    "./google": { MASTER_SHEET_ID: "master", sheets: { spreadsheets: {
+      get: async () => ({ data: { sheets: ["Tasks", "Projects"].map((title, sheetId) => ({ properties: { title, sheetId } })) } }),
+      batchUpdate: async () => { if (fail) throw new Error("write failed"); },
+    } } },
+    "./sheetsSetup": { SITE_SCHEMA: {}, MASTER_SCHEMA: {} },
+    "./supabaseRest": { isSupabaseBackend: () => false },
+    "./supabaseCrud": { getSupabaseSiteConfig: () => null, getSupabaseMasterConfig: () => null },
+    "./supabaseSchema": {},
+  });
+  await crud.deleteRow("Tasks", 2, "site-sheet");
+  await crud.deleteRowMaster("Projects", 2);
+  assert.equal(invalidated[0][0], "Tasks");
+  assert.equal(invalidated[0][1][0], "site-sheet");
+  assert.equal(invalidated[1][0], "Projects");
+  fail = true;
+  await assert.rejects(crud.deleteRow("Tasks", 2, "site-sheet"), /write failed/);
+  assert.equal(invalidated.length, 2);
+});
+
+test("invalidation failure cannot turn a committed Supabase write into a retry", async () => {
+  const cache = loadTs("src/lib/projectListCache.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/cache": { revalidateTag: () => { throw new Error("cache unavailable"); } },
+  });
+  let writes = 0;
+  const rest = loadTs("src/lib/supabaseRest.ts", {
+    "./projectListCache": cache,
+    fetch: async () => { writes++; return { ok: true, status: 200, json: async () => [{ project_id: "P-1" }] }; },
+  }, { SUPABASE_URL: "https://db.invalid", SUPABASE_SERVICE_ROLE_KEY: "test-only" });
+  assert.equal((await rest.supabaseInsert("projects", {})).length, 1);
+  assert.equal(writes, 1);
 });

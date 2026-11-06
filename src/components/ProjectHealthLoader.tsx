@@ -27,7 +27,7 @@ export default function ProjectHealthLoader({ projectId, children }: {
   const { data, error, mutate } = useSWR<{ data?: ProjectHealthData[]; error?: string }>(
     `/api/projects?mode=health&projectId=${encodeURIComponent(projectId)}`,
     fetcher,
-    { shouldRetryOnError: false }
+    { shouldRetryOnError: false, dedupingInterval: 0 }
   );
   const project = data?.data?.find((item) => item.project_id === projectId);
 

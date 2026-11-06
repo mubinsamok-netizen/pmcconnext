@@ -22,10 +22,47 @@ Response: `{ "success": true, "data": [ProjectHealth] }`.
 
 The frontend merges health by project_id and keeps basic cards usable while health loads. Health errors or a missing result show a retry action on the affected card instead of zero counts. Retrying one card only reloads that site. SWR reuses per-site requests across pages and filters. Team data loads only when an Admin selects the team-access filter. Deleting a site revalidates the basic list and updates the visible cards.
 
-Health uses the sheet ID already present in the authorized project record, avoiding another master-project lookup. Its batch reader receives an explicit project ID so Supabase filters rows for that site even in shared-schema mode; Google Sheets continues using the existing batch read/cache. Other batch-reader callers keep their previous behavior.
+Health uses the sheet ID already present in the authorized project record, avoiding another master-project lookup. Its batch reader receives an explicit project ID so Supabase filters rows for that site even in shared-schema mode. Other batch-reader callers keep their previous behavior.
+
+## Server cache for basic records and health
+
+Both staged modes use Next.js Data Cache with 60-second time-based revalidation.
+This uses the existing `unstable_cache` API, supported by the installed Next.js,
+without enabling Cache Components across the application or adding Redis credentials.
+Next.js 16 recommends Cache Components for new applications; adopting that app-wide
+configuration is outside this targeted change.
+
+The basic source records are cached before per-user filtering. Every request still
+checks the session and applies the existing authorization layer before returning data.
+Health is cached per project snapshot, source environment and Bangkok calendar date.
+Keys isolate branch/environment, backend, database/schema and master spreadsheet.
+Cache hits skip source reads and recalculation; misses still load the source.
+Time-based revalidation can serve a previous result while refreshing in the background.
+
+Cache fills read fresh Sheets rows, bypassing the older 5/10-minute in-memory caches
+so a new server instance cannot refill an invalidated entry from stale local rows.
+Failures are handled outside the health cache, retaining the existing response
+fallback but allowing the next request to retry the source. Auth credentials and
+user sessions are not stored in this cache.
+
+Successful Projects writes expire the basic list and all health entries. Successful
+Tasks, Daily_Reports, Project_Lifecycle and Project_Warranty writes expire health for
+the affected project/sheet (or all health when the project is unknown). This is wired
+into the existing Sheets CRUD and Supabase REST write paths, covering inserts,
+updates and deletes. Invalidation uses `revalidateTag(tag, { expire: 0 })` so the next
+request fetches fresh data after a write. An invalidation failure is logged without
+turning a committed write into a duplicate retry. Direct database/Sheets edits outside
+the application are detected by time-based revalidation, not immediate invalidation.
+
+The two SWR hooks recheck on remount without the global two-minute deduplication
+window, so returning after editing requests the invalidated server entry. Already
+open screens do not receive live push updates; refresh or remount fetches new data.
+Private API responses are not made publicly cacheable. Cross-instance cache sharing
+depends on the deployment's Data Cache support; the real production latency and hit
+rate must be measured after deployment access is granted.
 
 ## Compatibility
 
 Credentials login reads the existing Sheets Team table directly without waiting for master-schema setup. The reader already maps existing headers in memory. Fresh account reads, disabled-account/password checks and the awaited successful-login stamp are retained; Google sign-in and setup/write flows are unchanged. This removes schema metadata/header round trips on a cold schema cache, not the time needed to validate credentials or load site records. An existing master Team table is required, as with other read-only routes.
 
-`GET /api/projects` without a mode retains its existing behavior for other consumers. Writes, authorization rules, pagination sizes and file endpoints are unchanged. Both stages use the existing SWR behavior; this is not a cross-request server health cache.
+`GET /api/projects` without a mode retains its existing uncached enrichment behavior for other consumers. Write payloads, authorization rules, pagination sizes and file endpoints are unchanged.

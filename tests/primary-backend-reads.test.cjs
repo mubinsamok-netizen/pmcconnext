@@ -22,6 +22,7 @@ function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
     process: { env },
     console: { ...console, warn() {} },
     require(name) {
+      if ((name === "./projectListCache" || name === "@/lib/projectListCache") && !Object.hasOwn(dependencies, name)) return { invalidateProjectListForWrite() {}, readCachedProjectList: (load) => load(), readCachedProjectHealth: (_, load) => load() };
       if (Object.hasOwn(dependencies, name)) return dependencies[name];
       assert.ok(imports.has(name) || name === "react/jsx-runtime", `Unexpected dependency: ${name}`);
       // Unused UI, upload and notification imports are inert during read tests.
