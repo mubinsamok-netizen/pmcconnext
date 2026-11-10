@@ -417,7 +417,10 @@ export default function LifecycleWorkspace({
     data: driveFilesData,
     isLoading: driveFilesLoading,
     mutate: mutateDriveFiles,
-  } = useSWR<ApiResponse<DriveFolderFile[]>>(activeTab === "documents" ? driveFilesKey : null, fetcher);
+  } = useSWR<ApiResponse<DriveFolderFile[]>>(activeTab === "documents" ? driveFilesKey : null, fetcher, {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  });
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
   const documentHistory = useMemo(
@@ -513,7 +516,7 @@ export default function LifecycleWorkspace({
       void mutateDocuments().catch((error: unknown) => {
         console.warn("Document list refresh failed after upload:", error);
       });
-      void mutateDriveFiles().catch((error: unknown) => {
+      void mutateDriveFiles(fetcher(`${driveFilesKey}?fresh=1`), { revalidate: false }).catch((error: unknown) => {
         console.warn("Drive file list refresh failed after upload:", error);
       });
       setMessage("อัปโหลดเข้า Drive และบันทึก version history แล้ว");

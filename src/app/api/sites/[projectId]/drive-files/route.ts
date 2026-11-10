@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { listDriveFolderFiles } from "@/lib/drive";
+import { readDriveFolderFiles } from "@/lib/driveFilesCache";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
     const context = await getSiteApiContext(decodeURIComponent(projectId));
@@ -13,12 +13,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       return NextResponse.json({ success: true, data: [], project: context.project });
     }
 
-    const files = await listDriveFolderFiles(driveFolderId, {
-      recursive: true,
-      maxDepth: 4,
-      pageSize: 500,
-      maxFiles: 500,
-    });
+    // ?fresh=1 bypasses the 60 second cache (used right after uploads and by the refresh button).
+    const fresh = new URL(req.url).searchParams.get("fresh") === "1";
+    const files = await readDriveFolderFiles(driveFolderId, fresh);
 
     return NextResponse.json({ success: true, data: files, project: context.project });
   } catch (error: unknown) {

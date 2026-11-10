@@ -123,6 +123,10 @@ export async function uploadFile(
   }
 }
 
+const DRIVE_LIST_PARENTS_PER_QUERY = 20;
+const DRIVE_LIST_CONCURRENCY = 5;
+const driveNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 export async function listDriveFolderFiles(
   folderId: string,
   options: {
@@ -139,17 +143,19 @@ export async function listDriveFolderFiles(
   const maxDepth = options.maxDepth ?? 4;
   const pageSize = options.pageSize ?? 100;
   const maxFiles = options.maxFiles ?? 500;
-  const results: DriveFolderFile[] = [];
-  const visitedFolders = new Set<string>();
+  type RawFile = { id: string; name: string; mimeType: string; isFolder: boolean; parentId: string; item: Omit<DriveFolderFile, "folderPath"> };
+  const childrenByParent = new Map<string, RawFile[]>();
+  const visitedFolders = new Set<string>([rootFolderId]);
+  let collected = 0;
 
-  async function readFolder(currentFolderId: string, depth: number, folderPath: string) {
-    if (!currentFolderId || visitedFolders.has(currentFolderId) || results.length >= maxFiles) return;
-    visitedFolders.add(currentFolderId);
-
+  // One query lists the children of many folders, so requests scale with depth instead of folder count.
+  async function readParents(parentIds: string[]) {
+    const parentSet = new Set(parentIds);
+    const parentsQuery = parentIds.map((id) => `'${escapeDriveQueryValue(id)}' in parents`).join(" or ");
     let pageToken: string | undefined;
     do {
       const response = await drive.files.list({
-        q: `'${escapeDriveQueryValue(currentFolderId)}' in parents and trashed = false`,
+        q: `(${parentsQuery}) and trashed = false`,
         includeItemsFromAllDrives: true,
         supportsAllDrives: true,
         fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
@@ -161,39 +167,74 @@ export async function listDriveFolderFiles(
 
       for (const file of response.data.files || []) {
         const id = file.id || "";
+        if (!id) continue;
+        const parentId = (file.parents || []).find((parent) => parentSet.has(parent)) || (parentIds.length === 1 ? parentIds[0] : "");
+        if (!parentId) continue;
         const name = file.name || id;
         const mimeType = file.mimeType || "application/octet-stream";
         const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
-        if (!id) continue;
-
-        const item: DriveFolderFile = {
-          id,
-          name,
-          mimeType,
-          size: file.size || null,
-          webViewLink: file.webViewLink || null,
-          webContentLink: file.webContentLink || null,
-          createdTime: file.createdTime || null,
-          modifiedTime: file.modifiedTime || null,
-          parents: file.parents || null,
-          folderPath,
-          isFolder,
-        };
-        results.push(item);
-        if (results.length >= maxFiles) break;
-
-        if (recursive && isFolder && depth < maxDepth) {
-          const nextPath = folderPath ? `${folderPath} / ${name}` : name;
-          await readFolder(id, depth + 1, nextPath);
-          if (results.length >= maxFiles) break;
-        }
+        const siblings = childrenByParent.get(parentId) || [];
+        siblings.push({
+          id, name, mimeType, isFolder, parentId,
+          item: {
+            id,
+            name,
+            mimeType,
+            size: file.size || null,
+            webViewLink: file.webViewLink || null,
+            webContentLink: file.webContentLink || null,
+            createdTime: file.createdTime || null,
+            modifiedTime: file.modifiedTime || null,
+            parents: file.parents || null,
+            isFolder,
+          },
+        });
+        childrenByParent.set(parentId, siblings);
+        collected += 1;
       }
 
       pageToken = response.data.nextPageToken || undefined;
-    } while (pageToken && results.length < maxFiles);
+    } while (pageToken && collected < maxFiles);
   }
 
-  await readFolder(rootFolderId, 0, "");
+  let level = [rootFolderId];
+  for (let depth = 0; level.length > 0 && collected < maxFiles; depth += 1) {
+    const chunks: string[][] = [];
+    for (let index = 0; index < level.length; index += DRIVE_LIST_PARENTS_PER_QUERY) {
+      chunks.push(level.slice(index, index + DRIVE_LIST_PARENTS_PER_QUERY));
+    }
+    for (let index = 0; index < chunks.length && collected < maxFiles; index += DRIVE_LIST_CONCURRENCY) {
+      await Promise.all(chunks.slice(index, index + DRIVE_LIST_CONCURRENCY).map(readParents));
+    }
+
+    if (!recursive || depth >= maxDepth) break;
+    const nextLevel: string[] = [];
+    for (const parentId of level) {
+      for (const child of childrenByParent.get(parentId) || []) {
+        if (!child.isFolder || visitedFolders.has(child.id)) continue;
+        visitedFolders.add(child.id);
+        nextLevel.push(child.id);
+      }
+    }
+    level = nextLevel;
+  }
+
+  // Emit in the same order as a folder-by-folder walk: folders first, natural name order, children after their folder.
+  const results: DriveFolderFile[] = [];
+  const emitted = new Set<string>();
+  function emit(parentId: string, folderPath: string) {
+    if (emitted.has(parentId)) return;
+    emitted.add(parentId);
+    const children = [...(childrenByParent.get(parentId) || [])].sort((a, b) => (
+      Number(b.isFolder) - Number(a.isFolder) || driveNameCollator.compare(a.name, b.name)
+    ));
+    for (const child of children) {
+      if (results.length >= maxFiles) return;
+      results.push({ ...child.item, folderPath });
+      if (child.isFolder) emit(child.id, folderPath ? `${folderPath} / ${child.name}` : child.name);
+    }
+  }
+  emit(rootFolderId, "");
   return results;
 }
 

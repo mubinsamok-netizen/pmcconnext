@@ -545,9 +545,27 @@ function PhotoPreviewDialog({
 
 export function FilesWorkspace({ project }: { project: MasterProject }) {
   const projectId = encodeURIComponent(project.project_id);
+  const driveFilesKey = `/api/sites/${projectId}/drive-files`;
   const documents = useSWR<{ success?: boolean; data?: ProjectDocument[]; error?: string }>(`/api/sites/${projectId}/documents`, fetcher);
   const defects = useSWR<{ success?: boolean; rounds?: DefectRound[]; items?: DefectItem[]; evidence?: DefectEvidence[]; error?: string }>(`/api/sites/${projectId}/defects`, fetcher);
-  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string }>(`/api/sites/${projectId}/drive-files`, fetcher);
+  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string }>(driveFilesKey, fetcher, {
+    // The Drive walk is the slowest read on this page; reuse it instead of refetching on every tab focus.
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  });
+  const [driveRefreshing, setDriveRefreshing] = useState(false);
+  const refreshDriveFiles = async () => {
+    setDriveRefreshing(true);
+    try {
+      const fresh = await fetcher(`${driveFilesKey}?fresh=1`);
+      // A failed refresh keeps the list already on screen.
+      if (!fresh?.error) await driveFiles.mutate(fresh, { revalidate: false });
+    } catch {
+      // Keep showing the previous list; the next visit retries.
+    } finally {
+      setDriveRefreshing(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState("");
@@ -621,7 +639,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           success: true,
           data: [uploadedDocument, ...(current?.data || [])],
         }), { revalidate: true });
-        await driveFiles.mutate();
+        await refreshDriveFiles();
       } catch (error: unknown) {
         setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
         setUploadMessage("");
@@ -671,8 +689,11 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const totalEvidence = files.filter((file) => file.kind === "acknowledgement").length;
   const totalPhotos = files.filter((file) => file.kind === "defect_photo" || file.kind === "drive_image").length;
   const driveUrl = buildDriveFolderUrl(project.drive_folder_id);
-  const isLoading = documents.isLoading || defects.isLoading || driveFiles.isLoading;
-  const loadError = documents.data?.error || defects.data?.error || driveFiles.data?.error;
+  // Uploaded documents and defect files render as soon as they arrive; Drive fills in afterwards.
+  const isLoading = documents.isLoading || defects.isLoading;
+  const driveLoading = driveFiles.isLoading || driveRefreshing;
+  const driveError = driveFiles.data?.error || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ไม่สำเร็จ" : "");
+  const loadError = documents.data?.error || defects.data?.error;
 
   return (
     <div className="space-y-5">
@@ -801,6 +822,25 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           {loadError ? (
             <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
               {loadError}
+            </div>
+          ) : null}
+
+          {project.drive_folder_id ? (
+            <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600">
+              <span className={driveError && !driveLoading ? "font-semibold text-red-700" : ""}>
+                {driveLoading
+                  ? "กำลังโหลดไฟล์จาก Google Drive... รายการอื่นใช้งานได้ก่อน"
+                  : driveError || `ไฟล์จาก Google Drive ${totalDriveFiles} รายการ (อัปเดตทุก 1 นาที)`}
+              </span>
+              <button
+                type="button"
+                onClick={() => { void refreshDriveFiles(); }}
+                disabled={driveLoading}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={driveLoading ? "animate-spin" : ""} />
+                รีเฟรชจาก Drive
+              </button>
             </div>
           ) : null}
 
