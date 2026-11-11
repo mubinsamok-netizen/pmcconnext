@@ -6,7 +6,7 @@ const CACHE_SECONDS = 60;
 const LIST_OPTIONS = { recursive: true, maxDepth: Number.POSITIVE_INFINITY, pageSize: 500, maxFiles: Number.POSITIVE_INFINITY };
 
 export function driveFilesCacheTag(folderId: string) {
-  return `pmc-drive-files-v2:${process.env.VERCEL_ENV || "local"}:${folderId}`;
+  return `pmc-drive-files-v3:${process.env.VERCEL_ENV || "local"}:${folderId}`;
 }
 
 export function invalidateDriveFilesCache(folderId: string) {

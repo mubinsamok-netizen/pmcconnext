@@ -7,7 +7,7 @@ import { driveFilesCacheTag } from "./driveFilesCache";
 
 type Parent = { id: string; path: string[]; ancestors: string[] };
 type Job = { parents: Parent[]; pageToken?: string };
-type Continuation = { root: string; jobs: Job[]; expires: number };
+type Continuation = { version: 2; root: string; jobs: Job[]; expires: number };
 export type DriveListingPage = { data: DriveFolderFile[]; nextCursor: string | null; complete: boolean };
 const FOLDER = "application/vnd.google-apps.folder";
 const PAGE_RECORDS = 200;
@@ -35,7 +35,7 @@ function decode(cursor: string, root: string): Continuation {
     cipher.setAuthTag(bytes.subarray(12, 28));
     const raw = Buffer.concat([cipher.update(bytes.subarray(28)), cipher.final()]);
     const state = JSON.parse(inflateSync(raw, { maxOutputLength: 8_000_000 }).toString()) as Continuation;
-    if (state.root !== root || state.expires < Date.now() || !Array.isArray(state.jobs)) throw new Error("Invalid cursor");
+    if (state.version !== 2 || state.root !== root || state.expires < Date.now() || !Array.isArray(state.jobs)) throw new Error("Invalid cursor");
     return state;
   } catch {
     throw new Error("Invalid or expired Drive cursor; refresh the listing");
@@ -44,7 +44,7 @@ function decode(cursor: string, root: string): Continuation {
 
 async function readPage(root: string, cursor?: string): Promise<DriveListingPage> {
   const state = cursor ? decode(cursor, root) : {
-    root, jobs: [{ parents: [{ id: root, path: [], ancestors: [root] }] }] as Job[], expires: 0,
+    version: 2 as const, root, jobs: [{ parents: [{ id: root, path: [], ancestors: [root] }] }] as Job[], expires: 0,
   };
   const data: DriveFolderFile[] = [];
   let requests = 0;
@@ -80,7 +80,8 @@ async function readPage(root: string, cursor?: string): Promise<DriveListingPage
         });
       }
       if (response.data.nextPageToken) state.jobs.push({ ...job, pageToken: response.data.nextPageToken });
-      for (let index = 0; index < children.length; index += 20) state.jobs.push({ parents: children.slice(index, index + 20) });
+      // Query each folder separately: its path is known even when Drive omits parents.
+      for (const child of children) state.jobs.push({ parents: [child] });
     }
   }
   state.expires = Date.now() + 60 * 60 * 1000;
@@ -92,7 +93,7 @@ export function readDriveListingPage(root: string, cursor?: string) {
   // Authenticate continuation before cache lookup; a cursor cannot select another site's folders.
   if (cursor) decode(cursor, root);
   const namespace = [process.env.VERCEL_GIT_COMMIT_REF, process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL].join("|");
-  return unstable_cache(() => readPage(root, cursor), ["drive-pages-v1", namespace, root, hash(cursor || "start")], {
+  return unstable_cache(() => readPage(root, cursor), ["drive-pages-v2", namespace, root, hash(cursor || "start")], {
     revalidate: 60, tags: [driveFilesCacheTag(root)],
   })();
 }

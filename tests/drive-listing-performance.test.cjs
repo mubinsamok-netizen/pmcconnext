@@ -8,13 +8,14 @@ const ts = require("typescript");
 
 const FOLDER = "application/vnd.google-apps.folder";
 
-function loadDrive(tree) {
+function loadDrive(tree, { omitParents = false, singleParentOnly = false } = {}) {
   const calls = [];
   let metadataRows = 0;
   const drive = { files: { list: async ({ q, pageSize = 100, pageToken }) => {
     calls.push(q);
     const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((match) => match[1]);
-    const all = parents.flatMap((parent) => (tree[parent] || []).map((file) => ({ ...file, parents: [parent] })));
+    if (singleParentOnly && parents.length > 1) return { data: { files: [] } };
+    const all = parents.flatMap((parent) => (tree[parent] || []).map((file) => ({ ...file, ...(!omitParents ? { parents: [parent] } : {}) })));
     const start = Number(pageToken || 0);
     const files = all.slice(start, start + pageSize);
     metadataRows += files.length;
@@ -51,11 +52,11 @@ function buildTree(dayFolders) {
   return tree;
 }
 
-test("sparse folders are batched across traversal levels", async () => {
+test("sparse folders retain a separate query for every folder", async () => {
   const { listDriveFolderFiles, calls } = loadDrive(buildTree(40));
   const files = await listDriveFolderFiles("root", { maxFiles: 500 });
-  // 43 folders used to cost 43 sequential requests: root, 1 for level two, 2 chunks of 20 day folders.
-  assert.equal(calls.length, 4);
+  // Single-folder queries keep file association reliable; traversal runs in bounded waves.
+  assert.equal(calls.length, 43);
   assert.equal(files.length, 3 + 1 + 40 + 40);
 });
 
@@ -98,4 +99,11 @@ test("Google nextPageToken is followed until the complete listing or budget is r
   assert.equal(files.length, 240);
   assert.equal(new Set(files.map((file) => file.id)).size, 240);
   assert.equal(fixture.calls.length, 8);
+});
+
+test("legacy listing retains all nested files without relying on returned parents or grouped queries", async () => {
+  const f = loadDrive(buildTree(40), { omitParents: true, singleParentOnly: true });
+  const files = await f.listDriveFolderFiles("root", { maxDepth: Infinity, maxFiles: Infinity });
+  assert.equal(files.length, 84);
+  assert.equal(files.find(file => file.id === "img-39").folderPath, "Photos / Day 39");
 });

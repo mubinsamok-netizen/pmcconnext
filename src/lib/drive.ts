@@ -123,7 +123,6 @@ export async function uploadFile(
   }
 }
 
-const DRIVE_LIST_PARENTS_PER_QUERY = 20;
 const DRIVE_LIST_CONCURRENCY = 5;
 const driveNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
@@ -196,11 +195,9 @@ export async function listDriveFolderFiles(
 
   let level = [rootFolderId];
   for (let depth = 0; level.length > 0 && collected < maxFiles; depth += 1) {
-    const chunks: string[][] = [];
-    for (let index = 0; index < level.length; index += DRIVE_LIST_PARENTS_PER_QUERY) {
-      chunks.push(level.slice(index, index + DRIVE_LIST_PARENTS_PER_QUERY));
-    }
-    const pending = chunks.map((parentIds) => ({ parentIds, pageToken: undefined as string | undefined }));
+    // Keep folder identity in the request, rather than depending on returned parents
+    // to associate results from a multi-folder query. Independent reads remain parallel.
+    const pending = level.map((id) => ({ parentIds: [id], pageToken: undefined as string | undefined }));
     while (pending.length > 0 && collected < maxFiles) {
       const remaining = maxFiles - collected;
       // Reserve a page budget for every in-flight request. Their combined results

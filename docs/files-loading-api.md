@@ -10,8 +10,9 @@ Drive files are written by listing or invalidation.
   `{success:true,data:DriveFolderFile[],nextCursor:string|null,complete:boolean}`.
   Omit the cursor to start at the configured project Drive folder; send the returned
   cursor unchanged to continue. Each response lists at most 200 metadata records
-  (including folders), using at most three Google requests, with independent parent
-  groups read concurrently. Every pending folder and Google nextPageToken is carried
+  (including folders), using at most three Google requests, with independent folders
+  read concurrently. Each Google request targets one folder, preserving its path
+  even if returned metadata does not contain `parents`. Every pending folder and Google nextPageToken is carried
   forward. There is no total record cap or folder depth cap. Folder paths are preserved.
 - POST without a JSON body expires the authorized folder cache and returns
   `{success:true}`. The subsequent listing request fills the shared 60-second cache.
@@ -20,10 +21,10 @@ Drive files are written by listing or invalidation.
   including Lifecycle. `?fresh=1` still bypasses the cache. A missing Drive folder
   returns an empty list. The files workspace uses progressive POST requests instead.
 - Continuations are compressed and encrypted with AES-256-GCM using a server secret,
-  bound to the authorized root and expire after one hour. Invalid/expired cursors
+  bound to the authorized root and traversal version and expire after one hour. Invalid/expired cursors
   return 400; refreshing starts a new traversal. Authorization failures retain their
   existing status; Drive failures return 500; failed invalidation returns 503.
-- Cache entries use a new versioned folder tag so truncated legacy cache entries are
+- Cache entries use a new versioned folder tag (v3) so truncated legacy cache entries are
   not reused. Each page is cached for 60 seconds and shares the invalidation tag.
 
 ## Client behavior
@@ -54,7 +55,8 @@ reduce work before rendering, not the total Google work necessary to enumerate a
 
 Synthetic traversal tests include 1,235 files, a Daily Report eight nested folders
 below its category, real nextPageToken handling, per-page budgets, empty folders,
-cycles, continuation tampering, expiry, root binding and retry after a Drive error.
+cycles, missing parent metadata, single-folder query compatibility, continuation
+tampering, expiry, root binding and retry after a Drive error.
 API tests preserve authorization and legacy invalidation behavior. Render tests cover
 independent documents/Defect and sites without Drive. Browser QA uses only synthetic
 endpoints with the real FilesWorkspace and SWR hook; no live records are modified.

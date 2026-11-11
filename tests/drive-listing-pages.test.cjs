@@ -1,13 +1,14 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const ts=require('typescript');const {test}=require('node:test');
 const FOLDER='application/vnd.google-apps.folder';
-function fixture(tree){
+function fixture(tree,{omitParents=false,singleParentOnly=false}={}){
  let calls=0,rows=0,fail=false,now=Date.now();
  class Clock extends Date{static now(){return now;}}
  const drive={files:{list:async({q,pageSize,pageToken})=>{
   calls++;if(fail)throw new Error('Drive unavailable');
   const parents=[...q.matchAll(/'([^']+)' in parents/g)].map(x=>x[1]);
-  const all=parents.flatMap(id=>(tree[id]||[]).map(f=>({...f,parents:[id]})));
+  if(singleParentOnly&&parents.length>1)return {data:{files:[]}};
+  const all=parents.flatMap(id=>(tree[id]||[]).map(f=>({...f,...(!omitParents?{parents:[id]}:{})})));
   const offset=Number(pageToken||0);const files=all.slice(offset,offset+pageSize);rows+=files.length;
   return {data:{files,nextPageToken:offset+pageSize<all.length?String(offset+pageSize):undefined}};
  }}};
@@ -43,4 +44,11 @@ test('a failed page can retry the same continuation without losing pending folde
 });
 test('empty folders and cycles terminate without a depth or file cap',async()=>{
  const f=fixture({root:[{id:'empty',name:'Empty',mimeType:FOLDER},{id:'loop',name:'Loop',mimeType:FOLDER}],empty:[],loop:[{id:'root',name:'Root',mimeType:FOLDER}]});let cursor;let pages=0;do{const p=await f.read('root',cursor);cursor=p.nextCursor;assert.ok(++pages<5);}while(cursor);
+});
+
+test('single-folder queries retain nested reports even when parent metadata is absent',async()=>{
+ const f=fixture(treeWithReports(),{omitParents:true,singleParentOnly:true});let cursor;const all=[];
+ do{const page=await f.read('root',cursor);all.push(...page.data);cursor=page.nextCursor;}while(cursor);
+ assert.equal(all.filter(x=>!x.isFolder).length,1235);
+ assert.ok(all.find(x=>x.id==='daily-pdf')?.folderPath.startsWith('Daily Reports'));
 });
