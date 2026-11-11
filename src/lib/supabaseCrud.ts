@@ -71,7 +71,7 @@ type TableConfig = {
   table: string;
   keyColumn: string;
   toDb: (data: Record<string, SheetValue>) => Record<string, unknown>;
-  fromDb: (projectId?: string | null, healthOnly?: boolean) => Promise<SheetLikeRecord[]>;
+  fromDb: (projectId?: string | null, healthOnly?: boolean, overviewOnly?: boolean) => Promise<SheetLikeRecord[]>;
   includeCreatedAt?: boolean;
   includeUpdatedAt?: boolean;
 };
@@ -1036,13 +1036,13 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "tasks",
     keyColumn: "task_id",
     toDb: toTaskDb,
-    fromDb: (projectId, healthOnly) => getSupabaseTasks(projectId, healthOnly),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseTasks(projectId, healthOnly, overviewOnly),
   },
   Milestones: {
     table: "milestones",
     keyColumn: "milestone_id",
     toDb: toMilestoneDb,
-    fromDb: (projectId) => getSupabaseMilestones(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseMilestones(projectId, healthOnly, overviewOnly),
   },
   Budget: {
     table: "budget",
@@ -1054,67 +1054,67 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "materials",
     keyColumn: "material_id",
     toDb: toMaterialDb,
-    fromDb: (projectId) => getSupabaseMaterials(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseMaterials(projectId, healthOnly, overviewOnly),
   },
   Issues: {
     table: "issues",
     keyColumn: "issue_id",
     toDb: toIssueDb,
-    fromDb: (projectId) => getSupabaseIssues(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseIssues(projectId, healthOnly, overviewOnly),
   },
   Daily_Reports: {
     table: "daily_reports",
     keyColumn: "report_id",
     toDb: toDailyReportDb,
-    fromDb: (projectId, healthOnly) => getSupabaseDailyReports(projectId, healthOnly),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseDailyReports(projectId, healthOnly, overviewOnly),
   },
   Weekly_Reports: {
     table: "weekly_reports",
     keyColumn: "report_id",
     toDb: toWeeklyReportDb,
-    fromDb: (projectId) => getSupabaseWeeklyReports(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseWeeklyReports(projectId, healthOnly, overviewOnly),
   },
   Monthly_Reports: {
     table: "monthly_reports",
     keyColumn: "report_id",
     toDb: toMonthlyReportDb,
-    fromDb: (projectId) => getSupabaseMonthlyReports(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseMonthlyReports(projectId, healthOnly, overviewOnly),
   },
   Project_Documents: {
     table: "project_documents",
     keyColumn: "document_id",
     toDb: toProjectDocumentDb,
-    fromDb: (projectId) => getSupabaseProjectDocuments(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseProjectDocuments(projectId, healthOnly, overviewOnly),
   },
   Project_Lifecycle: {
     table: "project_lifecycle",
     keyColumn: "lifecycle_id",
     toDb: toProjectLifecycleDb,
-    fromDb: (projectId, healthOnly) => getSupabaseProjectLifecycle(projectId, healthOnly),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseProjectLifecycle(projectId, healthOnly, overviewOnly),
   },
   Project_Warranty: {
     table: "project_warranty",
     keyColumn: "warranty_id",
     toDb: toProjectWarrantyDb,
-    fromDb: (projectId, healthOnly) => getSupabaseProjectWarranty(projectId, healthOnly),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseProjectWarranty(projectId, healthOnly, overviewOnly),
   },
   Customer_Decisions: {
     table: "customer_decisions",
     keyColumn: "decision_id",
     toDb: toCustomerDecisionDb,
-    fromDb: (projectId) => getSupabaseCustomerDecisions(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseCustomerDecisions(projectId, healthOnly, overviewOnly),
   },
   Defect_Rounds: {
     table: "defect_rounds",
     keyColumn: "round_id",
     toDb: toDefectRoundDb,
-    fromDb: (projectId) => getSupabaseDefectRounds(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseDefectRounds(projectId, healthOnly, overviewOnly),
   },
   Defect_Items: {
     table: "defect_items",
     keyColumn: "item_id",
     toDb: toDefectItemDb,
-    fromDb: (projectId) => getSupabaseDefectItems(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseDefectItems(projectId, healthOnly, overviewOnly),
   },
   Defect_Evidence: {
     table: "defect_evidence",
@@ -1126,13 +1126,13 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "qc_checklists",
     keyColumn: "qc_id",
     toDb: toQcChecklistDb,
-    fromDb: (projectId) => getSupabaseQcChecklists(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseQcChecklists(projectId, healthOnly, overviewOnly),
   },
   Site_Memos: {
     table: "site_memos",
     keyColumn: "memo_id",
     toDb: toSiteMemoDb,
-    fromDb: (projectId) => getSupabaseSiteMemos(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseSiteMemos(projectId, healthOnly, overviewOnly),
   },
   Site_Memo_Evidence: {
     table: "site_memo_evidence",
@@ -1144,7 +1144,7 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "variation_orders",
     keyColumn: "vo_id",
     toDb: toVariationOrderDb,
-    fromDb: (projectId) => getSupabaseVariationOrders(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseVariationOrders(projectId, healthOnly, overviewOnly),
   },
   VO_Items: {
     table: "vo_items",
@@ -1174,13 +1174,13 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "vo_finance_ledger",
     keyColumn: "ledger_id",
     toDb: toVoFinanceLedgerDb,
-    fromDb: (projectId) => getSupabaseVoFinanceLedger(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseVoFinanceLedger(projectId, healthOnly, overviewOnly),
   },
   Site_Notes: {
     table: "site_notes",
     keyColumn: "note_id",
     toDb: toSiteNoteDb,
-    fromDb: (projectId) => getSupabaseSiteNotes(projectId),
+    fromDb: (projectId, healthOnly, overviewOnly) => getSupabaseSiteNotes(projectId, healthOnly, overviewOnly),
   },
 };
 
@@ -1217,8 +1217,8 @@ export function getSupabaseSiteConfig(tableName: string) {
   return SITE_TABLES[tableName as SiteTable] || null;
 }
 
-export async function findAllSupabase(config: TableConfig, projectId?: string | null, healthOnly = false) {
-  return await config.fromDb(projectId, healthOnly) as SheetRow[];
+export async function findAllSupabase(config: TableConfig, projectId?: string | null, healthOnly = false, overviewOnly = false) {
+  return await config.fromDb(projectId, healthOnly, overviewOnly) as SheetRow[];
 }
 
 export async function insertSupabase(

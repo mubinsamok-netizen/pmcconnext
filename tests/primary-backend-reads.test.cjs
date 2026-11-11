@@ -112,7 +112,7 @@ test("site overview and project progress retain Supabase task counts when Sheets
       findAllRaw: async () => { sheetReads++; throw new Error("Requested entity was not found."); },
     },
   };
-  const overview = loadTs("src/app/dashboard/sites/[projectId]/page.tsx", deps, ["getDashboardData"]);
+  const overview = loadTs("src/app/dashboard/sites/[projectId]/overviewData.ts", deps, ["getDashboardData"]);
   const projects = loadTs("src/app/api/projects/route.ts", deps, ["enrichProjectWithHealth"]);
   const dashboard = await overview.getDashboardData(project);
   assert.equal(dashboard.error, "");

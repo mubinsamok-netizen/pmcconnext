@@ -242,6 +242,7 @@ test("Google sign-in reuses the validated user for JWT and preserves session ide
 test("credentials query selects login fields and treats email punctuation as literal", async () => {
   const calls = [];
   const model = loadTs("src/lib/supabaseReadModel.ts", {
+    "@/lib/siteOverviewColumns": loadTs("src/lib/siteOverviewColumns.ts"),
     "@/lib/supabaseRest": { supabaseSelect: async (table, params) => { calls.push({ table, params }); return []; } },
     "@/lib/supabaseSchema": { getSupabaseMasterSchema: () => "public" },
     "@/lib/projectIds": { serializeProjectIds: () => "" },

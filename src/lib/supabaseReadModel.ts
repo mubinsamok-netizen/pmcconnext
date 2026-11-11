@@ -1,3 +1,4 @@
+import { SITE_OVERVIEW_COLUMNS } from "@/lib/siteOverviewColumns";
 import { supabaseSelect } from "@/lib/supabaseRest";
 import { getSupabaseMasterSchema, getSupabaseSiteSchema } from "@/lib/supabaseSchema";
 import { serializeProjectIds } from "@/lib/projectIds";
@@ -527,9 +528,11 @@ function sheetRowFromSupabase(
 async function supabaseSiteSelect<T>(
   projectId: string | null | undefined,
   table: string,
-  params: Record<string, string>
+  params: Record<string, string>,
+  overviewOnly = false
 ) {
-  return supabaseSelect<T>(table, params, {
+  const select = overviewOnly ? SITE_OVERVIEW_COLUMNS[table] : undefined;
+  return supabaseSelect<T>(table, select ? { ...params, select } : params, {
     schema: await getSupabaseSiteSchema(projectId),
   });
 }
@@ -735,14 +738,14 @@ export async function getSupabaseAuditLogs() {
   }));
 }
 
-export async function getSupabaseTasks(projectId?: string | null, healthOnly = false) {
+export async function getSupabaseTasks(projectId?: string | null, healthOnly = false, overviewOnly = false) {
   const params: Record<string, string> = {
     order: "order_index.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "task_id,project_id,task_type,status,percent_done,planned_end,end_date";
 
-  const rows = await supabaseSiteSelect<SupabaseTask>(projectId, "tasks", params);
+  const rows = await supabaseSiteSelect<SupabaseTask>(projectId, "tasks", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.task_id,
@@ -772,13 +775,14 @@ export async function getSupabaseTasks(projectId?: string | null, healthOnly = f
   }));
 }
 
-export async function getSupabaseMilestones(projectId?: string | null) {
+export async function getSupabaseMilestones(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "date.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseMilestone>(projectId, "milestones", params);
+  const rows = await supabaseSiteSelect<SupabaseMilestone>(projectId, "milestones", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.milestone_id,
@@ -814,13 +818,14 @@ export async function getSupabaseBudget(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseMaterials(projectId?: string | null) {
+export async function getSupabaseMaterials(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "delivery_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "materials", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "materials", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "material_id", [
     "material_id",
@@ -843,13 +848,14 @@ export async function getSupabaseMaterials(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseIssues(projectId?: string | null) {
+export async function getSupabaseIssues(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "due_date.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "issues", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "issues", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "issue_id", [
     "issue_id",
@@ -867,14 +873,14 @@ export async function getSupabaseIssues(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseDailyReports(projectId?: string | null, healthOnly = false) {
+export async function getSupabaseDailyReports(projectId?: string | null, healthOnly = false, overviewOnly = false) {
   const params: Record<string, string> = {
     order: "report_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "report_id,project_id,report_date";
 
-  const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -914,13 +920,14 @@ export async function getSupabaseDailyReports(projectId?: string | null, healthO
   }));
 }
 
-export async function getSupabaseWeeklyReports(projectId?: string | null) {
+export async function getSupabaseWeeklyReports(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "week_start.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseWeeklyReport>(projectId, "weekly_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseWeeklyReport>(projectId, "weekly_reports", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -954,13 +961,14 @@ export async function getSupabaseWeeklyReports(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseMonthlyReports(projectId?: string | null) {
+export async function getSupabaseMonthlyReports(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "month_start.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseMonthlyReport>(projectId, "monthly_reports", params);
+  const rows = await supabaseSiteSelect<SupabaseMonthlyReport>(projectId, "monthly_reports", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.report_id,
@@ -1004,13 +1012,14 @@ export async function getSupabaseMonthlyReports(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseSiteNotes(projectId?: string | null) {
+export async function getSupabaseSiteNotes(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "updated_at.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseSiteNote>(projectId, "site_notes", params);
+  const rows = await supabaseSiteSelect<SupabaseSiteNote>(projectId, "site_notes", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.note_id,
@@ -1035,13 +1044,14 @@ export async function getSupabaseSiteNotes(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseSiteMemos(projectId?: string | null) {
+export async function getSupabaseSiteMemos(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "updated_at.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseSiteMemo>(projectId, "site_memos", params);
+  const rows = await supabaseSiteSelect<SupabaseSiteMemo>(projectId, "site_memos", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "memo_id", [
     "memo_id",
@@ -1119,13 +1129,14 @@ export async function getSupabaseSiteMemoEvidence(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseProjectDocuments(projectId?: string | null) {
+export async function getSupabaseProjectDocuments(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "created_at.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseProjectDocument>(projectId, "project_documents", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectDocument>(projectId, "project_documents", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.document_id,
@@ -1147,14 +1158,14 @@ export async function getSupabaseProjectDocuments(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseProjectLifecycle(projectId?: string | null, healthOnly = false) {
+export async function getSupabaseProjectLifecycle(projectId?: string | null, healthOnly = false, overviewOnly = false) {
   const params: Record<string, string> = {
     order: "project_id.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "lifecycle_id,project_id,permit_submitted_date,permit_expiry_date,temporary_electric_expiry_date,temporary_water_expiry_date,construction_end_date";
 
-  const rows = await supabaseSiteSelect<SupabaseProjectLifecycle>(projectId, "project_lifecycle", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectLifecycle>(projectId, "project_lifecycle", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.lifecycle_id,
@@ -1183,14 +1194,14 @@ export async function getSupabaseProjectLifecycle(projectId?: string | null, hea
   }));
 }
 
-export async function getSupabaseProjectWarranty(projectId?: string | null, healthOnly = false) {
+export async function getSupabaseProjectWarranty(projectId?: string | null, healthOnly = false, overviewOnly = false) {
   const params: Record<string, string> = {
     order: "project_id.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "warranty_id,project_id,handover_date,structure_expiry_date,roof_expiry_date,architecture_expiry_date";
 
-  const rows = await supabaseSiteSelect<SupabaseProjectWarranty>(projectId, "project_warranty", params);
+  const rows = await supabaseSiteSelect<SupabaseProjectWarranty>(projectId, "project_warranty", params, overviewOnly);
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.warranty_id,
@@ -1211,13 +1222,14 @@ export async function getSupabaseProjectWarranty(projectId?: string | null, heal
   }));
 }
 
-export async function getSupabaseDefectRounds(projectId?: string | null) {
+export async function getSupabaseDefectRounds(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "inspection_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_rounds", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_rounds", params, overviewOnly);
 
   return rows.map((row) => ({
     ...sheetRowFromSupabase(row, "round_id", [
@@ -1265,13 +1277,14 @@ export async function getSupabaseDefectRounds(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseDefectItems(projectId?: string | null) {
+export async function getSupabaseDefectItems(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "item_no.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_items", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "defect_items", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "item_id", [
     "item_id",
@@ -1337,13 +1350,14 @@ export async function getSupabaseDefectEvidence(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseQcChecklists(projectId?: string | null) {
+export async function getSupabaseQcChecklists(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "inspection_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "qc_checklists", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "qc_checklists", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "qc_id", [
     "qc_id",
@@ -1389,13 +1403,14 @@ export async function getSupabaseQcChecklists(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseCustomerDecisions(projectId?: string | null) {
+export async function getSupabaseCustomerDecisions(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "order_index.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "customer_decisions", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "customer_decisions", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "decision_id", [
     "decision_id",
@@ -1437,13 +1452,14 @@ export async function getSupabaseCustomerDecisions(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseVariationOrders(projectId?: string | null) {
+export async function getSupabaseVariationOrders(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "created_at.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseVariationOrder>(projectId, "variation_orders", params);
+  const rows = await supabaseSiteSelect<SupabaseVariationOrder>(projectId, "variation_orders", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "vo_id", [
     "vo_id",
@@ -1627,13 +1643,14 @@ export async function getSupabaseVoTaskLinks(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseVoFinanceLedger(projectId?: string | null) {
+export async function getSupabaseVoFinanceLedger(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+  void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "entry_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
 
-  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_finance_ledger", params);
+  const rows = await supabaseSiteSelect<SupabaseRow>(projectId, "vo_finance_ledger", params, overviewOnly);
 
   return rows.map((row) => sheetRowFromSupabase(row, "ledger_id", [
     "ledger_id",
