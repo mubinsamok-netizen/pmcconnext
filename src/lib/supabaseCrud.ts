@@ -71,7 +71,7 @@ type TableConfig = {
   table: string;
   keyColumn: string;
   toDb: (data: Record<string, SheetValue>) => Record<string, unknown>;
-  fromDb: (projectId?: string | null) => Promise<SheetLikeRecord[]>;
+  fromDb: (projectId?: string | null, healthOnly?: boolean) => Promise<SheetLikeRecord[]>;
   includeCreatedAt?: boolean;
   includeUpdatedAt?: boolean;
 };
@@ -1036,7 +1036,7 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "tasks",
     keyColumn: "task_id",
     toDb: toTaskDb,
-    fromDb: (projectId) => getSupabaseTasks(projectId),
+    fromDb: (projectId, healthOnly) => getSupabaseTasks(projectId, healthOnly),
   },
   Milestones: {
     table: "milestones",
@@ -1066,7 +1066,7 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "daily_reports",
     keyColumn: "report_id",
     toDb: toDailyReportDb,
-    fromDb: (projectId) => getSupabaseDailyReports(projectId),
+    fromDb: (projectId, healthOnly) => getSupabaseDailyReports(projectId, healthOnly),
   },
   Weekly_Reports: {
     table: "weekly_reports",
@@ -1090,13 +1090,13 @@ const SITE_TABLES: Partial<Record<SiteTable, TableConfig>> = {
     table: "project_lifecycle",
     keyColumn: "lifecycle_id",
     toDb: toProjectLifecycleDb,
-    fromDb: (projectId) => getSupabaseProjectLifecycle(projectId),
+    fromDb: (projectId, healthOnly) => getSupabaseProjectLifecycle(projectId, healthOnly),
   },
   Project_Warranty: {
     table: "project_warranty",
     keyColumn: "warranty_id",
     toDb: toProjectWarrantyDb,
-    fromDb: (projectId) => getSupabaseProjectWarranty(projectId),
+    fromDb: (projectId, healthOnly) => getSupabaseProjectWarranty(projectId, healthOnly),
   },
   Customer_Decisions: {
     table: "customer_decisions",
@@ -1217,8 +1217,8 @@ export function getSupabaseSiteConfig(tableName: string) {
   return SITE_TABLES[tableName as SiteTable] || null;
 }
 
-export async function findAllSupabase(config: TableConfig, projectId?: string | null) {
-  return await config.fromDb(projectId) as SheetRow[];
+export async function findAllSupabase(config: TableConfig, projectId?: string | null, healthOnly = false) {
+  return await config.fromDb(projectId, healthOnly) as SheetRow[];
 }
 
 export async function insertSupabase(

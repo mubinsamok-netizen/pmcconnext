@@ -53,7 +53,7 @@ function renderProjects(unavailable) {
     }, { filename });
     return loaded.exports;
   }
-  const Page = loadFile(path.resolve(__dirname, "../src/app/dashboard/projects/page.tsx")).default;
+  const Page = loadFile(path.resolve(__dirname, "../src/app/dashboard/projects/ProjectsWorkspace.tsx")).default;
   return { html: renderToStaticMarkup(React.createElement(Page)), requests };
 }
 

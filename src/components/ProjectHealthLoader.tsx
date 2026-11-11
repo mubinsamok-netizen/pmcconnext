@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/fetcher";
+import { fetchProjectHealth } from "@/lib/projectHealthQueue";
 
 type ProjectHealthData = {
   project_id: string;
@@ -26,7 +26,7 @@ export default function ProjectHealthLoader({ projectId, children }: {
 }) {
   const { data, error, mutate } = useSWR<{ data?: ProjectHealthData[]; error?: string }>(
     `/api/projects?mode=health&projectId=${encodeURIComponent(projectId)}`,
-    fetcher,
+    fetchProjectHealth as (url: string) => Promise<{ data?: ProjectHealthData[]; error?: string }>,
     { shouldRetryOnError: false, dedupingInterval: 0 }
   );
   const project = data?.data?.find((item) => item.project_id === projectId);

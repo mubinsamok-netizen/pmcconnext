@@ -311,7 +311,7 @@ async function enrichProjectWithHealth(project: SheetRecord, cacheHealth = false
       const rows = await findAllBatch(
         ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"],
         sheetId || projectId,
-        { projectId, ...(cacheHealth ? { fresh: true } : {}) }
+        { projectId, ...(cacheHealth ? { fresh: true, projectHealth: true } : {}) }
       ) as Record<string, SheetRecord[]>;
       const tasks = rows.Tasks || [];
       const dailyReports = rows.Daily_Reports || [];

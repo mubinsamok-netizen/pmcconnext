@@ -78,6 +78,38 @@ using React `cache` for one server render only. A new HTTP request obtains its o
 session. API Route Handlers still check the session independently; site membership,
 Admin-only actions and module guards are retained.
 
-Credentials login reads the existing Sheets Team table directly without waiting for master-schema setup. The reader already maps existing headers in memory. Fresh account reads, disabled-account/password checks and the awaited successful-login stamp are retained; Google sign-in and setup/write flows are unchanged. This removes schema metadata/header round trips on a cold schema cache, not the time needed to validate credentials or load site records. An existing master Team table is required, as with other read-only routes.
+Credentials login reads the existing Sheets Team table directly without waiting for master-schema setup. The reader already maps existing headers in memory. Fresh account reads, disabled-account/password checks are retained; the successful-login stamp now runs through Next.js `after` after the credentials response, with failure logging; Google sign-in and setup/write flows are unchanged. This removes schema metadata/header round trips on a cold schema cache, not the time needed to validate credentials or load site records. An existing master Team table is required, as with other read-only routes.
 
-`GET /api/projects` without a mode retains its existing uncached enrichment behavior for other consumers. Write payloads, authorization rules, pagination sizes and file endpoints are unchanged.
+`GET /api/projects` without a mode retains its existing uncached enrichment behavior for other consumers. Write payloads, authorization rules and pagination sizes are unchanged.
+
+## Performance steps 3–5
+
+The projects page streams a skeleton while the server reads the authorized basic
+list, then hydrates the existing client workspace with that list. It uses the same
+60-second list cache policy and invalidation tags as the API. The SWR key includes
+a deterministic hash of the authorized snapshot and user identity, preventing old
+browser data from replacing a newly rendered list after editing or account changes.
+No duplicate basic request is made on mount when initial data exists. Failure keeps
+the client fetch/retry path. Filters, controls and 10-card pagination are unchanged.
+
+Health requests remain independent, start in visible page order and use a shared
+FIFO queue with at most three requests in flight. Failure releases its slot, allowing
+other sites to finish. Bound SWR mutation/retry and existing server write invalidation
+remain in place; no extra cache lifetime or authentication cache is added.
+
+Cached list-health reads project the Supabase columns needed for calculations:
+tasks (identity, status, progress, type and end dates), daily report identities/dates,
+and lifecycle/warranty reminder dates. Full entity reads keep their previous field
+sets; Sheets fallback keeps its existing batched reads. Calculated progress and
+alerts use the existing formulas. No schema, SQL migration or RPC is introduced.
+
+Project card Drive URLs opt into `?thumbnail=card`: a WebP up to 760×460, oriented
+from the source image, generated with the installed Sharp library. The smaller
+result is used only if its bytes are fewer than the original. Unsupported images
+fall back to the original. Original file URLs/downloads retain their bytes and MIME
+type, and the existing private one-hour cache policy is kept with separate keys.
+
+Credentials validation remains awaited and fresh. Only its existing last-login
+update is scheduled with Next.js `after`; the timestamp is captured at login time
+and exceptions are logged. If scheduling is unavailable, the same update is awaited.
+Google sign-in profile updates/account linking remain awaited and unchanged.

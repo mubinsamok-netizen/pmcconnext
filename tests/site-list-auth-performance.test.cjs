@@ -145,9 +145,10 @@ test("both list stages require a session, while legacy full reads remain unchang
 });
 
 const account = () => ({ member_id: "M1", _rowIndex: "M1", name: "Test", email: "test@example.invalid", password: "test-password", role: "Engineer", active: "TRUE", avatar_url: "avatar", google_sub: "G1", auth_provider: "credentials" });
-function authFixture({ supabase = true, user = account(), stamp = async () => {} } = {}) {
+function authFixture({ supabase = true, user = account(), stamp = async () => {}, schedule = (cb) => { void cb(); } } = {}) {
   const calls = { credentials: [], masterReads: 0, rawReads: 0, stamps: 0, schemaSetups: 0 };
   const options = loadTs("src/lib/authOptions.ts", {
+    "next/server": { after: schedule },
     "next-auth/providers/credentials": { default: (config) => ({ ...config, id: "credentials" }) },
     "next-auth/providers/google": { default: (config) => ({ ...config, id: "google" }) },
     "@/lib/roles": loadTs("src/lib/roles.ts"),
@@ -163,19 +164,25 @@ function authFixture({ supabase = true, user = account(), stamp = async () => {}
   return { options, calls, authorize: (credentials) => options.providers.find((provider) => provider.id === "credentials").authorize(credentials) };
 }
 
-test("credentials lookup targets normalized email and still waits for the login stamp", async () => {
-  let release;
-  const stamped = new Promise((resolve) => { release = resolve; });
-  const fixture = authFixture({ stamp: () => stamped });
-  let finished = false;
-  const login = fixture.authorize({ email: " TEST@EXAMPLE.INVALID ", password: "test-password" }).then((user) => { finished = true; return user; });
-  await new Promise((resolve) => setImmediate(resolve));
+test("credentials return before the login stamp, while Next after retains the audit task", async () => {
+  let task, release;
+  const stamped = new Promise(resolve => { release = resolve; });
+  const fixture = authFixture({ stamp: () => stamped, schedule: cb => { task = cb; } });
+  const user = await fixture.authorize({ email: " TEST@EXAMPLE.INVALID ", password: "test-password" });
+  assert.equal(user.role, "Engineer");
   assert.deepEqual(fixture.calls.credentials, ["test@example.invalid"]);
-  assert.equal(finished, false);
-  release();
-  assert.equal((await login).role, "Engineer");
-  assert.equal(fixture.calls.masterReads, 0);
+  assert.equal(fixture.calls.stamps, 0);
+  const work = task();
   assert.equal(fixture.calls.stamps, 1);
+  release(); await work;
+  assert.equal(fixture.calls.masterReads, 0);
+});
+
+test("failed login history is caught after authentication instead of failing login", async () => {
+  let task;
+  const f = authFixture({ stamp: async () => { throw new Error("History unavailable"); }, schedule: cb => { task = cb; } });
+  assert.equal((await f.authorize({email:"test@example.invalid",password:"test-password"})).id,"M1");
+  await task(); assert.equal(f.calls.stamps,1);
 });
 
 for (const [label, user, password, expected] of [

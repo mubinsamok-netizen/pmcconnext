@@ -6,7 +6,7 @@ import { readDriveListingPage } from "@/lib/driveListingPages";
 export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true, driveOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
     const driveFolderId = String(context.project.drive_folder_id || "").trim();
@@ -29,7 +29,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true, driveOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const folderId = String(context.project.drive_folder_id || "").trim();
     const payload = req.headers.get("content-type")?.includes("application/json") ? await req.json() : {};

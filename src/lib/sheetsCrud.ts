@@ -360,7 +360,7 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
 export async function findAllBatch(
   tableNames: SiteTable[],
   spreadsheetId: string = SHEET_ID,
-  options: { projectId?: string; fresh?: boolean } = {}
+  options: { projectId?: string; fresh?: boolean; projectHealth?: boolean } = {}
 ) {
   const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
   const result = {} as Record<SiteTable, SheetRow[]>;
@@ -375,7 +375,7 @@ export async function findAllBatch(
     const supabaseConfig = getSupabaseSiteConfig(tableName);
     if (shouldUseSupabase() && supabaseConfig) {
       pendingPromises.push(
-        findAllSupabase(supabaseConfig, supabaseProjectId)
+        findAllSupabase(supabaseConfig, supabaseProjectId, options.projectHealth)
           .then((rows) => {
             result[tableName as SiteTable] = rows;
           })

@@ -733,11 +733,12 @@ export async function getSupabaseAuditLogs() {
   }));
 }
 
-export async function getSupabaseTasks(projectId?: string | null) {
+export async function getSupabaseTasks(projectId?: string | null, healthOnly = false) {
   const params: Record<string, string> = {
     order: "order_index.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
+  if (healthOnly) params.select = "task_id,project_id,task_type,status,percent_done,planned_end,end_date";
 
   const rows = await supabaseSiteSelect<SupabaseTask>(projectId, "tasks", params);
 
@@ -864,11 +865,12 @@ export async function getSupabaseIssues(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseDailyReports(projectId?: string | null) {
+export async function getSupabaseDailyReports(projectId?: string | null, healthOnly = false) {
   const params: Record<string, string> = {
     order: "report_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
+  if (healthOnly) params.select = "report_id,project_id,report_date";
 
   const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params);
 
@@ -1143,11 +1145,12 @@ export async function getSupabaseProjectDocuments(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseProjectLifecycle(projectId?: string | null) {
+export async function getSupabaseProjectLifecycle(projectId?: string | null, healthOnly = false) {
   const params: Record<string, string> = {
     order: "project_id.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
+  if (healthOnly) params.select = "lifecycle_id,project_id,permit_submitted_date,permit_expiry_date,temporary_electric_expiry_date,temporary_water_expiry_date,construction_end_date";
 
   const rows = await supabaseSiteSelect<SupabaseProjectLifecycle>(projectId, "project_lifecycle", params);
 
@@ -1178,11 +1181,12 @@ export async function getSupabaseProjectLifecycle(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseProjectWarranty(projectId?: string | null) {
+export async function getSupabaseProjectWarranty(projectId?: string | null, healthOnly = false) {
   const params: Record<string, string> = {
     order: "project_id.asc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
+  if (healthOnly) params.select = "warranty_id,project_id,handover_date,structure_expiry_date,roof_expiry_date,architecture_expiry_date";
 
   const rows = await supabaseSiteSelect<SupabaseProjectWarranty>(projectId, "project_warranty", params);
 

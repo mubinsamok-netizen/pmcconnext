@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { drive } from "@/lib/google";
 
 const DRIVE_FILE_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -7,15 +8,17 @@ const driveFileCache = new Map<string, {
   buffer: Buffer;
 }>();
 
-export async function GET(_req: Request, ctx: { params: Promise<{ fileId: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ fileId: string }> }) {
   const { fileId } = await ctx.params;
 
   if (!fileId) {
     return new Response("Missing file id", { status: 400 });
   }
 
+  const card = new URL(req.url).searchParams.get("thumbnail") === "card";
+  const cacheKey = `${fileId}:${card ? "card-v1" : "original"}`;
   try {
-    const cached = driveFileCache.get(fileId);
+    const cached = driveFileCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       return new Response(new Uint8Array(cached.buffer), {
         headers: {
@@ -30,9 +33,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ fileId: string
       drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" }),
     ]);
 
-    const mimeType = metadata.data.mimeType || "application/octet-stream";
-    const buffer = Buffer.from(media.data as ArrayBuffer);
-    driveFileCache.set(fileId, {
+    let mimeType = metadata.data.mimeType || "application/octet-stream";
+    let buffer: Buffer = Buffer.from(media.data as ArrayBuffer);
+    if (card && mimeType.startsWith("image/")) {
+      try {
+        const thumbnail = await sharp(buffer).rotate().resize({ width: 760, height: 460, fit: "inside", withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+        if (thumbnail.length < buffer.length) { buffer = thumbnail; mimeType = "image/webp"; }
+      } catch (error) { console.warn("Project cover thumbnail failed; serving original", error); }
+    }
+    driveFileCache.set(cacheKey, {
       expiresAt: Date.now() + DRIVE_FILE_CACHE_TTL_MS,
       mimeType,
       buffer,

@@ -60,3 +60,13 @@ tampering, expiry, root binding and retry after a Drive error.
 API tests preserve authorization and legacy invalidation behavior. Render tests cover
 independent documents/Defect and sites without Drive. Browser QA uses only synthetic
 endpoints with the real FilesWorkspace and SWR hook; no live records are modified.
+
+## Read context and Sheets setup
+
+The documents/Defect GET routes use an authorized read-only site context: opening a
+page does not run schema initialization/validation. Reads still fail explicitly if
+their actual data source cannot be read. Existing POST/write paths retain schema
+validation. Drive listing and cache-only POST operations require session and project
+access plus its configured Drive folder; they do not depend on a Sheets workbook.
+This prevents an unrelated Sheets setup failure from blocking the project's Drive
+files. No sheets, headers or business records are created/repaired by these reads.

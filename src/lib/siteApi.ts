@@ -13,7 +13,7 @@ export type SiteApiProject = Record<string, string | number | undefined> & {
   drive_folder_id?: string;
 };
 
-export async function getSiteApiContext(projectId: string, requireAdmin = false) {
+export async function getSiteApiContext(projectId: string, requireAdmin = false, options: { readOnly?: boolean; driveOnly?: boolean } = {}) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return { error: "Unauthorized", status: 401 as const };
@@ -36,6 +36,7 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
   }
 
   const siteSheetId = String(project.site_sheet_id || "").trim();
+  if (options.driveOnly) return { session, project, siteSheetId };
   if (!siteSheetId) {
     if (isSupabaseSiteSchemaMode()) {
       return { session, project, siteSheetId: getSupabaseSiteSchemaName(projectId) };
@@ -43,7 +44,7 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Project has no site sheet", status: 400 as const };
   }
 
-  if (!isSupabaseBackend()) {
+  if (!options.readOnly && !isSupabaseBackend()) {
     const schemaResult = await ensureSchema(siteSheetId);
     if (!schemaResult.success) {
       return {

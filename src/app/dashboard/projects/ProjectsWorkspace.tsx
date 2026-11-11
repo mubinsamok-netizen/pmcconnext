@@ -1,0 +1,759 @@
+"use client";
+
+import { AlertTriangle, Building2, Calendar, Filter, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { useSession } from "next-auth/react";
+import { useMemo, useState } from "react";
+import useSWR from "swr";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import PaginationControls from "@/components/PaginationControls";
+import ProjectsSkeleton, { ProjectHealthSkeleton } from "@/components/ProjectsSkeleton";
+import ProjectHealthLoader from "@/components/ProjectHealthLoader";
+import { fetcher } from "@/lib/fetcher";
+import { parseProjectIds } from "@/lib/projectIds";
+import { getAppRole } from "@/lib/roles";
+import { isForemanRole } from "@/lib/siteAccess";
+import { usePagination } from "@/lib/usePagination";
+
+type Project = {
+  project_id: string;
+  name: string;
+  client?: string;
+  address?: string;
+  province?: string;
+  se_name?: string;
+  start_date?: string;
+  end_date?: string;
+  status?: string;
+  percent_done?: string;
+  cover_file_id?: string;
+  cover_url?: string;
+  site_sheet_id?: string;
+  drive_folder_id?: string;
+  deposit_status?: string;
+  architect_name?: string;
+  tasks_count?: string;
+  completed_tasks?: string;
+  overdue_tasks?: string;
+  delay_days?: string;
+  progress_source?: string;
+  daily_reports_count?: string;
+  last_daily_report_date?: string;
+  daily_report_missing_days?: string;
+  daily_report_alert?: string;
+  lifecycle_alerts_count?: string;
+  lifecycle_alerts_json?: string;
+};
+
+type ProjectLifecycleAlert = {
+  key: string;
+  title: string;
+  due_date: string;
+  days_remaining: number;
+  kind: "overdue" | "due_soon";
+  link: string;
+};
+
+export type ProjectsResponse = {
+  success: boolean;
+  data: Project[];
+  error?: string;
+};
+
+type TeamMember = {
+  member_id: string;
+  name: string;
+  role?: string;
+  email?: string;
+  project_ids?: string;
+  active?: string;
+};
+
+type TeamResponse = {
+  success: boolean;
+  data: TeamMember[];
+};
+
+const validStatuses = new Set(["Planning", "In Progress", "On Hold", "Completed", "Cancelled"]);
+const ALL_ENGINEERS = "__all__";
+const UNASSIGNED_ENGINEER = "__unassigned__";
+const FILTER_SITE_ENGINEER = "site_engineer";
+const FILTER_ARCHITECT = "architect";
+const FILTER_TEAM_ACCESS = "team_access";
+type ResponsibilityFilter = typeof FILTER_SITE_ENGINEER | typeof FILTER_ARCHITECT | typeof FILTER_TEAM_ACCESS;
+const statusStyles = {
+  Planning: {
+    badge: "border-sky-100 bg-sky-50 text-sky-700",
+    progress: "bg-sky-500",
+    visual: "from-sky-50 via-white to-orange-50",
+    icon: "bg-white/90 text-sky-500 ring-sky-100",
+    orb: "bg-sky-200/40",
+    label: "bg-sky-500 text-white",
+  },
+  "In Progress": {
+    badge: "border-orange-100 bg-orange-50 text-orange-700",
+    progress: "bg-orange-500",
+    visual: "from-orange-50 via-white to-amber-50",
+    icon: "bg-white/90 text-orange-500 ring-orange-100",
+    orb: "bg-orange-200/45",
+    label: "bg-orange-500 text-white",
+  },
+  "On Hold": {
+    badge: "border-amber-100 bg-amber-50 text-amber-700",
+    progress: "bg-amber-500",
+    visual: "from-amber-50 via-white to-slate-50",
+    icon: "bg-white/90 text-amber-500 ring-amber-100",
+    orb: "bg-amber-200/45",
+    label: "bg-amber-500 text-white",
+  },
+  Completed: {
+    badge: "border-emerald-100 bg-emerald-50 text-emerald-700",
+    progress: "bg-emerald-500",
+    visual: "from-emerald-50 via-white to-teal-50",
+    icon: "bg-white/90 text-emerald-500 ring-emerald-100",
+    orb: "bg-emerald-200/45",
+    label: "bg-emerald-500 text-white",
+  },
+  Cancelled: {
+    badge: "border-rose-100 bg-rose-50 text-rose-700",
+    progress: "bg-rose-500",
+    visual: "from-rose-50 via-white to-slate-50",
+    icon: "bg-white/90 text-rose-500 ring-rose-100",
+    orb: "bg-rose-200/40",
+    label: "bg-rose-500 text-white",
+  },
+};
+
+function getStatusStyle(status: string) {
+  return statusStyles[status as keyof typeof statusStyles] || statusStyles.Planning;
+}
+
+function getStatus(status?: string) {
+  if (!status || !validStatuses.has(status)) return "Planning";
+  return status;
+}
+
+function toIsoDate(date?: string | number) {
+  const value = String(date ?? "").trim();
+  if (!value) return "";
+
+  const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0 && numericValue < 100000) {
+    const sheetEpoch = Date.UTC(1899, 11, 30);
+    const parsed = new Date(sheetEpoch + Math.floor(numericValue) * 86400000);
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  const slashMatch = value.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, first, second, yearValue] = slashMatch;
+    let year = Number(yearValue);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+
+    const firstNumber = Number(first);
+    const secondNumber = Number(second);
+    const isMonthFirst = firstNumber <= 12 && secondNumber > 12;
+    const day = isMonthFirst ? secondNumber : firstNumber;
+    const month = isMonthFirst ? firstNumber : secondNumber;
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+}
+
+function getStartDate(startDate?: string) {
+  const normalizedDate = toIsoDate(startDate);
+  if (normalizedDate) return normalizedDate;
+  if (!startDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return "ยังไม่กำหนดวันเริ่ม";
+  return startDate;
+}
+
+function getEndDate(endDate?: string) {
+  const normalizedDate = toIsoDate(endDate);
+  if (normalizedDate) return normalizedDate;
+  if (!endDate || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return "ยังไม่กำหนดวันสิ้นสุด";
+  return endDate;
+}
+
+function getProgress(percentDone?: string) {
+  return `${getProgressValue(percentDone)}%`;
+}
+
+function getProgressValue(percentDone?: string) {
+  const value = Number(percentDone || 0);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function getCount(value?: string) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.floor(numeric));
+}
+
+function getDailyReportWarning(project: Project) {
+  if (project.daily_report_alert !== "TRUE") return "";
+
+  const missingDays = getCount(project.daily_report_missing_days);
+  const latestDate = toIsoDate(project.last_daily_report_date);
+  if (latestDate) {
+    return `ไม่ได้รายงานประจำวันมา ${missingDays} วัน (ล่าสุด ${latestDate})`;
+  }
+
+  return `ยังไม่มีรายงานประจำวันมา ${missingDays} วัน`;
+}
+
+function normalizeEngineerName(value?: string) {
+  return String(value || "").trim();
+}
+
+function getResponsibleName(project: Project, filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "";
+  return filter === FILTER_ARCHITECT ? normalizeEngineerName(project.architect_name) : normalizeEngineerName(project.se_name);
+}
+
+function parseLifecycleAlerts(project: Project) {
+  try {
+    const parsed = JSON.parse(project.lifecycle_alerts_json || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean) as ProjectLifecycleAlert[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function getLifecycleAlertDetail(alert: ProjectLifecycleAlert) {
+  const dueDate = toIsoDate(alert.due_date) || alert.due_date;
+  if (alert.kind === "overdue") {
+    return `${alert.title} หมดอายุแล้ว ${Math.abs(alert.days_remaining)} วัน (${dueDate})`;
+  }
+  if (alert.days_remaining === 0) {
+    return `${alert.title} ครบกำหนดวันนี้ (${dueDate})`;
+  }
+  return `${alert.title} จะถึงกำหนดใน ${alert.days_remaining} วัน (${dueDate})`;
+}
+
+function getLifecycleAlertTone(alerts: ProjectLifecycleAlert[]) {
+  return alerts.some((alert) => alert.kind === "overdue")
+    ? "border-red-200 bg-red-50 text-red-800"
+    : "border-amber-200 bg-amber-50 text-amber-800";
+}
+
+function getUnassignedLabel(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "ยังไม่มีสิทธิ์ไซต์";
+  return filter === FILTER_ARCHITECT ? "ยังไม่ระบุ Architect" : "ยังไม่ระบุ Site Engineer";
+}
+
+function getAllLabel(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "ทุกสิทธิ์พนักงาน";
+  return filter === FILTER_ARCHITECT ? "ทุก Architect" : "ทุก Site Engineer";
+}
+
+function getFilterTitle(filter: ResponsibilityFilter) {
+  if (filter === FILTER_TEAM_ACCESS) return "กรองไซต์งานตามสิทธิ์พนักงาน";
+  return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
+}
+
+function extractDriveFileId(url?: string) {
+  if (!url) return "";
+  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
+}
+
+function looksLikeDriveFileId(value?: string) {
+  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
+}
+
+function getCoverSrc(project: Project) {
+  const coverFileId = String(project.cover_file_id || "").trim();
+  const coverUrl = String(project.cover_url || "").trim();
+  const fileId = looksLikeDriveFileId(coverFileId)
+    ? coverFileId
+    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
+  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}?thumbnail=card`;
+  return coverUrl;
+}
+
+function ProjectCover({
+  src,
+  alt,
+  name,
+  projectId,
+  status,
+  progress,
+  loading,
+}: {
+  src: string;
+  alt: string;
+  name: string;
+  projectId: string;
+  status: string;
+  progress: number;
+  loading: "eager" | "lazy";
+}) {
+  const [failed, setFailed] = useState(false);
+  const style = getStatusStyle(status);
+
+  if (!src || failed) {
+    return (
+      <div className={`absolute inset-0 overflow-hidden bg-gradient-to-br ${style.visual}`}>
+        <div className="absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(15,23,42,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.06)_1px,transparent_1px)] [background-size:28px_28px]" />
+        <div className={`absolute -right-10 -top-12 h-36 w-36 rounded-full blur-2xl ${style.orb}`} />
+        <div className={`absolute -bottom-14 left-8 h-36 w-36 rounded-full blur-2xl ${style.orb}`} />
+        <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-5">
+          <div className="min-w-0 space-y-2">
+            <h3 className="line-clamp-2 text-[23px] font-extrabold leading-tight text-slate-950 transition group-hover:text-orange-600">
+              {name}
+            </h3>
+            <span className={`inline-flex max-w-full rounded-full px-3 py-1 text-xs font-extrabold shadow-sm ${style.label}`}>
+              <span className="truncate">{projectId}</span>
+            </span>
+            <div className="h-1.5 w-24 rounded-full bg-white/80 shadow-sm">
+              <div className={`h-full rounded-full ${style.progress}`} style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+          <div className={`grid h-20 w-20 shrink-0 place-items-center rounded-3xl shadow-sm ring-1 ${style.icon}`}>
+            <Building2 size={44} strokeWidth={1.9} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element -- Project covers may come from Drive proxy or legacy external URLs. */}
+      <img
+        src={src}
+        alt={alt}
+        loading={loading}
+        onError={() => setFailed(true)}
+        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+      />
+      <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-gray-950/70 via-gray-950/25 to-transparent" />
+      <div className="absolute bottom-5 left-5 right-5 min-w-0 space-y-2">
+        <h3 className="line-clamp-2 text-[23px] font-extrabold leading-tight text-white drop-shadow-sm">
+          {name}
+        </h3>
+        <span className="inline-flex max-w-full rounded-full bg-white/92 px-3 py-1 text-xs font-extrabold text-slate-700 shadow-sm backdrop-blur">
+          <span className="truncate">{projectId}</span>
+        </span>
+      </div>
+    </>
+  );
+}
+
+function DatePill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-2xl bg-slate-50 px-3.5 py-3 ring-1 ring-slate-100">
+      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
+        <Calendar size={14} />
+        {label}
+      </div>
+      <div className="mt-1 truncate text-[15px] font-extrabold text-slate-800">
+        {value}
+      </div>
+
+    </div>
+  );
+}
+
+function HealthPill({
+  label,
+  value,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  tone?: "slate" | "green" | "red";
+}) {
+  const toneClass = {
+    slate: "bg-slate-50 ring-slate-100 text-slate-800",
+    green: "bg-emerald-50 ring-emerald-100 text-emerald-700",
+    red: "bg-red-50 ring-red-100 text-red-700",
+  }[tone];
+
+  const labelClass = {
+    slate: "text-slate-400",
+    green: "text-emerald-500",
+    red: "text-red-400",
+  }[tone];
+
+  return (
+    <div className={`rounded-2xl px-3.5 py-3 ring-1 ${toneClass}`}>
+      <div className={`text-xs font-bold ${labelClass}`}>{label}</div>
+      <div className="mt-1 text-[15px] font-extrabold">{value}</div>
+    </div>
+  );
+}
+
+export default function ProjectsWorkspace({ initialData, snapshot }: { initialData?: ProjectsResponse; snapshot?: string } = {}) {
+  const { data: session } = useSession();
+  const { data, error, isLoading, mutate } = useSWR<ProjectsResponse>(snapshot ? `/api/projects?mode=basic&snapshot=${snapshot}` : "/api/projects?mode=basic", fetcher, {
+    fallbackData: initialData,
+    revalidateOnMount: !initialData,
+    // Recheck the server cache when returning after editing a project.
+    dedupingInterval: 0,
+  });
+  const isAdmin = getAppRole(session?.user?.role) === "Admin";
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<Project | null>(null);
+  const [responsibilityFilter, setResponsibilityFilter] = useState<ResponsibilityFilter>(FILTER_SITE_ENGINEER);
+  const [engineerFilter, setEngineerFilter] = useState(ALL_ENGINEERS);
+  const { data: teamData, isLoading: teamLoading } = useSWR<TeamResponse>(
+    isAdmin && responsibilityFilter === FILTER_TEAM_ACCESS ? "/api/team" : null,
+    fetcher
+  );
+  const projects = useMemo(() => data?.data || [], [data?.data]);
+  const team = useMemo(() => teamData?.data || [], [teamData?.data]);
+  const isForeman = isForemanRole(session?.user?.role);
+  const engineerOptions = useMemo(() => {
+    if (responsibilityFilter === FILTER_TEAM_ACCESS) {
+      const visibleProjectIds = new Set(projects.map((project) => project.project_id).filter(Boolean));
+      return team
+        .filter((member) => member.active !== "FALSE")
+        .map((member) => {
+          const count = parseProjectIds(member.project_ids).filter((projectId) => visibleProjectIds.has(projectId)).length;
+          return {
+            value: member.member_id,
+            count,
+            label: `${member.name || member.email || member.member_id}${member.role ? ` (${member.role})` : ""}`,
+          };
+        })
+        .sort((a, b) => {
+          if (b.count !== a.count) return b.count - a.count;
+          return a.label.localeCompare(b.label, "th");
+        });
+    }
+
+    const counts = new Map<string, number>();
+    projects.forEach((project) => {
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
+      counts.set(engineer, (counts.get(engineer) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .map(([value, count]) => ({
+        value,
+        count,
+        label: value === UNASSIGNED_ENGINEER ? getUnassignedLabel(responsibilityFilter) : value,
+      }))
+      .sort((a, b) => {
+        if (a.value === UNASSIGNED_ENGINEER) return 1;
+        if (b.value === UNASSIGNED_ENGINEER) return -1;
+        return a.label.localeCompare(b.label, "th");
+      });
+  }, [projects, responsibilityFilter, team]);
+  const filteredProjects = useMemo(() => {
+    if (engineerFilter === ALL_ENGINEERS) return projects;
+    if (responsibilityFilter === FILTER_TEAM_ACCESS) {
+      const selectedMember = team.find((member) => member.member_id === engineerFilter);
+      const projectIds = new Set(parseProjectIds(selectedMember?.project_ids));
+      return projects.filter((project) => projectIds.has(project.project_id));
+    }
+
+    return projects.filter((project) => {
+      const engineer = getResponsibleName(project, responsibilityFilter) || UNASSIGNED_ENGINEER;
+      return engineer === engineerFilter;
+    });
+  }, [engineerFilter, projects, responsibilityFilter, team]);
+  const pagination = usePagination(filteredProjects, 10, JSON.stringify([responsibilityFilter, engineerFilter]));
+  const loadError = error || data?.error;
+  const activeEngineerLabel = engineerFilter === ALL_ENGINEERS
+    ? getAllLabel(responsibilityFilter)
+    : engineerOptions.find((option) => option.value === engineerFilter)?.label || getAllLabel(responsibilityFilter);
+
+  const handleDelete = async (project: Project) => {
+    setDeletingId(project.project_id);
+    try {
+      const response = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: project.project_id }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "ไม่สามารถลบไซต์งานได้");
+
+      await mutate();
+      setPendingDeleteProject(null);
+    } catch (deleteError) {
+      alert(deleteError instanceof Error ? deleteError.message : "ไม่สามารถลบไซต์งานได้");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">ไซต์งาน</h2>
+          <p className="text-gray-500">เลือกไซต์เพื่อดูภาพรวม แผนงาน รายงานประจำวัน และไฟล์ของโครงการ</p>
+        </div>
+        {!isForeman && (
+          <Link
+            href="/dashboard/projects/new"
+            className="flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-medium text-white transition hover:bg-orange-700"
+          >
+            <Plus size={20} />
+            สร้างไซต์งาน
+          </Link>
+        )}
+      </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
+          ไม่สามารถดึงข้อมูลไซต์งานจาก Master Sheet ได้
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-orange-50 text-orange-600">
+              <Filter size={18} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-slate-900">{getFilterTitle(responsibilityFilter)}</div>
+              <div className="mt-0.5 text-xs font-medium text-slate-500">
+                แสดง {filteredProjects.length} จาก {projects.length} ไซต์ · {activeEngineerLabel}
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <select
+              value={responsibilityFilter}
+              onChange={(event) => {
+                setResponsibilityFilter(event.target.value as ResponsibilityFilter);
+                setEngineerFilter(ALL_ENGINEERS);
+              }}
+              className="h-10 min-w-[190px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
+              aria-label="เลือกประเภทผู้รับผิดชอบ"
+            >
+              <option value={FILTER_SITE_ENGINEER}>Site Engineer</option>
+              <option value={FILTER_ARCHITECT}>Architect</option>
+              {isAdmin && <option value={FILTER_TEAM_ACCESS}>สิทธิ์พนักงาน</option>}
+            </select>
+            <select
+              value={engineerFilter}
+              disabled={responsibilityFilter === FILTER_TEAM_ACCESS && teamLoading}
+              aria-busy={responsibilityFilter === FILTER_TEAM_ACCESS && teamLoading}
+              onChange={(event) => setEngineerFilter(event.target.value)}
+              className="h-10 min-w-[260px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100"
+              aria-label={getFilterTitle(responsibilityFilter)}
+            >
+              <option value={ALL_ENGINEERS}>{getAllLabel(responsibilityFilter)} ({projects.length})</option>
+              {engineerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({option.count})
+                </option>
+              ))}
+            </select>
+            {engineerFilter !== ALL_ENGINEERS && (
+              <button
+                type="button"
+                onClick={() => setEngineerFilter(ALL_ENGINEERS)}
+                className="h-10 rounded-xl border border-slate-200 px-3 text-sm font-bold text-slate-600 transition hover:bg-slate-50 hover:text-orange-600"
+              >
+                ล้างฟิลเตอร์
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <PaginationControls
+        page={pagination.page}
+        pageSize={pagination.pageSize}
+        total={pagination.total}
+        onPageChange={pagination.setPage}
+        label="แบ่งหน้าไซต์งาน"
+      />
+
+      <div className="grid grid-cols-1 gap-3">
+        {pagination.items.map((basicProject, index) => (
+          <ProjectHealthLoader key={basicProject.project_id} projectId={basicProject.project_id}>
+          {({ data: projectHealth, failed: healthError, retry }) => {
+          const project = projectHealth ? { ...basicProject, ...projectHealth } : basicProject;
+          const status = getStatus(project.status);
+          const statusStyle = getStatusStyle(status);
+          const location = project.address || project.province || project.client || "ยังไม่ระบุที่ตั้ง";
+          const coverSrc = getCoverSrc(project);
+          const progress = getProgressValue(project.percent_done);
+          const tasksCount = getCount(project.tasks_count);
+          const completedTasks = getCount(project.completed_tasks);
+          const overdueTasks = getCount(project.overdue_tasks);
+          const delayDays = getCount(project.delay_days);
+          const dailyReportWarning = getDailyReportWarning(project);
+          const lifecycleAlerts = parseLifecycleAlerts(project);
+          const lifecycleAlertCount = getCount(project.lifecycle_alerts_count);
+          const lifecycleAlertTone = getLifecycleAlertTone(lifecycleAlerts);
+
+          return (
+            <div
+              key={project.project_id}
+              className="group relative overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-[0_10px_26px_rgba(15,23,42,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_18px_40px_rgba(15,23,42,0.1)]"
+            >
+              <Link href={`/dashboard/sites/${project.project_id}`} className="grid min-h-[210px] grid-cols-1 xl:grid-cols-[380px_minmax(420px,1fr)_310px]">
+                <div className="relative min-h-[190px] overflow-hidden bg-slate-50 sm:min-h-[230px] xl:min-h-full">
+                  <ProjectCover
+                    src={coverSrc}
+                    alt={project.name || project.project_id}
+                    name={project.name || project.project_id}
+                    projectId={project.project_id}
+                    status={status}
+                    progress={progress}
+                    loading={index === 0 ? "eager" : "lazy"}
+                  />
+                  <div className={`absolute left-4 top-4 rounded-full border px-3.5 py-1.5 text-sm font-extrabold shadow-sm backdrop-blur ${statusStyle.badge}`}>
+                    {status}
+                  </div>
+                </div>
+
+                <div className="flex min-w-0 flex-col justify-between gap-4 p-5 xl:p-6">
+                  <p className="flex items-start gap-2.5 text-[15px] leading-7 text-slate-600">
+                    <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-slate-100 text-slate-500">
+                      <MapPin size={16} />
+                    </span>
+                    <span className="line-clamp-2">{location}</span>
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-3 xl:max-w-[560px]">
+                    <DatePill label="เริ่ม" value={getStartDate(project.start_date)} />
+                    <DatePill label="สิ้นสุด" value={getEndDate(project.end_date)} />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[15px] font-medium text-slate-600">
+                    <span>Site Engineer: {project.se_name || "-"}</span>
+                    <span>Architect: {project.architect_name || "-"}</span>
+                  </div>
+
+                  {dailyReportWarning && (
+                    <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm font-bold text-amber-800">
+                      <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                      <span className="leading-6">{dailyReportWarning}</span>
+                    </div>
+                  )}
+
+                  {lifecycleAlerts.length > 0 && (
+                    <div className={`flex items-start gap-2 rounded-2xl border px-3.5 py-3 text-sm font-bold ${lifecycleAlertTone}`}>
+                      <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+                      <div className="min-w-0 space-y-1 leading-6">
+                        <div>
+                          แจ้งเตือนรายละเอียดงาน/เอกสาร/ประกัน {lifecycleAlertCount || lifecycleAlerts.length} รายการ
+                        </div>
+                        {lifecycleAlerts.slice(0, 2).map((alert) => (
+                          <div key={alert.key} className="line-clamp-1 text-xs font-extrabold opacity-90">
+                            {getLifecycleAlertDetail(alert)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex min-w-0 flex-col justify-between gap-4 border-t border-slate-100 bg-slate-50/60 p-5 xl:border-l xl:border-t-0 xl:p-6">
+                  {!projectHealth ? (
+                    healthError
+                      ? <p className="text-sm text-slate-500">ยังไม่สามารถแสดงความคืบหน้าได้</p>
+                      : <ProjectHealthSkeleton />
+                  ) : (
+                  <>
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-3 text-[15px] font-bold text-slate-700">
+                      <span className="truncate">ความก้าวหน้าโครงการ</span>
+                      <div className="shrink-0 text-lg font-extrabold text-slate-950">{getProgress(project.percent_done)}</div>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                      <div className={`h-full rounded-full transition-all duration-500 ${statusStyle.progress}`} style={{ width: `${progress}%` }} />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <HealthPill label="งานเสร็จ" value={`${completedTasks}/${tasksCount}`} />
+                    <HealthPill
+                      label="งานล่าช้า"
+                      value={overdueTasks > 0 ? `${overdueTasks} งาน / ${delayDays} วัน` : "ไม่มี"}
+                      tone={overdueTasks > 0 ? "red" : "green"}
+                    />
+                  </div>
+                  </>
+                  )}
+                </div>
+              </Link>
+
+              {healthError && (
+                <div role="alert" className="flex flex-wrap items-center gap-3 border-t border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <span>ไม่สามารถโหลดความคืบหน้าของไซต์นี้ได้</span>
+                  <button type="button" onClick={retry} className="font-bold underline">ลองโหลดความคืบหน้าอีกครั้ง</button>
+                </div>
+              )}
+
+              {!isForeman && (
+              <div className="absolute right-4 top-4 z-10 flex items-center gap-2 xl:left-[276px] xl:right-auto">
+                <Link
+                  href={`/dashboard/projects/${project.project_id}/edit`}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/95 text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:text-orange-600 hover:ring-orange-200"
+                  aria-label={`แก้ไข ${project.name || project.project_id}`}
+                  title="แก้ไขไซต์งาน"
+                >
+                  <Pencil size={17} />
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteProject(project)}
+                  disabled={deletingId === project.project_id}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/95 text-red-600 shadow-sm ring-1 ring-red-200 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={`ลบ ${project.name || project.project_id}`}
+                  title="ลบไซต์งาน"
+                >
+                  <Trash2 size={17} />
+                </button>
+              </div>
+              )}
+            </div>
+          );
+          }}
+          </ProjectHealthLoader>
+        ))}
+
+        {isLoading && projects.length === 0 && <ProjectsSkeleton />}
+
+        {projects.length === 0 && !isLoading && !loadError && (
+          <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white py-12 text-center text-gray-500">
+            ยังไม่มีไซต์งานใน Master Sheet
+          </div>
+        )}
+
+        {projects.length > 0 && filteredProjects.length === 0 && !isLoading && !loadError && (
+          <div className="col-span-full rounded-2xl border border-dashed border-orange-200 bg-orange-50/40 py-12 text-center text-orange-700">
+            ไม่มีไซต์งานของ {activeEngineerLabel}
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteProject)}
+        title="ลบไซต์งาน?"
+        message={`ต้องการลบ "${pendingDeleteProject?.name || pendingDeleteProject?.project_id || "-"}" ออกจากรายการใช่ไหม`}
+        confirmLabel="ลบ"
+        cancelLabel="ยกเลิก"
+        loading={Boolean(pendingDeleteProject && deletingId === pendingDeleteProject.project_id)}
+        onConfirm={() => {
+          if (pendingDeleteProject) void handleDelete(pendingDeleteProject);
+        }}
+        onCancel={() => setPendingDeleteProject(null)}
+      />
+    </div>
+  );
+}

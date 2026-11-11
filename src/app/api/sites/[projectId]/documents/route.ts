@@ -69,7 +69,7 @@ function getNextVersion(
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
     const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
