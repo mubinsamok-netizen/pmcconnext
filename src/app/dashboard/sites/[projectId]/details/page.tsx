@@ -9,30 +9,20 @@ import {
   Server,
   UserRound,
 } from "lucide-react";
-import Image from "next/image";
 import type { ComponentType } from "react";
 import { getMasterProject } from "@/lib/masterProjects";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 import { SiteShell } from "../SiteShell";
+import { getProjectCoverSources } from "@/lib/projectCover";
+import ProjectDetailsCover from "./ProjectDetailsCover";
 
 export const dynamic = "force-dynamic";
-
-function extractDriveFileId(url?: string) {
-  if (!url) return "";
-  return url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1] || "";
-}
-
-function getCoverSrc(project: { cover_file_id?: string; cover_url?: string }) {
-  const fileId = project.cover_file_id || extractDriveFileId(project.cover_url);
-  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
-  return project.cover_url || "";
-}
 
 export default async function SiteDetailsPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
   const project = await getMasterProject(projectId);
-  const coverSrc = getCoverSrc(project);
+  const coverSources = getProjectCoverSources(project);
   const usesSupabaseSchema = isSupabaseBackend() && isSupabaseSiteSchemaMode();
   const siteWorkspaceLabel = usesSupabaseSchema ? "Supabase Site Schema" : "Google Sheet ID";
   const siteWorkspaceValue = usesSupabaseSchema ? getSupabaseSiteSchemaName(project.project_id) : project.site_sheet_id || "-";
@@ -49,13 +39,7 @@ export default async function SiteDetailsPage({ params }: { params: Promise<{ pr
       <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_0.8fr] gap-6">
         <section className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="h-48 bg-gradient-to-br from-gray-100 to-gray-200 relative">
-            {coverSrc ? (
-              <Image src={coverSrc} alt={project.name} fill unoptimized className="object-cover" />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-gray-300">
-                <FileText size={72} />
-              </div>
-            )}
+            <ProjectDetailsCover key={JSON.stringify(coverSources)} sources={coverSources} name={project.name} />
             <div className="absolute right-5 top-5 rounded-full bg-white/90 px-3 py-1 text-sm font-bold text-orange-600 shadow-sm">
               {project.status || "Planning"}
             </div>
