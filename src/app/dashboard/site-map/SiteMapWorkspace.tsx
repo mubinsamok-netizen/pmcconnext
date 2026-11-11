@@ -24,7 +24,7 @@ import {
   getStatus, getProjectCoordinates, getRisk, getRiskLabel, getRiskClass, getEngineerName,
   getEngineerInitials, buildEngineerColorMap, getEngineerColor,
   getMarkerColor, getMapUrl, getDirectionsUrl, getRouteUrl, escapeHtml, uniqueValues,
-  buildSitePoints, newestMapProject, type Coordinates, type Project, type ProjectsResponse, type SitePoint, type SiteRisk,
+  buildSitePoints, newestLocatedMapProject, type Coordinates, type Project, type ProjectsResponse, type SitePoint, type SiteRisk,
 } from "./siteMapModel";
 
 export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
@@ -35,12 +35,12 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
   const [selectedRisk, setSelectedRisk] = useState<typeof ALL | SiteRisk>(ALL);
   const [selectedStatus, setSelectedStatus] = useState(ALL);
   const [selectedProjectId, selectSite] = useState("");
-  const newestProject = useMemo(() => newestMapProject(baseProjects), [baseProjects]);
+  const { resolvedCoordinates, pendingProjectIds, isResolving, coordinatesError, retryCoordinates } = useSiteMapCoordinates(baseProjects);
+  const newestProject = useMemo(() => newestLocatedMapProject(baseProjects, resolvedCoordinates, pendingProjectIds), [baseProjects, resolvedCoordinates, pendingProjectIds]);
   const activeProjectId = baseProjects.some((project) => project.project_id === selectedProjectId) ? selectedProjectId : newestProject?.project_id || "";
   const [panelOpen, setPanelOpen] = useState(true);
   const [detailOpen, setDetailOpen] = useState(true);
   const { projects, healthLoading, healthError, retryHealth } = useSiteMapHealth(baseProjects, activeProjectId);
-  const { resolvedCoordinates, isResolving, coordinatesError, retryCoordinates } = useSiteMapCoordinates(baseProjects);
 
   const engineerOptions = useMemo(() => [ALL, ...uniqueValues(projects, "se_name")], [projects]);
   const engineerNames = useMemo(() => engineerOptions.filter((engineerName) => engineerName !== ALL), [engineerOptions]);

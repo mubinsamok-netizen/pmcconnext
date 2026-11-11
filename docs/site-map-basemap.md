@@ -13,7 +13,7 @@ version increment. No site, task, report, Drive file or database schema is chang
    batches of four, at most three requests concurrently. Each completed batch
    publishes its pins without waiting for other batches. Requests abort on unmount
    or link changes; health updates and filtering do not repeat coordinate lookups.
-4. On entry, the newest authorized site is selected using `created_at` (natural
+4. On entry, the newest authorized site **with usable coordinates** is selected using `created_at` (natural
    descending project ID is a deterministic fallback for absent/equal timestamps).
    Only that site and later explicit pin/list selections request
    `GET /api/projects?mode=health&projectId=<selected-id>`. The existing API checks
@@ -25,8 +25,11 @@ version increment. No site, task, report, Drive file or database schema is chang
    loaded; the overview explains the loaded count. Status/engineer/search filters
    still apply to all authorized sites. There is no background all-site health read. Supabase project mapping now retains
    the existing `created_at` value without another query or schema change. If the
-   newest site has no usable coordinates, its progress still loads and the detail
-   card explains why it cannot be centered on the map.
+   newest site has no usable coordinates, selection falls back to the next-newest
+   located site and loads only that site's health. Pending newer short links settle
+   before choosing an older fallback, avoiding temporary health requests and focus
+   jumps. If no site has coordinates, no automatic health request is made; manual
+   list selection still supports viewing a site without coordinates.
 
 ## Coordinate cache and API contract
 

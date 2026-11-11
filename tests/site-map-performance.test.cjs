@@ -228,3 +228,31 @@ test('Supabase project mapping retains existing creation dates for latest-site s
   assert.equal(rows[0].created_at, '2026-11-11T12:00:00.000Z');
   assert.equal(rows[1].created_at, '');
 });
+
+test('default selection skips the newest unlocated site and loads the next-newest located site', () => {
+  const choose = loader()('src/app/dashboard/site-map/siteMapModel.ts').newestLocatedMapProject;
+  const input = [
+    { project_id: 'P-1', created_at: '2026-11-01', site_link: 'https://maps.google.com/?q=13,100' },
+    { project_id: 'P-2', created_at: '2026-11-02', site_link: 'https://maps.app.goo.gl/valid' },
+    { project_id: 'P-3', created_at: '2026-11-03', site_link: '' },
+    { project_id: 'P-4', created_at: '2026-11-04', site_link: 'https://maps.app.goo.gl/invalid' },
+  ];
+  const resolved = { 'P-2': { lat: 14, lng: 101 } };
+  assert.equal(choose(input, resolved, []).project_id, 'P-2');
+  assert.equal(choose(input, resolved, ['P-4']), undefined);
+  assert.equal(choose(input, {}, ['P-2']), undefined);
+  assert.equal(choose(input, {}, []).project_id, 'P-1');
+  assert.equal(choose(input.slice(2), {}, []), undefined);
+});
+
+test('initial map does not load health for a newest site without coordinates', () => {
+  const requests = [];
+  const input = [projects[0], { ...projects[1], created_at: '2026-11-11', site_link: '' }];
+  const load = loader({ swr: { default(key) {
+    if (key) requests.push(key);
+    return key?.includes('mode=basic') ? { data: { success: true, data: input } } : {};
+  } }, 'next/link': { default: ({ children, ...props }) => React.createElement('a', props, children) } });
+  const Page = load('src/app/dashboard/site-map/SiteMapWorkspace.tsx').default;
+  renderToStaticMarkup(React.createElement(Page, { tileUrl: 'https://example.com/{z}/{x}/{y}.png' }));
+  assert.deepEqual(requests, ['/api/projects?mode=basic', '/api/projects?mode=health&projectId=P-1']);
+});

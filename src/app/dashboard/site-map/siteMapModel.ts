@@ -271,3 +271,10 @@ export function newestMapProject(projects: Project[]) {
     return project.project_id.localeCompare(latest.project_id, undefined, { numeric: true }) > 0 ? project : latest;
   }, undefined);
 }
+
+export function newestLocatedMapProject(projects: Project[], resolved: Record<string, Coordinates>, pendingIds: string[]) {
+  const pending = new Set(pendingIds);
+  const candidate = newestMapProject(projects.filter((project) => getProjectCoordinates(project, resolved) || pending.has(project.project_id)));
+  // A newer short link is still resolving: do not load progress for an older temporary fallback.
+  return candidate && getProjectCoordinates(candidate, resolved) ? candidate : undefined;
+}

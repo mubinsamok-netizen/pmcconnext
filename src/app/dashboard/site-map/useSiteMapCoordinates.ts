@@ -69,7 +69,8 @@ export function useSiteMapCoordinates(projects: Project[]) {
 
   const links: [string, string][] = useMemo(() => JSON.parse(signature), [signature]);
   const resolvedCoordinates = useMemo(() => Object.fromEntries(links.flatMap(([id, link]) => resolved[link]?.coordinates ? [[id, resolved[link].coordinates]] : [])), [links, resolved]);
-  const isResolving = links.some(([, link]) => !resolved[link] && !failedLinks.includes(link));
+  const pendingProjectIds = useMemo(() => links.filter(([, link]) => !resolved[link] && !failedLinks.includes(link)).map(([id]) => id), [links, resolved, failedLinks]);
+  const isResolving = pendingProjectIds.length > 0;
   const hasError = links.some(([, link]) => failedLinks.includes(link));
-  return { resolvedCoordinates, isResolving, coordinatesError: hasError, retryCoordinates: () => { setFailedLinks([]); setRetry((current) => current + 1); } };
+  return { resolvedCoordinates, pendingProjectIds, isResolving, coordinatesError: hasError, retryCoordinates: () => { setFailedLinks([]); setRetry((current) => current + 1); } };
 }
