@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
+import { readCachedMapCoordinates } from "@/lib/mapCoordinatesCache";
 
 type CoordinateRequest = {
   project_id?: string;
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
     const siteLink = String(item.site_link || "").trim();
     if (!projectId || !siteLink) return null;
 
-    const coordinates = await resolveMapLink(siteLink);
+    const coordinates = await readCachedMapCoordinates(siteLink, () => resolveMapLink(siteLink));
     if (!coordinates) return { project_id: projectId, coordinates: null };
     return { project_id: projectId, coordinates };
   }));

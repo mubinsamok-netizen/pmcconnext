@@ -1,6 +1,13 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const ts=require('typescript');
-function route(authenticated,key){const mod={exports:{}};const code=ts.transpileModule(fs.readFileSync('src/app/api/maps/basemap/route.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;vm.runInNewContext(code,{module:mod,exports:mod.exports,Response,process:{env:{CARTO_BASEMAP_API_KEY:key}},require:name=>name==='next-auth'?{getServerSession:async()=>authenticated?{user:{role:'Staff'}}:null}:{}});return mod.exports;}
+function route(authenticated,key){const mod={exports:{}};const code=ts.transpileModule(fs.readFileSync('src/app/api/maps/basemap/route.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;vm.runInNewContext(code,{module:mod,exports:mod.exports,Response,process:{env:{CARTO_BASEMAP_API_KEY:key}},require:name=>{
+if(name==='next-auth')return {getServerSession:async()=>authenticated?{user:{role:'Staff'}}:null};
+if(name==='@/lib/siteMapBasemap'){
+const util={exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/lib/siteMapBasemap.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module:util,exports:util.exports,process:{env:{CARTO_BASEMAP_API_KEY:key}}});
+return util.exports;
+}return {};
+}});return mod.exports;}
 test('unauthenticated requests cannot read the configured key',async()=>{const response=await route(false,'synthetic TestbyZoneIdea').GET();assert.equal(response.status,401);assert.ok(!(await response.text()).includes('synthetic'));});
 test('authenticated basemap uses encoded CARTO key without caching the response',async()=>{const key='synthetic TestbyZoneIdea &?';const response=await route(true,key).GET();const {tileUrl}=await response.json();assert.equal(response.headers.get('cache-control'),'private, no-store');assert.equal(new URL(tileUrl).searchParams.get('key'),key);assert.ok(tileUrl.startsWith('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/'));assert.ok(tileUrl.includes('{r}.png?'));});
 test('missing or blank deployment configuration still supplies a project Basemaps key',async()=>{for(const key of [undefined,'','   ']){const {tileUrl}=await (await route(true,key).GET()).json();const url=new URL(tileUrl);assert.ok(url.searchParams.get('key').startsWith('cb1_'));assert.equal(url.hostname,'{s}.basemaps.cartocdn.com');}});
