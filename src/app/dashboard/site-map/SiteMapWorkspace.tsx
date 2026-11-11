@@ -22,9 +22,9 @@ import { useSiteMapCoordinates } from "./useSiteMapCoordinates";
 import {
   ALL, statusOptions, statusStyles, numberValue, percentValue, projectLocation,
   getStatus, getProjectCoordinates, getRisk, getRiskLabel, getRiskClass, getEngineerName,
-  getEngineerInitials, buildEngineerColorMap, getEngineerColor, getRiskColor,
+  getEngineerInitials, buildEngineerColorMap, getEngineerColor,
   getMarkerColor, getMapUrl, getDirectionsUrl, getRouteUrl, escapeHtml, uniqueValues,
-  buildSitePoints, type Project, type ProjectsResponse, type SitePoint, type SiteRisk,
+  buildSitePoints, newestMapProject, type Coordinates, type Project, type ProjectsResponse, type SitePoint, type SiteRisk,
 } from "./siteMapModel";
 
 export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
@@ -34,7 +34,9 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
   const [selectedEngineer, setSelectedEngineer] = useState(ALL);
   const [selectedRisk, setSelectedRisk] = useState<typeof ALL | SiteRisk>(ALL);
   const [selectedStatus, setSelectedStatus] = useState(ALL);
-  const [activeProjectId, setActiveProjectId] = useState("");
+  const [selectedProjectId, selectSite] = useState("");
+  const newestProject = useMemo(() => newestMapProject(baseProjects), [baseProjects]);
+  const activeProjectId = baseProjects.some((project) => project.project_id === selectedProjectId) ? selectedProjectId : newestProject?.project_id || "";
   const [panelOpen, setPanelOpen] = useState(true);
   const [detailOpen, setDetailOpen] = useState(true);
   const { projects, healthLoading, healthError, retryHealth } = useSiteMapHealth(baseProjects, activeProjectId);
@@ -68,6 +70,11 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
   const sitePoints = useMemo(() => buildSitePoints(filteredProjects, resolvedCoordinates, engineerColorMap), [engineerColorMap, filteredProjects, resolvedCoordinates]);
   const missingProjects = useMemo(() => filteredProjects.filter((project) => !getProjectCoordinates(project, resolvedCoordinates)), [filteredProjects, resolvedCoordinates]);
   const activePoint = useMemo(() => sitePoints.find((point) => point.project.project_id === activeProjectId) || null, [activeProjectId, sitePoints]);
+  const selectedProject = filteredProjects.find((project) => project.project_id === activeProjectId);
+  const detailPoint = activePoint || (selectedProject ? {
+    project: selectedProject, engineerName: getEngineerName(selectedProject),
+    engineerColor: getEngineerColor(getEngineerName(selectedProject), engineerColorMap), risk: getRisk(selectedProject),
+  } : null);
   const engineerSummary = useMemo(() => {
     const summary = new Map<string, { count: number; withCoordinates: number }>();
     filteredProjects.forEach((project) => {
@@ -83,7 +90,7 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
   }, [engineerColorMap, filteredProjects, resolvedCoordinates]);
 
   const handleSelectProject = (projectId: string) => {
-    setActiveProjectId(projectId);
+    selectSite(projectId);
     setDetailOpen(true);
   };
 
@@ -251,13 +258,13 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
           </aside>
         )}
 
-        {activePoint && detailOpen && (
+        {detailPoint && detailOpen && (
           <div className="absolute bottom-4 right-4 z-[850] w-[min(440px,calc(100vw-2rem))]">
-            <SiteDetailCard point={activePoint} isLoading={healthLoading} hasError={healthError} onRetry={retryHealth} onMinimize={() => setDetailOpen(false)} />
+            <SiteDetailCard point={detailPoint} coordinatesPending={isResolving} isLoading={healthLoading} hasError={healthError} onRetry={retryHealth} onMinimize={() => setDetailOpen(false)} />
           </div>
         )}
 
-        {activePoint && !detailOpen && (
+        {detailPoint && !detailOpen && (
           <div className="absolute bottom-4 right-4 z-[850] w-[min(360px,calc(100vw-2rem))]">
             <button
               type="button"
@@ -265,10 +272,10 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
               className="flex w-full items-center justify-between gap-3 rounded-2xl border border-white/70 bg-white/95 px-4 py-3 text-left shadow-2xl backdrop-blur transition hover:border-orange-200"
             >
               <span className="flex min-w-0 items-center gap-3">
-                <span className="h-3.5 w-3.5 shrink-0 rounded-full ring-2 ring-white" style={{ backgroundColor: activePoint.engineerColor }} />
+                <span className="h-3.5 w-3.5 shrink-0 rounded-full ring-2 ring-white" style={{ backgroundColor: detailPoint.engineerColor }} />
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-black text-slate-950">{activePoint.project.name || activePoint.project.project_id}</span>
-                  <span className="block truncate text-xs font-bold text-slate-500">{getEngineerName(activePoint.project)}</span>
+                  <span className="block truncate text-sm font-black text-slate-950">{detailPoint.project.name || detailPoint.project.project_id}</span>
+                  <span className="block truncate text-xs font-bold text-slate-500">{getEngineerName(detailPoint.project)}</span>
                 </span>
               </span>
               <Maximize2 className="shrink-0 text-slate-500" size={18} />
@@ -282,7 +289,6 @@ export default function SiteMapWorkspace({ tileUrl }: { tileUrl: string }) {
 
 function markerHtml(point: SitePoint) {
   const color = getMarkerColor(point);
-  const riskColor = getRiskColor(point.risk);
   const engineerName = point.engineerName;
   const initials = getEngineerInitials(engineerName);
 
@@ -290,7 +296,7 @@ function markerHtml(point: SitePoint) {
     <div title="${escapeHtml(engineerName)}" style="position:relative;width:44px;height:44px;filter:drop-shadow(0 10px 14px rgba(15,23,42,.28));">
       <div style="position:absolute;inset:0;border-radius:16px 16px 16px 4px;background:${color};border:3px solid white;transform:rotate(-45deg);"></div>
       <div style="position:absolute;inset:6px;display:grid;place-items:center;border-radius:999px;background:white;color:#0f172a;font:900 12px/1 Arial,sans-serif;">${escapeHtml(initials)}</div>
-      <div style="position:absolute;right:-1px;top:-1px;width:14px;height:14px;border-radius:999px;background:${riskColor};border:2px solid white;"></div>
+      <div data-map-risk-dot style="position:absolute;right:-1px;top:-1px;width:14px;height:14px;border-radius:999px;background:#94a3b8;border:2px solid white;"></div>
     </div>
   `;
 }
@@ -413,7 +419,7 @@ function ProjectListItem({
   );
 }
 
-function SiteDetailCard({ point, isLoading, hasError, onRetry, onMinimize }: { point: SitePoint; isLoading: boolean; hasError: boolean; onRetry: () => void; onMinimize: () => void }) {
+function SiteDetailCard({ point, coordinatesPending, isLoading, hasError, onRetry, onMinimize }: { point: Omit<SitePoint, "lat" | "lng"> & Partial<Coordinates>; coordinatesPending: boolean; isLoading: boolean; hasError: boolean; onRetry: () => void; onMinimize: () => void }) {
   const project = point.project;
   const status = getStatus(project);
   const style = statusStyles[status];
@@ -450,6 +456,7 @@ function SiteDetailCard({ point, isLoading, hasError, onRetry, onMinimize }: { p
         </div>
       </div>
 
+      {point.lat === undefined && <p className="mt-2 text-xs text-amber-700">{coordinatesPending ? "กำลังค้นหาพิกัดของไซต์" : "ยังไม่มีพิกัดที่แสดงบนแผนที่ได้ กรุณาตรวจลิงก์ Maps ของไซต์"}</p>}
       {isLoading && !project.healthLoaded && <div role="status" aria-label="กำลังโหลดความคืบหน้าของไซต์" className="mt-3 animate-pulse rounded-2xl bg-slate-50 p-3"><div className="h-5 w-2/3 rounded bg-slate-200" /><div className="mt-3 h-3 rounded bg-slate-200" /></div>}
       {hasError && <div role="alert" className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-800">โหลดความคืบหน้าไม่สำเร็จ <button type="button" onClick={onRetry} className="font-bold underline">ลองโหลดอีกครั้ง</button></div>}
       {project.healthLoaded && <>
@@ -483,7 +490,7 @@ function SiteDetailCard({ point, isLoading, hasError, onRetry, onMinimize }: { p
         <Link href={`/dashboard/sites/${project.project_id}`} className="inline-flex items-center justify-center rounded-xl bg-orange-600 px-3 py-2.5 text-sm font-black text-white transition hover:bg-orange-700">
           เข้าไซต์
         </Link>
-        <a href={getDirectionsUrl(point)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-950 px-3 py-2.5 text-sm font-black text-white transition hover:bg-slate-800">
+        <a href={getDirectionsUrl(point.lat !== undefined && point.lng !== undefined ? { ...point, lat: point.lat, lng: point.lng } : project)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-950 px-3 py-2.5 text-sm font-black text-white transition hover:bg-slate-800">
           <Navigation size={15} />
           นำทาง
         </a>

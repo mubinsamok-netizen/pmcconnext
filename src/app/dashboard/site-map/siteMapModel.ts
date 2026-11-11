@@ -1,6 +1,7 @@
 export type Project = {
   project_id: string;
   name: string;
+  created_at?: string;
   client?: string;
   address?: string;
   province?: string;
@@ -260,3 +261,13 @@ export function buildSitePoints(projects: Project[], resolvedCoordinates: Record
   });
 }
 
+
+export function newestMapProject(projects: Project[]) {
+  return projects.reduce<Project | undefined>((latest, project) => {
+    if (!latest) return project;
+    const created = Date.parse(project.created_at || "") || 0;
+    const previous = Date.parse(latest.created_at || "") || 0;
+    if (created !== previous) return created > previous ? project : latest;
+    return project.project_id.localeCompare(latest.project_id, undefined, { numeric: true }) > 0 ? project : latest;
+  }, undefined);
+}

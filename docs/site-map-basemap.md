@@ -13,7 +13,9 @@ version increment. No site, task, report, Drive file or database schema is chang
    batches of four, at most three requests concurrently. Each completed batch
    publishes its pins without waiting for other batches. Requests abort on unmount
    or link changes; health updates and filtering do not repeat coordinate lookups.
-4. Only an explicit pin/list selection requests
+4. On entry, the newest authorized site is selected using `created_at` (natural
+   descending project ID is a deterministic fallback for absent/equal timestamps).
+   Only that site and later explicit pin/list selections request
    `GET /api/projects?mode=health&projectId=<selected-id>`. The existing API checks
    session and site authorization and uses its existing 60-second health cache.
    SWR reuses per-site results. Switching sites cannot display the previous site's
@@ -21,7 +23,10 @@ version increment. No site, task, report, Drive file or database schema is chang
 5. Unrequested progress/risk is unknown, never assumed to be 0% or normal. Risk
    filtering and the critical summary describe only sites whose details have
    loaded; the overview explains the loaded count. Status/engineer/search filters
-   still apply to all authorized sites. There is no background all-site health read.
+   still apply to all authorized sites. There is no background all-site health read. Supabase project mapping now retains
+   the existing `created_at` value without another query or schema change. If the
+   newest site has no usable coordinates, its progress still loads and the detail
+   card explains why it cannot be centered on the map.
 
 ## Coordinate cache and API contract
 
@@ -42,9 +47,14 @@ are public map destinations; no user/session data is part of cached values.
 
 ## Map rendering and loading states
 
-Markers are retained by project ID. Only changed icons, positions and popup data
-are updated. Health updates do not recenter the map; selection pans to that site.
-Initial pins fit once. Later filters/coordinate batches preserve the user's view;
+Markers are retained by project ID. Health updates change the risk dot and popup
+content in place, without replacing icons, rebinding popups or resetting positions.
+Only genuinely changed engineer icons or coordinates invoke their Leaflet setters.
+Popup auto-pan is disabled; a single selection effect controls map movement. Health updates do not recenter the map; selection pans to that site.
+Initial pins fit once at one zoom level wider than before, centered on the newest
+site when its coordinates are available. Initial fitting waits for coordinate
+batches to settle so a tiny first batch cannot cause an excessive zoom-in. Ready
+pins remain visible and selectable during that lookup. Later filters/coordinate batches preserve the user's view;
 `แสดงทุกไซต์` explicitly fits the current visible pins. Popup contents update when
 health arrives. ResizeObserver maintains the canvas size without delayed timers.
 Skeleton states distinguish initial loading from genuinely missing coordinates.

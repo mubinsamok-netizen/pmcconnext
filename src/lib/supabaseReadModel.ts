@@ -5,6 +5,7 @@ import { serializeProjectIds } from "@/lib/projectIds";
 export type SheetLikeRecord = Record<string, string | number | undefined>;
 
 type SupabaseProject = {
+  created_at?: string | null;
   project_id: string;
   name: string;
   client: string | null;
@@ -542,6 +543,7 @@ export async function getSupabaseProjects() {
 
   return rows.map((row): SheetLikeRecord => ({
     _rowIndex: row.project_id,
+    created_at: timestampText(row.created_at),
     project_id: row.project_id,
     name: row.name,
     client: text(row.client),

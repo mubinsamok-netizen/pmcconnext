@@ -17,7 +17,7 @@ function loader(overrides = {}) {
     modules.set(file, mod);
     const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { fileName: file, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     vm.runInNewContext(source, { module: mod, exports: mod.exports, console, URLSearchParams, AbortController, Date, setTimeout, clearTimeout,
-      fetch: overrides.fetch || fetch,
+      fetch: overrides.fetch || fetch, document: overrides.document,
       require(name) {
         if (Object.hasOwn(overrides, name)) return overrides[name];
         if (name.startsWith('.') || name.startsWith('@/')) {
@@ -34,13 +34,13 @@ function loader(overrides = {}) {
 
 const projects = [1, 2].map(id => ({ project_id: `P-${id}`, name: `Site ${id} TestbyZoneIdea`, site_link: `https://maps.google.com/?q=13.${id},100.${id}`, status: 'In Progress', percent_done: '99' }));
 
-test('initial map requests basic sites only; unrequested health is never shown as 0% or normal', () => {
+test('initial map loads basic sites and only the newest site health; other sites stay unknown', () => {
   const requests = [];
   const load = loader({ swr: { default(key) { if (key) requests.push(key); return key?.includes('mode=basic') ? { data: { success: true, data: projects } } : {}; } },
     'next/link': { default: ({ children, ...props }) => React.createElement('a', props, children) } });
   const Page = load('src/app/dashboard/site-map/SiteMapWorkspace.tsx').default;
   const html = renderToStaticMarkup(React.createElement(Page, { tileUrl: 'https://example.com/{z}/{x}/{y}.png' }));
-  assert.deepEqual(requests, ['/api/projects?mode=basic']);
+  assert.deepEqual(requests, ['/api/projects?mode=basic', '/api/projects?mode=health&projectId=P-2']);
   assert.ok(html.includes('Site 1 TestbyZoneIdea'));
   assert.ok(html.includes('ยังไม่ได้โหลดรายละเอียด'));
   assert.ok(!html.includes('>0%<'));
@@ -162,4 +162,69 @@ test('coordinate API rejects anonymous reads before consulting cached links', as
   const response = await load('src/app/api/maps/coordinates/route.ts').POST(new Request('https://test.invalid/api/maps/coordinates', { method: 'POST', body: JSON.stringify({ items: [{ project_id: 'P-1', site_link: 'https://maps.app.goo.gl/test' }] }) }));
   assert.equal(response.status, 401);
   assert.equal(reads, 0);
+});
+
+test('newest site follows creation timestamp rather than start date or lexical project ID', () => {
+  const choose = loader()('src/app/dashboard/site-map/siteMapModel.ts').newestMapProject;
+  const input = [
+    { project_id: 'PMC-2026-33', created_at: '2026-01-01T12:00:00Z' },
+    { project_id: 'PMC-2026-2', created_at: '2026-11-11T12:00:00Z' },
+    { project_id: 'PMC-2026-99', created_at: 'invalid' },
+  ];
+  assert.equal(choose(input).project_id, 'PMC-2026-2');
+  assert.equal(input[0].project_id, 'PMC-2026-33');
+  assert.equal(choose([{ project_id: 'P-9' }, { project_id: 'P-10' }]).project_id, 'P-10');
+  assert.equal(choose([]), undefined);
+});
+
+test('health arrival retains marker and open popup without icon replacement, position update or popup rebind', () => {
+  const counts = { created: 0, icons: 0, setIcon: 0, setLatLng: 0, bindings: 0 };
+  const dot = { style: {} };
+  const L = {
+    divIcon: () => { counts.icons++; return {}; },
+    marker: () => {
+      counts.created++;
+      return {
+        addTo() { return this; }, bindPopup(content, options) { counts.bindings++; this.content = content; this.options = options; return this; },
+        on() { return this; }, getElement() { return { querySelector: () => dot }; },
+        setIcon() { counts.setIcon++; return this; }, setLatLng() { counts.setLatLng++; return this; }, setZIndexOffset() { return this; },
+      };
+    },
+  };
+  const sync = loader({ document: { createElement: () => ({ innerHTML: '' }) } })('src/app/dashboard/site-map/siteMapMarkers.ts').syncSiteMapMarkers;
+  const registry = new Map();
+  const point = { lat: 13, lng: 100, risk: 'unknown', project: { project_id: 'P-1' } };
+  sync(L, {}, registry, [point], () => 'stable engineer icon', p => p.project.percent_done || 'pending', () => {});
+  const original = registry.get('P-1');
+  sync(L, {}, registry, [{ ...point, risk: 'critical', project: { ...point.project, percent_done: '42' } }], () => 'stable engineer icon', p => p.project.percent_done || 'pending', () => {});
+  assert.equal(registry.get('P-1').marker, original.marker);
+  assert.equal(registry.get('P-1').popup, original.popup);
+  assert.equal(original.popup.innerHTML, '42');
+  assert.equal(dot.style.backgroundColor, '#dc2626');
+  assert.equal(original.marker.options.autoPan, false);
+  assert.deepEqual(counts, { created: 1, icons: 1, setIcon: 0, setLatLng: 0, bindings: 1 });
+});
+
+test('initial overview zoom is exactly one step wider and can focus the newest site directly', () => {
+  const calls = [];
+  const L = { latLngBounds: () => ({ getCenter: () => [13, 100] }), point: (x, y) => [x, y] };
+  let fittedZoom = 8;
+  const map = { getBoundsZoom: () => fittedZoom, getMinZoom: () => 0, setView: (...args) => calls.push(args) };
+  const fit = loader()('src/app/dashboard/site-map/siteMapMarkers.ts').fitSiteMapBounds;
+  fit(L, map, [{ lat: 13, lng: 100 }], { lat: 14, lng: 101 });
+  assert.equal(calls[0][1], 7);
+  assert.deepEqual(Array.from(calls[0][0]), [14, 101]);
+  fittedZoom = Infinity;
+  fit(L, map, [{ lat: 13, lng: 100 }]);
+  assert.equal(calls[1][1], 14);
+});
+
+test('Supabase project mapping retains existing creation dates for latest-site selection', async () => {
+  const load = loader({ '@/lib/supabaseRest': { supabaseSelect: async () => [
+    { project_id: 'P-1', name: 'TestbyZoneIdea', created_at: '2026-11-11T12:00:00Z' },
+    { project_id: 'P-2', name: 'Legacy TestbyZoneIdea' },
+  ] }, '@/lib/supabaseSchema': { getSupabaseMasterSchema: () => 'public' } });
+  const rows = await load('src/lib/supabaseReadModel.ts').getSupabaseProjects();
+  assert.equal(rows[0].created_at, '2026-11-11T12:00:00.000Z');
+  assert.equal(rows[1].created_at, '');
 });

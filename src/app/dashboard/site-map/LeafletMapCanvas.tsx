@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Map as LeafletMap, Marker } from "leaflet";
+import type { Map as LeafletMap } from "leaflet";
 import { MapPinOff, Maximize2 } from "lucide-react";
 import { defaultCenter, type SitePoint } from "./siteMapModel";
+import { fitSiteMapBounds, syncSiteMapMarkers, type SiteMapMarkers } from "./siteMapMarkers";
 
 type Props = {
   tileUrl: string;
@@ -20,7 +21,7 @@ type Props = {
 export default function LeafletMapCanvas({ tileUrl, points, activePoint, isLoading, isResolving, hasError, onSelect, markerHtml, renderPopup }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
-  const markers = useRef(new Map<string, { marker: Marker; signature: string }>());
+  const markers = useRef<SiteMapMarkers>(new Map());
   const onSelectRef = useRef(onSelect);
   const pointsRef = useRef(points);
   const fitted = useRef(false);
@@ -34,7 +35,7 @@ export default function LeafletMapCanvas({ tileUrl, points, activePoint, isLoadi
     let cancelled = false;
     void import("leaflet").then((L) => {
       if (cancelled || !containerRef.current) return;
-      const map = L.map(containerRef.current, { keyboard: false }).setView([defaultCenter.lat, defaultCenter.lng], 10);
+      const map = L.map(containerRef.current, { keyboard: false }).setView([defaultCenter.lat, defaultCenter.lng], 9);
       L.tileLayer(tileUrl, {
         maxZoom: 20, subdomains: "abcd",
         attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
@@ -62,50 +63,27 @@ export default function LeafletMapCanvas({ tileUrl, points, activePoint, isLoadi
     void import("leaflet").then((L) => {
       const map = mapRef.current;
       if (cancelled || !map || !mapReady) return;
-      const visible = new Set(points.map((point) => point.project.project_id));
-      for (const [id, entry] of markers.current) {
-        if (!visible.has(id)) { entry.marker.remove(); markers.current.delete(id); }
-      }
-      for (const point of points) {
-        const id = point.project.project_id;
-        const html = markerHtml(point);
-        const popup = renderPopup(point);
-        const title = `${id} ${point.project.name || ""}`;
-        const signature = JSON.stringify([point.lat, point.lng, html, popup, title]);
-        const previous = markers.current.get(id);
-        if (previous?.signature === signature) continue;
-        const icon = L.divIcon({ className: "", html, iconAnchor: [22, 44], iconSize: [44, 44], popupAnchor: [0, -40] });
-        const zIndexOffset = point.risk === "critical" ? 300 : point.risk === "warning" ? 200 : 100;
-        if (previous) {
-          previous.marker.setLatLng([point.lat, point.lng]).setIcon(icon).setZIndexOffset(zIndexOffset).setPopupContent(popup);
-          previous.marker.getElement()?.setAttribute("title", title);
-          previous.signature = signature;
-        } else {
-          const marker = L.marker([point.lat, point.lng], { icon, title, zIndexOffset })
-            .addTo(map).bindPopup(popup, { maxWidth: 320, minWidth: 240 })
-            .on("click", () => onSelectRef.current(id));
-          markers.current.set(id, { marker, signature });
-        }
-      }
-      if (points.length && !fitted.current) {
-        map.fitBounds(L.latLngBounds(points.map((point) => [point.lat, point.lng])), { maxZoom: 15, padding: [48, 48] });
+      syncSiteMapMarkers(L, map, markers.current, points, markerHtml, renderPopup, (id) => onSelectRef.current(id));
+      if (points.length && !fitted.current && !isResolving) {
+        fitSiteMapBounds(L, map, points, activePoint);
         fitted.current = true;
       }
     });
     return () => { cancelled = true; };
-  }, [points, mapReady, markerHtml, renderPopup]);
+  }, [points, mapReady, markerHtml, renderPopup, isResolving, activePoint]);
 
   const selectedId = activePoint?.project.project_id;
   const selectedLat = activePoint?.lat;
   const selectedLng = activePoint?.lng;
   useEffect(() => {
     if (!mapReady || selectedLat === undefined || selectedLng === undefined) return;
-    mapRef.current?.panTo([selectedLat, selectedLng], { animate: true });
+    const map = mapRef.current;
+    if (map && !map.getCenter().equals([selectedLat, selectedLng])) map.panTo([selectedLat, selectedLng], { animate: false });
   }, [mapReady, selectedId, selectedLat, selectedLng]);
 
   async function showAllSites() {
     const L = await import("leaflet");
-    if (pointsRef.current.length) mapRef.current?.fitBounds(L.latLngBounds(pointsRef.current.map((point) => [point.lat, point.lng])), { maxZoom: 15, padding: [48, 48] });
+    if (mapRef.current) fitSiteMapBounds(L, mapRef.current, pointsRef.current);
   }
 
   const pending = !mapError && (!mapReady || isLoading || (isResolving && points.length === 0));
