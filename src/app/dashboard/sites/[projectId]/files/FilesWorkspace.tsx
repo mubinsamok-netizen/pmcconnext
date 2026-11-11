@@ -18,6 +18,7 @@ import NextImage from "next/image";
 import { useMemo, useRef, useState, useTransition, type ComponentType } from "react";
 import useSWR from "swr";
 import PaginationControls from "@/components/PaginationControls";
+import FileSourceStatus from "@/components/FileSourceStatus";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
 import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
@@ -548,20 +549,25 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const driveFilesKey = `/api/sites/${projectId}/drive-files`;
   const documents = useSWR<{ success?: boolean; data?: ProjectDocument[]; error?: string }>(`/api/sites/${projectId}/documents`, fetcher);
   const defects = useSWR<{ success?: boolean; rounds?: DefectRound[]; items?: DefectItem[]; evidence?: DefectEvidence[]; error?: string }>(`/api/sites/${projectId}/defects`, fetcher);
-  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string }>(driveFilesKey, fetcher, {
+  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string; limitReached?: boolean }>(project.drive_folder_id ? driveFilesKey : null, fetcher, {
     // The Drive walk is the slowest read on this page; reuse it instead of refetching on every tab focus.
     revalidateOnFocus: false,
     dedupingInterval: 60_000,
   });
   const [driveRefreshing, setDriveRefreshing] = useState(false);
+  const [driveRefreshError, setDriveRefreshError] = useState("");
   const refreshDriveFiles = async () => {
     setDriveRefreshing(true);
+    setDriveRefreshError("");
     try {
-      const fresh = await fetcher(`${driveFilesKey}?fresh=1`);
+      const reset = await fetch(driveFilesKey, { method: "POST" });
+      if (!reset.ok) throw new Error("รีเฟรชรายการ Drive ไม่สำเร็จ");
+      const fresh = await fetcher(driveFilesKey);
       // A failed refresh keeps the list already on screen.
-      if (!fresh?.error) await driveFiles.mutate(fresh, { revalidate: false });
+      if (fresh?.error || fresh?.success === false) throw new Error(fresh.error || "โหลดไฟล์จาก Google Drive ไม่สำเร็จ");
+      await driveFiles.mutate(fresh, { revalidate: false });
     } catch {
-      // Keep showing the previous list; the next visit retries.
+      setDriveRefreshError("รีเฟรช Google Drive ไม่สำเร็จ รายการเดิมยังใช้งานได้ กรุณาลองอีกครั้ง");
     } finally {
       setDriveRefreshing(false);
     }
@@ -635,11 +641,13 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
         setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
         pagination.setPage(1);
         formRef.current?.reset();
-        await documents.mutate((current) => ({
+        if (uploadedDocument) await documents.mutate((current) => ({
           success: true,
-          data: [uploadedDocument, ...(current?.data || [])],
-        }), { revalidate: true });
-        await refreshDriveFiles();
+          data: [uploadedDocument, ...(current?.data || []).filter((doc) => doc.document_id !== uploadedDocument.document_id)],
+        }), { revalidate: false });
+        // Network refreshes must not keep the successful upload/form pending.
+        void documents.mutate().catch(() => undefined);
+        void refreshDriveFiles();
       } catch (error: unknown) {
         setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
         setUploadMessage("");
@@ -690,10 +698,15 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const totalPhotos = files.filter((file) => file.kind === "defect_photo" || file.kind === "drive_image").length;
   const driveUrl = buildDriveFolderUrl(project.drive_folder_id);
   // Uploaded documents and defect files render as soon as they arrive; Drive fills in afterwards.
-  const isLoading = documents.isLoading || defects.isLoading;
+  const isLoading = filteredFiles.length === 0 && (
+    ((activeTab === "all" || activeTab === "documents") && documents.isLoading) ||
+    (["all", "defects", "acknowledgement", "photos"].includes(activeTab) && defects.isLoading) ||
+    (["drive", "photos"].includes(activeTab) && Boolean(project.drive_folder_id) && driveFiles.isLoading)
+  );
   const driveLoading = driveFiles.isLoading || driveRefreshing;
-  const driveError = driveFiles.data?.error || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ไม่สำเร็จ" : "");
-  const loadError = documents.data?.error || defects.data?.error;
+  const driveError = driveRefreshError || driveFiles.data?.error || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ไม่สำเร็จ" : "");
+  const documentsError = documents.data?.error || (documents.error ? "โหลดเอกสารอัปโหลดไม่สำเร็จ" : "");
+  const defectsError = defects.data?.error || (defects.error ? "โหลดไฟล์ Defect ไม่สำเร็จ" : "");
 
   return (
     <div className="space-y-5">
@@ -819,18 +832,15 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             </div>
           </div>
 
-          {loadError ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
-              {loadError}
-            </div>
-          ) : null}
+          <FileSourceStatus label="เอกสารอัปโหลด" loading={documents.isLoading} error={documentsError} onRetry={() => { void documents.mutate().catch(() => undefined); }} />
+          <FileSourceStatus label="ไฟล์ Defect" loading={defects.isLoading} error={defectsError} onRetry={() => { void defects.mutate().catch(() => undefined); }} />
 
           {project.drive_folder_id ? (
             <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600">
               <span className={driveError && !driveLoading ? "font-semibold text-red-700" : ""}>
                 {driveLoading
                   ? "กำลังโหลดไฟล์จาก Google Drive... รายการอื่นใช้งานได้ก่อน"
-                  : driveError || `ไฟล์จาก Google Drive ${totalDriveFiles} รายการ (อัปเดตทุก 1 นาที)`}
+                  : driveError || `ไฟล์จาก Google Drive ${totalDriveFiles} รายการ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}
               </span>
               <button
                 type="button"
@@ -843,6 +853,8 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
               </button>
             </div>
           ) : null}
+
+          {driveFiles.data?.limitReached && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">รายการจาก Drive ถึงขีดจำกัดการอ่าน 500 รายการแล้ว การค้นหาและยอดรวมใช้เฉพาะรายการที่โหลดมา เปิดโฟลเดอร์ Google Drive เพื่อดูไฟล์ทั้งหมด</p>}
 
           {!isLoading && (
             <PaginationControls

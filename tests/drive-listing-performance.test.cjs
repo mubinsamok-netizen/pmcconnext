@@ -10,11 +10,15 @@ const FOLDER = "application/vnd.google-apps.folder";
 
 function loadDrive(tree) {
   const calls = [];
-  const drive = { files: { list: async ({ q }) => {
+  let metadataRows = 0;
+  const drive = { files: { list: async ({ q, pageSize = 100, pageToken }) => {
     calls.push(q);
     const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((match) => match[1]);
-    const files = parents.flatMap((parent) => (tree[parent] || []).map((file) => ({ ...file, parents: [parent] })));
-    return { data: { files } };
+    const all = parents.flatMap((parent) => (tree[parent] || []).map((file) => ({ ...file, parents: [parent] })));
+    const start = Number(pageToken || 0);
+    const files = all.slice(start, start + pageSize);
+    metadataRows += files.length;
+    return { data: { files, nextPageToken: start + pageSize < all.length ? String(start + pageSize) : undefined } };
   } } };
   const filename = path.resolve(__dirname, "../src/lib/drive.ts");
   const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
@@ -27,7 +31,7 @@ function loadDrive(tree) {
   }, { filename });
   // Copy into this realm so deepEqual compares plain arrays.
   const listDriveFolderFiles = async (...args) => Array.from(await loaded.exports.listDriveFolderFiles(...args));
-  return { listDriveFolderFiles, calls };
+  return { listDriveFolderFiles, calls, metadataRows: () => metadataRows };
 }
 
 function buildTree(dayFolders) {
@@ -47,7 +51,7 @@ function buildTree(dayFolders) {
   return tree;
 }
 
-test("Drive requests scale with folder depth, not folder count", async () => {
+test("sparse folders are batched across traversal levels", async () => {
   const { listDriveFolderFiles, calls } = loadDrive(buildTree(40));
   const files = await listDriveFolderFiles("root", { maxFiles: 500 });
   // 43 folders used to cost 43 sequential requests: root, 1 for level two, 2 chunks of 20 day folders.
@@ -73,4 +77,25 @@ test("maxFiles and maxDepth still bound the listing", async () => {
   const files = await shallow.listDriveFolderFiles("root", { maxDepth: 0 });
   assert.deepEqual(files.map((file) => file.id), ["drawings", "photos", "readme"]);
   assert.equal(shallow.calls.length, 1);
+});
+
+test("parallel full pages share a strict metadata budget", async () => {
+  const tree = { root: [] };
+  for (let i = 0; i < 100; i++) {
+    tree.root.push({ id: `d-${i}`, name: `Day ${i}`, mimeType: FOLDER });
+    tree[`d-${i}`] = Array.from({ length: 500 }, (_, j) => ({ id: `f-${i}-${j}`, name: `Photo ${j}`, mimeType: "image/jpeg" }));
+  }
+  const fixture = loadDrive(tree);
+  const files = await fixture.listDriveFolderFiles("root", { pageSize: 500, maxFiles: 500 });
+  assert.equal(files.length, 500);
+  assert.equal(fixture.metadataRows(), 500); // Previously read 2,600 to return 500.
+  assert.ok(fixture.calls.length <= 5);
+});
+
+test("Google nextPageToken is followed until the complete listing or budget is reached", async () => {
+  const fixture = loadDrive({ root: Array.from({ length: 240 }, (_, i) => ({ id: `f-${i}`, name: `Photo ${i}`, mimeType: "image/jpeg" })) });
+  const files = await fixture.listDriveFolderFiles("root", { pageSize: 30, maxFiles: 500 });
+  assert.equal(files.length, 240);
+  assert.equal(new Set(files.map((file) => file.id)).size, 240);
+  assert.equal(fixture.calls.length, 8);
 });

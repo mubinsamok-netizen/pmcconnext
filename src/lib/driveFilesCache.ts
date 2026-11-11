@@ -12,15 +12,18 @@ function tag(folderId: string) {
 export function invalidateDriveFilesCache(folderId: string) {
   try {
     revalidateTag(tag(folderId), { expire: 0 });
+    return true;
   } catch (error) {
     console.error("Drive file cache invalidation failed; entries expire after 60 seconds", error);
+    return false;
   }
 }
 
 export async function readDriveFolderFiles(folderId: string, fresh = false): Promise<DriveFolderFile[]> {
   const load = () => listDriveFolderFiles(folderId, LIST_OPTIONS);
   if (fresh) {
-    // Read Drive directly after an upload, then drop the cached copy for later readers.
+    // Legacy callers still get a direct, fresh read. The files workspace uses
+    // POST invalidation followed by a separate GET to refill the shared cache.
     const files = await load();
     invalidateDriveFilesCache(folderId);
     return files;

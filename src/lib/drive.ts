@@ -148,53 +148,50 @@ export async function listDriveFolderFiles(
   const visitedFolders = new Set<string>([rootFolderId]);
   let collected = 0;
 
-  // One query lists the children of many folders, so requests scale with depth instead of folder count.
-  async function readParents(parentIds: string[]) {
+  // One request reads one page from a parent group; the scheduler reserves its budget.
+  async function readParents(parentIds: string[], requestPageSize: number, pageToken?: string) {
     const parentSet = new Set(parentIds);
     const parentsQuery = parentIds.map((id) => `'${escapeDriveQueryValue(id)}' in parents`).join(" or ");
-    let pageToken: string | undefined;
-    do {
-      const response = await drive.files.list({
-        q: `(${parentsQuery}) and trashed = false`,
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true,
-        fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
-        spaces: "drive",
-        pageSize,
-        pageToken,
-        orderBy: "folder,name_natural",
+    const response = await drive.files.list({
+      q: `(${parentsQuery}) and trashed = false`,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
+      spaces: "drive",
+      pageSize: requestPageSize,
+      pageToken,
+      orderBy: "folder,name_natural",
+    });
+
+    for (const file of response.data.files || []) {
+      const id = file.id || "";
+      if (!id) continue;
+      const parentId = (file.parents || []).find((parent) => parentSet.has(parent)) || (parentIds.length === 1 ? parentIds[0] : "");
+      if (!parentId) continue;
+      const name = file.name || id;
+      const mimeType = file.mimeType || "application/octet-stream";
+      const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
+      const siblings = childrenByParent.get(parentId) || [];
+      siblings.push({
+        id, name, mimeType, isFolder, parentId,
+        item: {
+          id,
+          name,
+          mimeType,
+          size: file.size || null,
+          webViewLink: file.webViewLink || null,
+          webContentLink: file.webContentLink || null,
+          createdTime: file.createdTime || null,
+          modifiedTime: file.modifiedTime || null,
+          parents: file.parents || null,
+          isFolder,
+        },
       });
+      childrenByParent.set(parentId, siblings);
+      collected += 1;
+    }
 
-      for (const file of response.data.files || []) {
-        const id = file.id || "";
-        if (!id) continue;
-        const parentId = (file.parents || []).find((parent) => parentSet.has(parent)) || (parentIds.length === 1 ? parentIds[0] : "");
-        if (!parentId) continue;
-        const name = file.name || id;
-        const mimeType = file.mimeType || "application/octet-stream";
-        const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
-        const siblings = childrenByParent.get(parentId) || [];
-        siblings.push({
-          id, name, mimeType, isFolder, parentId,
-          item: {
-            id,
-            name,
-            mimeType,
-            size: file.size || null,
-            webViewLink: file.webViewLink || null,
-            webContentLink: file.webContentLink || null,
-            createdTime: file.createdTime || null,
-            modifiedTime: file.modifiedTime || null,
-            parents: file.parents || null,
-            isFolder,
-          },
-        });
-        childrenByParent.set(parentId, siblings);
-        collected += 1;
-      }
-
-      pageToken = response.data.nextPageToken || undefined;
-    } while (pageToken && collected < maxFiles);
+    return response.data.nextPageToken || undefined;
   }
 
   let level = [rootFolderId];
@@ -203,8 +200,20 @@ export async function listDriveFolderFiles(
     for (let index = 0; index < level.length; index += DRIVE_LIST_PARENTS_PER_QUERY) {
       chunks.push(level.slice(index, index + DRIVE_LIST_PARENTS_PER_QUERY));
     }
-    for (let index = 0; index < chunks.length && collected < maxFiles; index += DRIVE_LIST_CONCURRENCY) {
-      await Promise.all(chunks.slice(index, index + DRIVE_LIST_CONCURRENCY).map(readParents));
+    const pending = chunks.map((parentIds) => ({ parentIds, pageToken: undefined as string | undefined }));
+    while (pending.length > 0 && collected < maxFiles) {
+      const remaining = maxFiles - collected;
+      // Reserve a page budget for every in-flight request. Their combined results
+      // cannot exceed the limit, even when all five requests return a full page.
+      const slots = Math.min(DRIVE_LIST_CONCURRENCY, pending.length, Math.max(1, Math.floor(remaining / 100)));
+      const wave = pending.splice(0, slots);
+      const requestPageSize = Math.min(pageSize, Math.floor(remaining / slots));
+      const nextTokens = await Promise.all(wave.map(({ parentIds, pageToken }) => (
+        readParents(parentIds, requestPageSize, pageToken)
+      )));
+      wave.forEach((request, index) => {
+        if (nextTokens[index]) pending.push({ ...request, pageToken: nextTokens[index] });
+      });
     }
 
     if (!recursive || depth >= maxDepth) break;
