@@ -3,15 +3,15 @@ import { listDriveFolderFiles, type DriveFolderFile } from "./drive";
 
 // Same Data Cache API as projectListCache; Drive listings are slow, so reuse them briefly.
 const CACHE_SECONDS = 60;
-const LIST_OPTIONS = { recursive: true, maxDepth: 4, pageSize: 500, maxFiles: 500 };
+const LIST_OPTIONS = { recursive: true, maxDepth: Number.POSITIVE_INFINITY, pageSize: 500, maxFiles: Number.POSITIVE_INFINITY };
 
-function tag(folderId: string) {
-  return `pmc-drive-files-v1:${process.env.VERCEL_ENV || "local"}:${folderId}`;
+export function driveFilesCacheTag(folderId: string) {
+  return `pmc-drive-files-v2:${process.env.VERCEL_ENV || "local"}:${folderId}`;
 }
 
 export function invalidateDriveFilesCache(folderId: string) {
   try {
-    revalidateTag(tag(folderId), { expire: 0 });
+    revalidateTag(driveFilesCacheTag(folderId), { expire: 0 });
     return true;
   } catch (error) {
     console.error("Drive file cache invalidation failed; entries expire after 60 seconds", error);
@@ -28,5 +28,5 @@ export async function readDriveFolderFiles(folderId: string, fresh = false): Pro
     invalidateDriveFilesCache(folderId);
     return files;
   }
-  return unstable_cache(load, [tag(folderId)], { revalidate: CACHE_SECONDS, tags: [tag(folderId)] })();
+  return unstable_cache(load, [driveFilesCacheTag(folderId)], { revalidate: CACHE_SECONDS, tags: [driveFilesCacheTag(folderId)] })();
 }

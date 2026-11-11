@@ -1,64 +1,60 @@
-# Files workspace loading and refresh
+# Files workspace: complete, progressive Drive listing
 
 ## API contract
 
-The existing endpoint is `/api/sites/{projectId}/drive-files`.
+Endpoint: `/api/sites/{projectId}/drive-files`. All operations retain the existing
+session and project authorization checks before cache access. No business data or
+Drive files are written by listing or invalidation.
 
-- GET keeps `{success:true,data:DriveFolderFile[],project}` and adds optional
-  `limitReached:boolean`. A true value means the existing 500-record listing limit
-  was reached (folders count toward that limit). It is conservative when exactly
-  500 records exist. The UI explains that search/counts cover loaded records and
-  links to the existing Drive folder for all files. No Drive folder returns empty
-  data as before. `?fresh=1` remains compatible for Lifecycle/other callers.
-- POST expires only the authorized project's Drive-list cache and returns
-  `{success:true}`. It does not write business data or files, or list Drive contents.
-  The workspace awaits this response then issues a normal GET, which fills the
-  shared 60-second cache for later readers. This separates invalidation from cache
-  fill because same-request expiration also invalidates a newly filled entry.
-- Both methods use the existing site context/session/project authorization checks.
-  Existing 401/403/context errors are retained. Failed cache expiration returns 503;
-  other failures return 500 with `{error:string}`.
+- POST JSON `{action:"page",cursor?:string}` returns
+  `{success:true,data:DriveFolderFile[],nextCursor:string|null,complete:boolean}`.
+  Omit the cursor to start at the configured project Drive folder; send the returned
+  cursor unchanged to continue. Each response lists at most 200 metadata records
+  (including folders), using at most three Google requests, with independent parent
+  groups read concurrently. Every pending folder and Google nextPageToken is carried
+  forward. There is no total record cap or folder depth cap. Folder paths are preserved.
+- POST without a JSON body expires the authorized folder cache and returns
+  `{success:true}`. The subsequent listing request fills the shared 60-second cache.
+- Legacy GET retains `{success:true,data:DriveFolderFile[],project}` and adds
+  `complete:true`. It reads the complete tree in one response for existing callers,
+  including Lifecycle. `?fresh=1` still bypasses the cache. A missing Drive folder
+  returns an empty list. The files workspace uses progressive POST requests instead.
+- Continuations are compressed and encrypted with AES-256-GCM using a server secret,
+  bound to the authorized root and expire after one hour. Invalid/expired cursors
+  return 400; refreshing starts a new traversal. Authorization failures retain their
+  existing status; Drive failures return 500; failed invalidation returns 503.
+- Cache entries use a new versioned folder tag so truncated legacy cache entries are
+  not reused. Each page is cached for 60 seconds and shares the invalidation tag.
 
-## Read budget and compatibility
+## Client behavior
 
-The existing recursive listing retains its depth, result shape and folder-walk output
-ordering. Each traversal level lists parent groups in waves. A wave reserves a page
-size per request whose combined budget cannot exceed the remaining record limit.
-Google nextPageTokens are queued and followed while budget remains. Concurrency
-remains bounded at five, and existing callers keep their options.
+Documents and Defect render independently. Drive batches render immediately, while
+remaining pages are fetched automatically. Search, folder filters and 20-row UI
+pagination use the records already received; the UI explicitly marks counts/search as
+incomplete until the final batch. Daily Reports and their nested folders are included.
+Drive file IDs are deduplicated, including files already registered as documents.
 
-This is a bounded version of the existing combined listing, not a new folder-browser
-or server-side UI pagination mode. Search, category/photo-folder filters and 20-item
-client pagination continue using the combined loaded records. Very large sites can
-still reach the pre-existing 500-record/depth-four limits; the UI now makes the record
-limit visible rather than implying completeness. A dense synthetic fixture decreased
-metadata reads from 2,600 to 500, and API calls from six to five, for 500 returned rows.
-This is a workload comparison, not a measured live latency guarantee.
+A failed continuation retains completed batches and offers a retry. Manual refresh
+retains the previous list while rebuilding, then replaces it on completion, allowing
+removed files to disappear. Project changes do not retain another project's list.
+Focus/reconnect events do not restart traversal. A successful existing upload remains
+successful while document revalidation and Drive refresh continue in the background.
+Upload, preview, opening files, permissions and business-data write paths are unchanged.
 
-## Independent sources and uploads
+## Scope and limitations
 
-Documents, Defect and Drive retain separate loading/error statuses. Any available
-matching rows render immediately; an empty filtered view shows loading only when its
-relevant source is still pending. Sites without a Drive folder do not request its list.
-The Drive status describes manual refresh rather than claiming automatic minute polling.
-A failed refresh preserves the visible list and reports a retryable error.
-
-After the existing direct upload and metadata registration succeed, the uploaded
-record is inserted into local SWR data without duplication. Document revalidation and
-Drive cache refresh run without holding the successful upload transition/form open.
-Refresh failure does not relabel a completed upload as failed. Upload protocols,
-permissions, file opening, previews and business-data write paths are unchanged.
+Completeness covers API-accessible files beneath the project's configured Drive root,
+including nested Daily Reports folders. It does not enumerate unrelated Drive roots
+or follow Drive shortcuts. Google changes during traversal are not a transactionally
+consistent snapshot; refresh to reconcile concurrent changes. Very large trees require
+more batches and legacy GET callers still wait for the full tree. Per-request bounds
+reduce work before rendering, not the total Google work necessary to enumerate all files.
 
 ## Validation
 
-- Drive tests cover sparse trees, dense trees, true nextPageToken pagination, paths,
-  ordering, maxDepth and the combined metadata budget.
-- API tests cover authorized GET/POST behavior, forbidden access, missing folders,
-  listing-limit metadata and failed expiration.
-- Render tests verify documents and Defect independently render with other sources
-  pending, and missing Drive folders skip that request.
-- An isolated Next.js runtime with synthetic records verifies cache hit -> POST
-  invalidation -> GET refill -> subsequent cache hit.
-- Browser fixture uses the actual FilesWorkspace, with synthetic endpoints only:
-  30-document pagination/search, Defect-first rendering, and a completed PDF upload
-  while Drive refresh remains unanswered. Desktop and 390px mobile layouts checked.
+Synthetic traversal tests include 1,235 files, a Daily Report eight nested folders
+below its category, real nextPageToken handling, per-page budgets, empty folders,
+cycles, continuation tampering, expiry, root binding and retry after a Drive error.
+API tests preserve authorization and legacy invalidation behavior. Render tests cover
+independent documents/Defect and sites without Drive. Browser QA uses only synthetic
+endpoints with the real FilesWorkspace and SWR hook; no live records are modified.

@@ -23,6 +23,7 @@ import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
 import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
 import { usePagination } from "@/lib/usePagination";
+import { useDriveFiles } from "@/lib/useDriveFiles";
 
 type ProjectDocument = Record<string, string | number | undefined> & {
   document_id: string;
@@ -549,23 +550,14 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const driveFilesKey = `/api/sites/${projectId}/drive-files`;
   const documents = useSWR<{ success?: boolean; data?: ProjectDocument[]; error?: string }>(`/api/sites/${projectId}/documents`, fetcher);
   const defects = useSWR<{ success?: boolean; rounds?: DefectRound[]; items?: DefectItem[]; evidence?: DefectEvidence[]; error?: string }>(`/api/sites/${projectId}/defects`, fetcher);
-  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string; limitReached?: boolean }>(project.drive_folder_id ? driveFilesKey : null, fetcher, {
-    // The Drive walk is the slowest read on this page; reuse it instead of refetching on every tab focus.
-    revalidateOnFocus: false,
-    dedupingInterval: 60_000,
-  });
+  const driveFiles = useDriveFiles(project.drive_folder_id ? driveFilesKey : null);
   const [driveRefreshing, setDriveRefreshing] = useState(false);
   const [driveRefreshError, setDriveRefreshError] = useState("");
   const refreshDriveFiles = async () => {
     setDriveRefreshing(true);
     setDriveRefreshError("");
     try {
-      const reset = await fetch(driveFilesKey, { method: "POST" });
-      if (!reset.ok) throw new Error("รีเฟรชรายการ Drive ไม่สำเร็จ");
-      const fresh = await fetcher(driveFilesKey);
-      // A failed refresh keeps the list already on screen.
-      if (fresh?.error || fresh?.success === false) throw new Error(fresh.error || "โหลดไฟล์จาก Google Drive ไม่สำเร็จ");
-      await driveFiles.mutate(fresh, { revalidate: false });
+      await driveFiles.refresh();
     } catch {
       setDriveRefreshError("รีเฟรช Google Drive ไม่สำเร็จ รายการเดิมยังใช้งานได้ กรุณาลองอีกครั้ง");
     } finally {
@@ -704,7 +696,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
     (["drive", "photos"].includes(activeTab) && Boolean(project.drive_folder_id) && driveFiles.isLoading)
   );
   const driveLoading = driveFiles.isLoading || driveRefreshing;
-  const driveError = driveRefreshError || driveFiles.data?.error || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ไม่สำเร็จ" : "");
+  const driveError = driveRefreshError || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ยังไม่ครบ รายการที่โหลดแล้วใช้งานได้ กรุณาลองโหลดต่อ" : "");
   const documentsError = documents.data?.error || (documents.error ? "โหลดเอกสารอัปโหลดไม่สำเร็จ" : "");
   const defectsError = defects.data?.error || (defects.error ? "โหลดไฟล์ Defect ไม่สำเร็จ" : "");
 
@@ -839,22 +831,22 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600">
               <span className={driveError && !driveLoading ? "font-semibold text-red-700" : ""}>
                 {driveLoading
-                  ? "กำลังโหลดไฟล์จาก Google Drive... รายการอื่นใช้งานได้ก่อน"
-                  : driveError || `ไฟล์จาก Google Drive ${totalDriveFiles} รายการ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}
+                  ? `กำลังโหลดไฟล์จาก Google Drive ต่อ… พบแล้ว ${totalDriveFiles} ไฟล์ ค้นหาและเปิดรายการที่พร้อมได้ก่อน`
+                  : driveError || `โหลดไฟล์จาก Google Drive ครบแล้ว ${totalDriveFiles} ไฟล์ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}
               </span>
               <button
                 type="button"
-                onClick={() => { void refreshDriveFiles(); }}
+                onClick={() => { if (driveFiles.error && !driveRefreshError) driveFiles.retry(); else void refreshDriveFiles(); }}
                 disabled={driveLoading}
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RefreshCw size={14} className={driveLoading ? "animate-spin" : ""} />
-                รีเฟรชจาก Drive
+                {driveFiles.error && !driveRefreshError ? "ลองโหลดต่อ" : "รีเฟรชจาก Drive"}
               </button>
             </div>
           ) : null}
 
-          {driveFiles.data?.limitReached && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">รายการจาก Drive ถึงขีดจำกัดการอ่าน 500 รายการแล้ว การค้นหาและยอดรวมใช้เฉพาะรายการที่โหลดมา เปิดโฟลเดอร์ Google Drive เพื่อดูไฟล์ทั้งหมด</p>}
+          {!driveFiles.data.complete && project.drive_folder_id && <p role="status" className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">กำลังรวบรวมไฟล์ทั้งหมดของไซต์ รวมถึง Daily Report ยอดรวมและผลค้นหาจะเพิ่มขึ้นจนกว่าจะโหลดครบ</p>}
 
           {!isLoading && (
             <PaginationControls

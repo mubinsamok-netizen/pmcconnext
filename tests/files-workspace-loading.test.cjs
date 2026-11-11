@@ -11,6 +11,7 @@ const ts = require("typescript");
 function renderFiles({documentsReady=true, defectsReady=false, hasDrive=true}={}) {
  const requests=[];
  const overrides={
+  "@/lib/useDriveFiles":{useDriveFiles:(key)=>{if(key)requests.push(key);return {data:{data:[],complete:!key},isLoading:Boolean(key)};}},
   "next/image":{default:()=>null},
   "@/lib/directDriveDocumentUpload":{},
   swr:{default:(key)=>{
