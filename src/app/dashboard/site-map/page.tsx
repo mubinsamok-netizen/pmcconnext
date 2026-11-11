@@ -581,6 +581,7 @@ function LeafletMapCanvas({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const [mapReady, setMapReady] = useState(false);
   const layerRef = useRef<LayerGroup | null>(null);
   const onSelectRef = useRef(onSelect);
 
@@ -592,7 +593,12 @@ function LeafletMapCanvas({
     let cancelled = false;
 
     async function initMap() {
-      const L = await import("leaflet");
+      const [L, basemap] = await Promise.all([
+        import("leaflet"),
+        fetch("/api/maps/basemap", { signal: AbortSignal.timeout(5000) })
+          .then((response) => response.ok ? response.json() : null)
+          .catch(() => null),
+      ]);
       if (cancelled || !containerRef.current || mapRef.current) return;
 
       const map = L.map(containerRef.current, {
@@ -603,13 +609,17 @@ function LeafletMapCanvas({
         zoomControl: true,
       }).setView([defaultCenter.lat, defaultCenter.lng], 10);
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      const tileUrl = typeof basemap?.tileUrl === "string"
+        ? basemap.tileUrl
+        : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
+      L.tileLayer(tileUrl, {
         maxZoom: 20,
         subdomains: "abcd",
         attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
       }).addTo(map);
 
       mapRef.current = map;
+      setMapReady(true);
       setTimeout(() => map.invalidateSize(), 120);
     }
 
@@ -678,12 +688,12 @@ function LeafletMapCanvas({
     return () => {
       cancelled = true;
     };
-  }, [points]);
+  }, [points, mapReady]);
 
   useEffect(() => {
     if (!mapRef.current || !activePoint) return;
     mapRef.current.panTo([activePoint.lat, activePoint.lng], { animate: true });
-  }, [activePoint]);
+  }, [activePoint, mapReady]);
 
   return (
     <div className="absolute inset-0">
