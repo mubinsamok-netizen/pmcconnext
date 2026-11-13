@@ -1,12 +1,21 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
-import { MonthlyReportsPanel } from "./MonthlyReportsPanel";
-import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
+import DailyReportsSkeleton from "./DailyReportsSkeleton";
+
+const WeeklyReportsPanel = dynamic(() => import("./WeeklyReportsPanel").then((module) => module.WeeklyReportsPanel), { loading: () => <DailyReportsSkeleton panel /> });
+const MonthlyReportsPanel = dynamic(() => import("./MonthlyReportsPanel").then((module) => module.MonthlyReportsPanel), { loading: () => <DailyReportsSkeleton panel /> });
+
+async function fetchReports(url: string) {
+  const response = await fetch(url);
+  const result = await response.json();
+  if (!response.ok || result.error) throw new Error(result.error || "โหลดข้อมูลรายงานไม่สำเร็จ");
+  return result;
+}
 
 type ReportRecord = Record<string, string | number | undefined>;
 type Row = Record<string, string>;
@@ -137,8 +146,8 @@ export function DailyReportsWorkspace({
   const [success, setSuccess] = useState("");
   const [lineWarning, setLineWarning] = useState("");
 
-  const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}`;
-  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetcher);
+  const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}&view=dashboard`;
+  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetchReports);
   const reports = useMemo(() => (data?.data || []) as ReportRecord[], [data?.data]);
   const latestReport = reports[0];
   const sentCount = reports.filter((report) => report.line_status === "sent").length;
@@ -232,7 +241,8 @@ export function DailyReportsWorkspace({
     setSuccess("");
     setLineWarning("");
 
-    const formData = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const formData = new FormData(form);
 
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
@@ -270,8 +280,9 @@ export function DailyReportsWorkspace({
       setMachinery([createEmptyRow(machineryColumns)]);
       setMaterials([createEmptyRow(materialColumns)]);
       setReportDate(todayValue());
-      event.currentTarget.reset();
-      await mutate();
+      form.reset();
+      // A failed read after a committed save is shown by loadError, not as a failed save.
+      try { await mutate(); } catch { /* Keep the save confirmation and expose the dashboard retry. */ }
       setActiveTab("dashboard");
     } catch (submitError) {
       if (submitError instanceof SyntaxError) {
@@ -310,6 +321,12 @@ export function DailyReportsWorkspace({
         <WeeklyReportsPanel project={project} />
       ) : allowAdvancedReports && activeTab === "monthly" ? (
         <MonthlyReportsPanel project={project} />
+      ) : activeTab === "dashboard" && loadError && !data ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-6">
+          <button type="button" onClick={() => void mutate().catch(() => undefined)} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">ลองโหลดรายงานอีกครั้ง</button>
+        </div>
+      ) : activeTab === "dashboard" && isLoading ? (
+        <DailyReportsSkeleton />
       ) : activeTab === "dashboard" ? (
         <div className="space-y-6">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">

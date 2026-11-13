@@ -873,12 +873,13 @@ export async function getSupabaseIssues(projectId?: string | null, _healthOnly =
   }));
 }
 
-export async function getSupabaseDailyReports(projectId?: string | null, healthOnly = false, overviewOnly = false) {
+export async function getSupabaseDailyReports(projectId?: string | null, healthOnly = false, overviewOnly = false, dashboardOnly = false) {
   const params: Record<string, string> = {
     order: "report_date.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "report_id,project_id,report_date";
+  if (dashboardOnly) params.select = "report_id,project_id,report_date,weather,workers,photos_folder_id,document_no,prepared_by_name,pdf_url,photos_month_folder_id,line_status,line_error";
 
   const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params, overviewOnly);
 

@@ -10,6 +10,8 @@ import { findAll, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { getProjectContext } from "@/lib/siteContext";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
+import { getSiteApiContext } from "@/lib/siteApi";
+import { readDailyReportDashboard } from "@/lib/dailyReportDashboard";
 
 type ReportRecord = Record<string, string | number | undefined>;
 type ProjectWithLine = MasterProject & {
@@ -91,6 +93,13 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
+    if (searchParams.get("view") === "dashboard") {
+      if (!projectId) return NextResponse.json({ error: "Missing project_id" }, { status: 400 });
+      const context = await getSiteApiContext(projectId, false, { readOnly: true });
+      if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+      const reports = await readDailyReportDashboard(context.project.project_id, context.siteSheetId);
+      return NextResponse.json({ success: true, data: reports });
+    }
     const { sheetId } = await getProjectContext(projectId);
     if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
