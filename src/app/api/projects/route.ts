@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { clearProjectAccessCache, filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
-import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
+import { findOrCreateFolder, setupProjectFolders } from "@/lib/drive";
+import { uploadProjectCoverFiles } from "@/lib/uploadProjectCover";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import {
   getAlertState,
@@ -120,13 +121,7 @@ async function uploadProjectCover(coverFile: File, projectId: string, driveFolde
     throw new Error("ไม่พบ Google Drive Folder ID สำหรับอัปโหลดรูปปก");
   }
 
-  const bytes = Buffer.from(await coverFile.arrayBuffer());
-  return uploadFile(
-    `cover-${projectId}-${Date.now()}-${coverFile.name}`,
-    coverFile.type || "application/octet-stream",
-    bytes,
-    uploadFolderId
-  );
+  return uploadProjectCoverFiles(coverFile, projectId, uploadFolderId);
 }
 
 async function readProjectPayload(req: Request) {
@@ -476,7 +471,8 @@ export async function POST(req: Request) {
       try {
         const uploaded = await uploadProjectCover(coverFile, project_id, driveFolderId);
         coverFileId = uploaded.id || "";
-        coverUrl = uploaded.webViewLink || uploaded.webContentLink || "";
+        coverUrl = uploaded.previewUrl || uploaded.webViewLink || uploaded.webContentLink || "";
+        if (uploaded.previewWarning) driveProvisionWarning = [driveProvisionWarning, uploaded.previewWarning].filter(Boolean).join(" ");
       } catch (error: unknown) {
         if (isDriveStorageQuotaError(error)) {
           driveProvisionWarning = getErrorMessage(error);
@@ -619,7 +615,8 @@ export async function PUT(req: Request) {
       try {
         const uploaded = await uploadProjectCover(coverFile, projectId, driveFolderId);
         coverFileId = uploaded.id || "";
-        coverUrl = uploaded.webViewLink || uploaded.webContentLink || "";
+        coverUrl = uploaded.previewUrl || uploaded.webViewLink || uploaded.webContentLink || "";
+        if (uploaded.previewWarning) warning = [warning, uploaded.previewWarning].filter(Boolean).join(" ");
       } catch (error: unknown) {
         if (isDriveStorageQuotaError(error)) {
           warning = getErrorMessage(error);

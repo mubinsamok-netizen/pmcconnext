@@ -8,6 +8,7 @@ import Image from "next/image";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { getProjectCoverSources } from "@/lib/projectCover";
 import { isForemanRole } from "@/lib/siteAccess";
 
 type Project = {
@@ -132,23 +133,8 @@ function normalizeDate(date?: string) {
   return toIsoDate(date);
 }
 
-function extractDriveFileId(url?: string) {
-  if (!url) return "";
-  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
-}
-
-function looksLikeDriveFileId(value?: string) {
-  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
-}
-
 function getCoverSrc(project: Pick<Project, "cover_file_id" | "cover_url">) {
-  const coverFileId = String(project.cover_file_id || "").trim();
-  const coverUrl = String(project.cover_url || "").trim();
-  const fileId = looksLikeDriveFileId(coverFileId)
-    ? coverFileId
-    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
-  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
-  return coverUrl;
+  return getProjectCoverSources(project)[0] || "";
 }
 
 function toForm(project: Project): ProjectForm {
@@ -343,7 +329,14 @@ export default function EditProjectPage() {
             <input type="file" accept="image/*" className="sr-only" onChange={handleCoverChange} />
             {coverPreview ? (
               <>
-                <Image src={coverPreview} alt="Project cover preview" fill unoptimized className="absolute inset-0 object-cover" />
+                <Image
+                  src={coverPreview} alt="Project cover preview" fill unoptimized className="absolute inset-0 object-cover"
+                  onError={() => {
+                    const sources = getProjectCoverSources(form);
+                    const current = sources.indexOf(coverPreview);
+                    setCoverPreview(current >= 0 ? sources[current + 1] || "" : "");
+                  }}
+                />
                 <button
                   type="button"
                   onClick={(event) => {

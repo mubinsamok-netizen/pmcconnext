@@ -37,7 +37,7 @@ function projectRoute({ authenticated = true, backend = "supabase", cache, allow
     "next-auth": { getServerSession: async () => authenticated ? { user: { role: "Staff" } } : null },
     "@/lib/authOptions": {},
     "@/lib/authz": { filterProjectsForUser: async (rows) => rows.filter((row) => row.project_id !== "P-21" && allowed(row)) },
-    "@/lib/siteAccess": {}, "@/lib/drive": {}, "@/lib/google": {},
+    "@/lib/siteAccess": {}, "@/lib/drive": {}, "@/lib/google": {}, "@/lib/uploadProjectCover": {},
     "@/lib/siteContext": { getProjectContext: async () => { throw new Error("Must reuse the authorized project instead of reading master projects again"); } },
     "@/lib/projectLifecycle": loadTs("src/lib/projectLifecycle.ts"),
     "@/lib/supabaseRest": { isSupabaseBackend: () => backend === "supabase", isSupabaseReadEnabled: () => backend === "supabase", readWithSheetsFallback: async (_, read) => read() },

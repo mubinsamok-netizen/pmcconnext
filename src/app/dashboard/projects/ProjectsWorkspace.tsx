@@ -10,6 +10,7 @@ import PaginationControls from "@/components/PaginationControls";
 import ProjectsSkeleton, { ProjectHealthSkeleton } from "@/components/ProjectsSkeleton";
 import ProjectHealthLoader from "@/components/ProjectHealthLoader";
 import { fetcher } from "@/lib/fetcher";
+import { getProjectCoverSources } from "@/lib/projectCover";
 import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole } from "@/lib/roles";
 import { isForemanRole } from "@/lib/siteAccess";
@@ -264,27 +265,13 @@ function getFilterTitle(filter: ResponsibilityFilter) {
   return filter === FILTER_ARCHITECT ? "กรองไซต์งานตาม Architect" : "กรองไซต์งานตาม Site Engineer";
 }
 
-function extractDriveFileId(url?: string) {
-  if (!url) return "";
-  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
-}
-
-function looksLikeDriveFileId(value?: string) {
-  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
-}
-
 function getCoverSrc(project: Project) {
-  const coverFileId = String(project.cover_file_id || "").trim();
-  const coverUrl = String(project.cover_url || "").trim();
-  const fileId = looksLikeDriveFileId(coverFileId)
-    ? coverFileId
-    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
-  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}?thumbnail=card`;
-  return coverUrl;
+  return getProjectCoverSources(project)[0] || "";
 }
 
 function ProjectCover({
-  src,
+  src: initialSrc,
+  fallbackSources = [],
   alt,
   name,
   projectId,
@@ -293,6 +280,7 @@ function ProjectCover({
   loading,
 }: {
   src: string;
+  fallbackSources?: string[];
   alt: string;
   name: string;
   projectId: string;
@@ -300,10 +288,12 @@ function ProjectCover({
   progress: number;
   loading: "eager" | "lazy";
 }) {
-  const [failed, setFailed] = useState(false);
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const sources = [initialSrc, ...fallbackSources];
+  const src = sources[sourceIndex] || "";
   const style = getStatusStyle(status);
 
-  if (!src || failed) {
+  if (!src) {
     return (
       <div className={`absolute inset-0 overflow-hidden bg-gradient-to-br ${style.visual}`}>
         <div className="absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(15,23,42,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.06)_1px,transparent_1px)] [background-size:28px_28px]" />
@@ -336,7 +326,7 @@ function ProjectCover({
         src={src}
         alt={alt}
         loading={loading}
-        onError={() => setFailed(true)}
+        onError={() => setSourceIndex((current) => sources[current] === src ? current + 1 : current)}
         className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       />
       <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-gray-950/70 via-gray-950/25 to-transparent" />
@@ -607,6 +597,8 @@ export default function ProjectsWorkspace({ initialData, snapshot }: { initialDa
               <Link href={`/dashboard/sites/${project.project_id}`} className="grid min-h-[210px] grid-cols-1 xl:grid-cols-[380px_minmax(420px,1fr)_310px]">
                 <div className="relative min-h-[190px] overflow-hidden bg-slate-50 sm:min-h-[230px] xl:min-h-full">
                   <ProjectCover
+                    key={JSON.stringify(getProjectCoverSources(project))}
+                    fallbackSources={getProjectCoverSources(project).slice(1)}
                     src={coverSrc}
                     alt={project.name || project.project_id}
                     name={project.name || project.project_id}
