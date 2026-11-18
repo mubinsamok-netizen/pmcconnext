@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
   CheckCircle2,
   ClipboardCheck,
@@ -215,7 +216,7 @@ export default function QcChecklistsWorkspace({
     setSaving(String(body.action || "save"));
     setMessage("");
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

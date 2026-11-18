@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useId, useMemo, useState } from "react";
 import useSWR from "swr";
 import Image from "next/image";
@@ -415,7 +416,7 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
         formData.append("attachment_categories", attachment.category);
         formData.append("attachment_captions", attachment.caption);
       });
-      const response = await fetch(endpoint, { method: "POST", body: formData });
+      const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", body: formData });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "บันทึกรายการไม่สำเร็จ");
       const saved = result.data as PaymentRequestRecord & { attachments?: PaymentAttachment[]; items?: PaymentItem[] };

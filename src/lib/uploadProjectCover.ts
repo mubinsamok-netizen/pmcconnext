@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { uploadFile } from "@/lib/drive";
 import sharp from "sharp";
 import { PROJECT_COVER_MAX_BYTES, PROJECT_COVER_MAX_EDGE } from "@/lib/prepareProjectCover";
 
@@ -18,7 +19,7 @@ export async function readProjectCover(projectId: string, fileId: string) {
   return fetch(object.url, { headers: object.headers, cache: "no-store" });
 }
 
-export async function uploadProjectCover(file: File, projectId: string) {
+export async function uploadProjectCoverFiles(file: File, projectId: string, parentId: string) {
   if (file.size > PROJECT_COVER_MAX_BYTES) throw new Error("รูปปกมีขนาดเกิน 4 MB หลังแปลง");
   const bytes = Buffer.from(await file.arrayBuffer());
   const image = sharp(bytes, { limitInputPixels: 40_000_000, failOn: "error" });
@@ -35,16 +36,8 @@ export async function uploadProjectCover(file: File, projectId: string) {
   if (webp.length > PROJECT_COVER_MAX_BYTES) throw new Error("รูปปกมีขนาดเกิน 4 MB หลังแปลง");
 
   const fileId = randomUUID();
-  const object = coverObjectUrl(projectId, fileId);
-  const response = await fetch(object.url, {
-    method: "POST",
-    headers: { ...object.headers, "Content-Type": "image/webp" },
-    body: new Uint8Array(webp),
-  });
-  if (!response.ok) {
-    console.error("Supabase project cover upload failed", { status: response.status });
-    throw new Error("เก็บรูปปกใน Supabase ไม่สำเร็จ กรุณาลองใหม่");
-  }
-
-  return `/api/projects/cover?projectId=${encodeURIComponent(projectId)}&fileId=${fileId}`;
+  const basename = file.name.replace(/\.[^.]+$/, "");
+  const uploaded = await uploadFile(`cover-${projectId}-${fileId}-${basename}.webp`, "image/webp", webp, parentId);
+  if (!uploaded.id) throw new Error("Google Drive ไม่ได้ส่งรหัสรูปปกกลับมา");
+  return uploaded;
 }

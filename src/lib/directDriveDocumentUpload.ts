@@ -1,3 +1,5 @@
+import { validateAttachmentRequest } from "@/lib/attachmentUpload";
+
 export type DirectDocumentUploadInput = {
   endpoint: string;
   category: string;
@@ -69,6 +71,7 @@ async function uploadThroughServer({
   formData.append("notes", notes);
   formData.append("file", file);
 
+  validateAttachmentRequest(formData);
   const response = await fetch(endpoint, {
     method: "POST",
     body: formData,
@@ -88,6 +91,7 @@ export async function uploadProjectDocumentDirectly({
   notes,
   file,
 }: DirectDocumentUploadInput) {
+  if (file.size === 0) throw new Error("ไฟล์ PDF ว่างเปล่า กรุณาเลือกไฟล์ใหม่");
   const sessionResponse = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

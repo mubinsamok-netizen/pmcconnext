@@ -64,7 +64,7 @@ export async function findOrCreateFolder(folderName: string, parentId: string = 
       return cached.folder;
     }
 
-    const query = `name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const query = `name = '${escapeDriveQueryValue(folderName)}' and '${escapeDriveQueryValue(parentId)}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     
     const response = await drive.files.list({
       q: query,

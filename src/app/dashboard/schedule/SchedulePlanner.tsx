@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
@@ -983,7 +984,7 @@ async function postDecisionJson(projectId: string, body: Record<string, unknown>
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
+    const res = await fetchWithAttachmentLimit(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

@@ -1,20 +1,16 @@
-# Project cover storage
+# Project cover storage and PDF attachment limits
 
-The project create and edit forms convert the cover to WebP before submitting.
-They limit the longest side to 2400 px, preserve the aspect ratio, and use a
-4 MB file cap to leave room for the multipart form in Vercel.
+Project create and edit use the existing multipart API with an optional
+`cover` file. The browser creates a WebP with the longest side at most
+2400 pixels without changing its aspect ratio or enlarging small images.
+The browser caps the processed cover at 4 MB. The server checks the file
+and stores the WebP in the site's Drive Photos folder, keeping the existing
+`cover_file_id` and `cover_url` fields and Drive image display flow.
 
-- `POST /api/projects` and `PUT /api/projects` accept the existing multipart
-  fields, including an optional WebP file under `cover`. The server stores the
-  picture in the private `project-images` bucket. The project response keeps
-  the existing shape and returns the application image URL in `data.cover_url`
-  on creation. On edit it persists the same URL in the updated project.
-- `GET /api/projects/cover?projectId=…&fileId=…` requires a session and project
-  access. Successful responses contain WebP bytes. Existing Drive image IDs
-  can still be used if the Storage image is unavailable.
-- Preview requires server-side `SUPABASE_URL` and
-  `SUPABASE_SERVICE_ROLE_KEY` for the project containing the private bucket.
-  The browser never receives those credentials.
+Attachment requests through Next.js reserve headroom for multipart fields
+and JSON/base64 overhead by checking the request before sending it.
+Project documents and lifecycle PDFs continue to use direct Drive uploads.
+The existing smaller server fallback limit still applies only to fallback.
 
-This rollout covers project covers only. Drive synchronization and PDF staging
-are separate work. Retain the referenced Storage objects if rolling back.
+Previously stored Drive covers and Supabase cover URLs remain readable
+through their existing handlers. New Drive uploads need no Supabase secrets.

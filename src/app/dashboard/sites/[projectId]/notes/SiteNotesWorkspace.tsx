@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
   Archive,
   ExternalLink,
@@ -323,7 +324,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
     setMessage("");
     startTransition(async () => {
       try {
-        const response = await fetch(endpoint, { method: "POST", body: formData });
+        const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", body: formData });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.error) throw new Error(payload.error || "บันทึกไม่สำเร็จ");
         formRef.current?.reset();

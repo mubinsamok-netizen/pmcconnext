@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useState, useTransition, type ComponentType } from "react";
 import {
   CheckCircle2,
@@ -448,7 +449,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     setMessage("");
     setActionError("");
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, ...payload }),

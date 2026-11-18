@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Image from "next/image";
@@ -337,7 +338,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     setError("");
     setDocumentHtml("");
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, ...payload }),
