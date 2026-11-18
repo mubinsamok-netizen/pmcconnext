@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import useSWR from "swr";
@@ -160,10 +160,24 @@ export function DailyReportsWorkspace({
   const [lineWarning, setLineWarning] = useState("");
 
   const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}&view=dashboard`;
-  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetchReports, {
-    refreshInterval: current => current?.data?.some((report: ReportRecord) => report.pdf_pending === "TRUE") ? 2500 : 0,
-  });
+  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetchReports);
   const reports = useMemo(() => (data?.data || []) as ReportRecord[], [data?.data]);
+  const pdfPending = reports.some(report => report.pdf_pending === "TRUE");
+  useEffect(() => {
+    if (!pdfPending) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refreshPdfStatus() {
+      await mutate().catch(() => undefined);
+      if (!stopped) timer = setTimeout(refreshPdfStatus, 2500);
+    }
+    timer = setTimeout(refreshPdfStatus, 2500);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [mutate, pdfPending]);
+
   const latestReport = reports[0];
   const sentCount = reports.filter((report) => report.line_status === "sent").length;
   const failedCount = reports.filter((report) => report.line_status === "failed").length;

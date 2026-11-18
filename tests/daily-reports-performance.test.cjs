@@ -123,7 +123,7 @@ const base = 'src/app/dashboard/sites/[projectId]/reports/';
 function workspaceFixture({ tab = 'dashboard', data, error, isLoading = false, refreshFails = false } = {}) {
   let cursor = 0, resets = 0, mutations = 0; const updates = []; const lazy = []; const requests = [];
   const load = loader({
-    react: { ...React, useMemo: fn => fn(), useState: initial => { const i = cursor++; return [i === 0 ? tab : typeof initial === 'function' ? initial() : initial, value => updates.push({ i, value })]; } },
+    react: { ...React, useEffect: () => {}, useMemo: fn => fn(), useState: initial => { const i = cursor++; return [i === 0 ? tab : typeof initial === 'function' ? initial() : initial, value => updates.push({ i, value })]; } },
     'next/dynamic': loader => function LazyPanel() { lazy.push(loader); return React.createElement('div', null, 'Deferred panel TestbyZoneIdea'); },
     swr: (key) => { assert.ok(key.includes(`project_id=${PROJECT}&view=dashboard`)); return { data, error, isLoading, mutate: async () => { mutations++; if (refreshFails) throw new Error('Refresh failure TestbyZoneIdea'); } }; },
     $globals: { FormData: class { set() {} get() { return ''; } }, fetch: async (url, options) => { requests.push({ url, options }); return { ok: true, text: async () => JSON.stringify({ data: { document_no: 'DR-TestbyZoneIdea', line_status: 'disabled' } }) }; } },
