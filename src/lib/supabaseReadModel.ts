@@ -879,7 +879,7 @@ export async function getSupabaseDailyReports(projectId?: string | null, healthO
   };
   if (projectId) params.project_id = `eq.${projectId}`;
   if (healthOnly) params.select = "report_id,project_id,report_date";
-  if (dashboardOnly) params.select = "report_id,project_id,report_date,weather,workers,photos_folder_id,document_no,prepared_by_name,pdf_url,photos_month_folder_id,line_status,line_error";
+  if (dashboardOnly) params.select = "report_id,project_id,report_date,weather,workers,photos_folder_id,document_no,prepared_by_name,prepared_at,pdf_url,photos_month_folder_id,line_status,line_error";
 
   const rows = await supabaseSiteSelect<SupabaseDailyReport>(projectId, "daily_reports", params, overviewOnly);
 

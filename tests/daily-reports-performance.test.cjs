@@ -171,11 +171,14 @@ test('a failed refresh after a successful save does not become a false save fail
   assert.ok(!f.updates.some(update => update.i === 11 && update.value));
 });
 
-for (const lineStatus of ['disabled', 'sent', 'failed']) test(`POST preserves PDF, report fields and LINE ${lineStatus} workflow with synthetic data`, async () => {
+for (const mode of ['disabled', 'sent', 'failed', 'deferred']) test(`POST preserves PDF, report fields and LINE ${mode} workflow with synthetic data`, async () => {
+  const deferred = mode === "deferred";
+  const lineStatus = deferred ? "disabled" : mode;
+  const background = [];
   const records = []; const folders = []; const pdfs = []; const messages = []; const patches = [];
   const load = loader({
-    'next/server': { NextResponse: Response }, 'next-auth': { getServerSession: async () => ({ user: { role: 'Admin', name: 'Admin TestbyZoneIdea', email: 'testbyzoneidea@example.com' } }) },
-    '@/lib/authOptions': {}, '@/lib/siteApi': {}, '@/lib/dailyReportDashboard': {},
+    'next/server': { NextResponse: Response, after: task => background.push(task) }, 'next-auth': { getServerSession: async () => ({ user: { role: 'Admin', name: 'Admin TestbyZoneIdea', email: 'testbyzoneidea@example.com' } }) },
+    '@/lib/authOptions': {}, '@/lib/siteApi': { getSiteApiContext: async () => ({ siteSheetId: SHEET, project: { project_id: PROJECT, drive_folder_id: 'Drive-TestbyZoneIdea', line_notify_enabled: 'FALSE' } }) }, '@/lib/dailyReportDashboard': {},
     '@/lib/masterProjects': { getMasterProjects: async () => [{ project_id: PROJECT, name: 'Site TestbyZoneIdea', drive_folder_id: 'Drive-TestbyZoneIdea', line_notify_enabled: lineStatus === 'disabled' ? 'FALSE' : 'TRUE', line_group_id: 'LINE-TestbyZoneIdea' }] },
     '@/lib/siteContext': { getProjectContext: async () => ({ sheetId: SHEET, driveFolderId: 'Drive-TestbyZoneIdea' }) },
     '@/lib/supabaseRest': { isSupabaseBackend: () => false }, '@/lib/sheetsSetup': { ensureSchema: async id => assert.equal(id, SHEET) },
@@ -191,9 +194,18 @@ for (const lineStatus of ['disabled', 'sent', 'failed']) test(`POST preserves PD
     $globals: { console: { ...console, error() {} } },
   });
   const body = new FormData(); for (const [key, value] of Object.entries({ project_id: PROJECT, date: '2026-11-13', work_done: 'Work TestbyZoneIdea', issues: 'Issues TestbyZoneIdea', solutions: 'Solutions TestbyZoneIdea', personnel_json: JSON.stringify([{ role: 'Worker TestbyZoneIdea', qty: '5' }]) })) body.set(key, value);
+  if (deferred) body.set('defer_pdf', 'true');
   const res = await load('src/app/api/reports/route.ts').POST(new Request('https://test.invalid/api/reports', { method: 'POST', body }));
   const result = await res.json(); assert.equal(res.status, 200); assert.equal(result.data.line_status, lineStatus);
   assert.equal(records.length, 1); assert.equal(records[0].work_done, 'Work TestbyZoneIdea'); assert.equal(records[0].workers, '5');
+  if (deferred) {
+    assert.equal(result.data.pdf_url, '');
+    assert.equal(pdfs.length, 0);
+    assert.equal(folders.length, 0);
+    assert.equal(background.length, 1);
+    await background[0]();
+    assert.equal(patches[0].patch.pdf_file_id, 'PDF-TestbyZoneIdea');
+  }
   assert.equal(pdfs.length, 1); assert.ok(pdfs[0].html.includes('Worker TestbyZoneIdea')); assert.equal(folders.length, 4);
-  assert.equal(messages.length, lineStatus === 'disabled' ? 0 : 1); assert.equal(patches.length, lineStatus === 'disabled' ? 0 : 1);
+  assert.equal(messages.length, lineStatus === 'disabled' ? 0 : 1); assert.equal(patches.length, deferred || lineStatus !== 'disabled' ? 1 : 0);
 });

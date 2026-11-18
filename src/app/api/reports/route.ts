@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { buildDailyReportHtml, buildDailyReportLineFlex, parseJsonRows, stringifyRows, type DailyReportPayload } from "@/lib/dailyReports";
@@ -77,16 +77,53 @@ async function getProject(projectId: string) {
   }
 }
 
-async function createPdf({
-  html,
-  documentNo,
-  pdfFolderId,
-}: {
-  html: string;
-  documentNo: string;
-  pdfFolderId: string;
-}) {
-  return await createPdfReportFile({ html, documentNo, pdfFolderId });
+async function buildReportFiles(report: DailyReportPayload, targetDriveFolderId: string) {
+  const dailyFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
+  if (!dailyFolder.id) throw new Error("Failed to create Daily Reports folder");
+  const monthFolder = await findOrCreateFolder(getMonthKey(report.date), dailyFolder.id);
+  if (!monthFolder.id) throw new Error("Failed to create monthly report folder");
+  const [pdfFolder, photosFolder] = await Promise.all([
+    findOrCreateFolder("PDF", monthFolder.id),
+    findOrCreateFolder("Photos", monthFolder.id),
+  ]);
+  if (!pdfFolder.id || !photosFolder.id) throw new Error("Failed to create report subfolders");
+
+  const pdfFile = await createPdfReportFile({
+    html: buildDailyReportHtml(report, [], 0),
+    documentNo: report.document_no,
+    pdfFolderId: pdfFolder.id,
+  });
+  if (!pdfFile.id) throw new Error("Google Drive did not return a PDF file ID");
+
+  return {
+    pdf_folder_id: pdfFolder.id,
+    pdf_file_id: pdfFile.id,
+    pdf_url: pdfFile.webViewLink || pdfFile.webContentLink || `https://drive.google.com/file/d/${pdfFile.id}/view`,
+    photos_folder_id: photosFolder.id,
+    photos_month_folder_id: photosFolder.id,
+  };
+}
+
+async function updateReport(report: DailyReportPayload, sheetId: string, patch: Record<string, string>) {
+  await update("Daily_Reports", report.report_id, patch, sheetId, async () => {
+    const rows = await findAll("Daily_Reports", sheetId) as ReportRecord[];
+    return rows.find(row => row.report_id === report.report_id && row.project_id === report.project_id)?._rowIndex;
+  }, report.project_id);
+}
+
+async function notifyReport(report: DailyReportPayload, files: Awaited<ReturnType<typeof buildReportFiles>>, groupId: string, sheetId: string) {
+  let patch: Record<string, string>;
+  try {
+    if (!groupId) throw new Error("LINE group ID is not configured");
+    const photosFolderUrl = `https://drive.google.com/drive/folders/${files.photos_month_folder_id}`;
+    await sendLineMessages([buildDailyReportLineFlex({ report, pdfUrl: files.pdf_url, photosFolderUrl, photoCount: 0 })], groupId);
+    patch = { line_status: "sent", line_sent_at: new Date().toISOString(), line_error: "" };
+  } catch (error) {
+    patch = { line_status: "failed", line_sent_at: "", line_error: getErrorMessage(error) };
+    console.error("Failed to send LINE daily report:", error);
+  }
+  await updateReport(report, sheetId, patch);
+  return patch;
 }
 
 export async function GET(req: Request) {
@@ -128,19 +165,24 @@ export async function POST(req: Request) {
     const formData = await req.formData();
     const project_id = getText(formData, "project_id");
     const date = getText(formData, "date");
+    const deferPdf = getText(formData, "defer_pdf") === "true";
 
     if (!project_id || !date) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     step = "โหลดข้อมูลโครงการ";
-    const project = await getProject(project_id);
-    const { sheetId, driveFolderId } = await getProjectContext(project_id);
+    const site = deferPdf ? await getSiteApiContext(project_id, false, { readOnly: true }) : null;
+    if (site && "error" in site) return NextResponse.json({ error: site.error }, { status: site.status });
+    const project = site ? site.project as ProjectWithLine : await getProject(project_id);
+    const { sheetId, driveFolderId } = site
+      ? { sheetId: site.siteSheetId, driveFolderId: site.project.drive_folder_id }
+      : await getProjectContext(project_id);
     step = "ตรวจสอบ schema ของ Google Sheets";
     if (!isSupabaseBackend()) await ensureSchema(sheetId);
 
     const targetDriveFolderId = project?.drive_folder_id || driveFolderId;
-    if (!targetDriveFolderId) {
+    if (!targetDriveFolderId && !deferPdf) {
       return NextResponse.json({ error: "Project Drive folder is not configured" }, { status: 400 });
     }
 
@@ -148,25 +190,11 @@ export async function POST(req: Request) {
     const existingReports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
     const document_no = createDocumentNo(project_id, date, existingReports);
     const report_id = `REP-${Date.now().toString().slice(-8)}`;
-    const monthKey = getMonthKey(date);
     const preparedAt = new Date().toISOString();
     const personnel = parseJsonRows(formData.get("personnel_json"));
     const machinery = parseJsonRows(formData.get("machinery_json"));
     const materials = parseJsonRows(formData.get("materials_json"));
     const workers = getText(formData, "workers") || sumPersonnel(personnel);
-
-    step = "สร้าง/ค้นหาโฟลเดอร์ Daily Reports ใน Google Drive";
-    const dailyReportsFolder = await findOrCreateFolder("Daily Reports", targetDriveFolderId);
-    if (!dailyReportsFolder.id) throw new Error("Failed to create Daily Reports folder");
-
-    step = "สร้าง/ค้นหาโฟลเดอร์รายเดือนใน Google Drive";
-    const monthFolder = await findOrCreateFolder(monthKey, dailyReportsFolder.id);
-    if (!monthFolder.id) throw new Error("Failed to create monthly report folder");
-
-    step = "สร้าง/ค้นหาโฟลเดอร์ PDF และ Photos ใน Google Drive";
-    const pdfFolder = await findOrCreateFolder("PDF", monthFolder.id);
-    const photosMonthFolder = await findOrCreateFolder("Photos", monthFolder.id);
-    if (!pdfFolder.id || !photosMonthFolder.id) throw new Error("Failed to create report subfolders");
 
     const reportPayload: DailyReportPayload = {
       report_id,
@@ -192,13 +220,8 @@ export async function POST(req: Request) {
       materials,
     };
 
-    step = "สร้างไฟล์ PDF รายงาน";
-    const html = buildDailyReportHtml(reportPayload, [], 0);
-    const pdfFile = await createPdf({ html, documentNo: document_no, pdfFolderId: pdfFolder.id });
-    const pdfUrl = pdfFile.webViewLink || pdfFile.webContentLink || "";
-    const photosFolderUrl = photosMonthFolder.webViewLink || `https://drive.google.com/drive/folders/${photosMonthFolder.id}`;
     const lineGroupId = String(project?.line_group_id || FALLBACK_LINE_GROUP_ID || "").trim();
-    const lineEnabled = project?.line_notify_enabled !== "FALSE";
+    const lineEnabled = String(project?.line_notify_enabled ?? "").trim().toUpperCase() !== "FALSE";
 
     const baseReportData = {
       report_id,
@@ -208,7 +231,7 @@ export async function POST(req: Request) {
       workers: reportPayload.workers,
       work_done: reportPayload.work_done,
       issues: reportPayload.issues,
-      photos_folder_id: photosMonthFolder.id,
+      photos_folder_id: "",
       document_no,
       project_name: reportPayload.project_name,
       project_location: reportPayload.project_location,
@@ -224,54 +247,38 @@ export async function POST(req: Request) {
       prepared_by_email: reportPayload.prepared_by_email,
       prepared_at: preparedAt,
       photos_json: JSON.stringify([]),
-      pdf_folder_id: pdfFolder.id,
-      pdf_file_id: pdfFile.id || "",
-      pdf_url: pdfUrl,
-      photos_month_folder_id: photosMonthFolder.id,
+      pdf_folder_id: "",
+      pdf_file_id: "",
+      pdf_url: "",
+      photos_month_folder_id: "",
       line_group_id: lineGroupId,
       line_status: lineEnabled ? "pending" : "disabled",
       line_sent_at: "",
       line_error: "",
     };
 
-    step = "บันทึกข้อมูลรายงานลง Google Sheets";
-    await insert("Daily_Reports", baseReportData, sheetId);
-    const insertedReports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
-    const inserted = insertedReports.find((report) => report.report_id === report_id);
-
-    let linePatch: Record<string, string> = {};
-    if (lineEnabled) {
-      try {
-        if (!lineGroupId) throw new Error("LINE group ID is not configured");
-        const flexMessage = buildDailyReportLineFlex({ report: reportPayload, pdfUrl, photosFolderUrl, photoCount: 0 });
-        await sendLineMessages([flexMessage], lineGroupId);
-        linePatch = {
-          line_status: "sent",
-          line_sent_at: new Date().toISOString(),
-          line_error: "",
-        };
-      } catch (lineError: unknown) {
-        linePatch = {
-          line_status: "failed",
-          line_sent_at: "",
-          line_error: getErrorMessage(lineError),
-        };
-        console.error("Failed to send LINE daily report:", lineError);
-      }
-
-      if (inserted?._rowIndex) {
-        step = "อัปเดตสถานะ LINE ใน Google Sheets";
-        await update("Daily_Reports", report_id, linePatch, sheetId, inserted._rowIndex);
-      }
+    if (deferPdf) {
+      step = "บันทึกข้อมูลรายงาน";
+      await insert("Daily_Reports", baseReportData, sheetId);
+      after(async () => {
+        try {
+          if (!targetDriveFolderId) throw new Error("Project Drive folder is not configured");
+          const files = await buildReportFiles(reportPayload, targetDriveFolderId);
+          await updateReport(reportPayload, sheetId, files);
+          if (lineEnabled) await notifyReport(reportPayload, files, lineGroupId, sheetId);
+        } catch (error) {
+          console.error("Daily report background processing failed", { report_id, error });
+        }
+      });
+      return NextResponse.json({ success: true, data: baseReportData });
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        ...baseReportData,
-        ...linePatch,
-      },
-    });
+    step = "สร้างไฟล์ PDF รายงาน";
+    const files = await buildReportFiles(reportPayload, targetDriveFolderId!);
+    step = "บันทึกข้อมูลรายงาน";
+    await insert("Daily_Reports", { ...baseReportData, ...files }, sheetId);
+    const linePatch = lineEnabled ? await notifyReport(reportPayload, files, lineGroupId, sheetId) : {};
+    return NextResponse.json({ success: true, data: { ...baseReportData, ...files, ...linePatch } });
   } catch (error: unknown) {
     console.error("Failed to create report:", error);
     return NextResponse.json({ error: `${step}: ${getErrorMessage(error)}` }, { status: 500 });
