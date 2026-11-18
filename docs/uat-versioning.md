@@ -13,5 +13,7 @@ Keep at least three digits in the final number. Keep all UI labels and the title
 on the shared constant so they cannot drift.
 
 On 2026-11-11 (Asia/Bangkok), the user accepted all five performance improvements
-and explicitly requested the increment from `1.0.000` to `1.0.001`. The current
-version is `UAT v1.0.001`; future increments require another user confirmation.
+and explicitly requested the increment from `1.0.000` to `1.0.001`.
+
+The user accepted the Site Notes workflow and requested the increment to
+`UAT v1.0.002`. Future increments require another user confirmation.
