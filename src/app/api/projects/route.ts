@@ -3,8 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { clearProjectAccessCache, filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
-import { findOrCreateFolder, setupProjectFolders } from "@/lib/drive";
-import { uploadProjectCoverFiles } from "@/lib/uploadProjectCover";
+import { setupProjectFolders } from "@/lib/drive";
+import { uploadProjectCover } from "@/lib/uploadProjectCover";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import {
   getAlertState,
@@ -101,27 +101,6 @@ async function requireProjectManagementAccess() {
     return NextResponse.json({ error: "ไม่มีสิทธิ์จัดการไซต์งาน" }, { status: 403 });
   }
   return null;
-}
-
-async function getCoverUploadFolderId(driveFolderId: string) {
-  if (!driveFolderId) return "";
-
-  try {
-    const photosFolder = await findOrCreateFolder("Photos", driveFolderId);
-    return photosFolder.id || driveFolderId;
-  } catch (error: unknown) {
-    console.warn("Failed to resolve Photos folder for cover upload, using project root folder:", error);
-    return driveFolderId;
-  }
-}
-
-async function uploadProjectCover(coverFile: File, projectId: string, driveFolderId: string) {
-  const uploadFolderId = await getCoverUploadFolderId(driveFolderId);
-  if (!uploadFolderId) {
-    throw new Error("ไม่พบ Google Drive Folder ID สำหรับอัปโหลดรูปปก");
-  }
-
-  return uploadProjectCoverFiles(coverFile, projectId, uploadFolderId);
 }
 
 async function readProjectPayload(req: Request) {
@@ -465,24 +444,7 @@ export async function POST(req: Request) {
       if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
     }
 
-    let coverFileId = "";
-    let coverUrl = "";
-    if (coverFile && driveFolderId) {
-      try {
-        const uploaded = await uploadProjectCover(coverFile, project_id, driveFolderId);
-        coverFileId = uploaded.id || "";
-        coverUrl = uploaded.previewUrl || uploaded.webViewLink || uploaded.webContentLink || "";
-        if (uploaded.previewWarning) driveProvisionWarning = [driveProvisionWarning, uploaded.previewWarning].filter(Boolean).join(" ");
-      } catch (error: unknown) {
-        if (isDriveStorageQuotaError(error)) {
-          driveProvisionWarning = getErrorMessage(error);
-        } else {
-          throw error;
-        }
-      }
-    } else if (coverFile && !driveFolderId) {
-      driveProvisionWarning = "Saved project without cover upload because Drive folder is not available.";
-    }
+    const coverUrl = coverFile ? await uploadProjectCover(coverFile, project_id) : "";
 
     const projectData = {
       project_id,
@@ -501,7 +463,7 @@ export async function POST(req: Request) {
       pm_name,
       se_name,
       architect_name,
-      cover_file_id: coverFileId,
+      cover_file_id: "",
       cover_url: coverUrl,
       status: body.status || "Planning",
       site_sheet_id: siteSheetId,
@@ -576,20 +538,6 @@ export async function PUT(req: Request) {
       : requestedSiteSheetId;
     let warning = "";
 
-    if (!driveFolderId && coverFile) {
-      try {
-        const folders = await setupProjectFolders(makeProjectFolderName(projectId, value("name", current.name || "")));
-        driveFolderId = folders.root;
-      } catch (error: unknown) {
-        console.error("Drive setup failed while updating cover:", error);
-        if (isDriveStorageQuotaError(error)) {
-          warning = getErrorMessage(error);
-        } else {
-          return NextResponse.json({ error: `ไม่สามารถสร้าง Drive folder สำหรับรูปปกได้: ${getErrorMessage(error)}` }, { status: 500 });
-        }
-      }
-    }
-
     if (!usesSupabaseSchema && siteSheetId && siteSheetId !== current.site_sheet_id) {
       if (!isSupabaseBackend()) await ensureSchema(siteSheetId);
     }
@@ -608,25 +556,8 @@ export async function PUT(req: Request) {
       }
     }
 
-    let coverFileId = value("cover_file_id", current.cover_file_id || "");
-    let coverUrl = value("cover_url", current.cover_url || "");
-
-    if (coverFile && driveFolderId) {
-      try {
-        const uploaded = await uploadProjectCover(coverFile, projectId, driveFolderId);
-        coverFileId = uploaded.id || "";
-        coverUrl = uploaded.previewUrl || uploaded.webViewLink || uploaded.webContentLink || "";
-        if (uploaded.previewWarning) warning = [warning, uploaded.previewWarning].filter(Boolean).join(" ");
-      } catch (error: unknown) {
-        if (isDriveStorageQuotaError(error)) {
-          warning = getErrorMessage(error);
-        } else {
-          throw error;
-        }
-      }
-    } else if (coverFile && !driveFolderId) {
-      warning = "Saved project without cover upload because Drive folder is not available.";
-    }
+    const coverFileId = coverFile ? current.cover_file_id || "" : value("cover_file_id", current.cover_file_id || "");
+    const coverUrl = coverFile ? await uploadProjectCover(coverFile, projectId) : value("cover_url", current.cover_url || "");
 
     const patch = {
       project_id: projectId,

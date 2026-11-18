@@ -46,5 +46,6 @@ export function getProjectCoverSources(project: CoverProject): string[] {
     if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(source)) return [source];
     return [];
   });
-  return [...new Set([...preferred, ...sources])];
+  const storageCover = savedUrl.startsWith("/api/projects/cover?") ? [savedUrl] : [];
+  return [...new Set([...storageCover, ...preferred, ...sources])];
 }

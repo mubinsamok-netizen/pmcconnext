@@ -1,5 +1,6 @@
 "use client";
 
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -251,13 +252,13 @@ export default function EditProjectPage() {
 
     const formData = new FormData();
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
-    if (coverFile) formData.append("cover", coverFile);
-
     try {
+      if (coverFile) formData.append("cover", await prepareProjectCover(coverFile));
       const res = await fetch("/api/projects", {
         method: "PUT",
         body: formData,
       });
+      if (res.status === 413) throw new Error("ขนาดข้อมูลเกินกำหนด กรุณาเลือกรูปปกที่เล็กลง");
       const result = await res.json().catch(() => ({}));
 
       if (!res.ok) {

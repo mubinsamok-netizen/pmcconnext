@@ -1,5 +1,6 @@
 "use client";
 
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -154,18 +155,19 @@ export default function CreateProjectPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (step !== 3 || loading) return;
     setLoading(true);
     setError(null);
 
     const formData = new FormData();
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
-    if (coverFile) formData.append("cover", coverFile);
-
     try {
+      if (coverFile) formData.append("cover", await prepareProjectCover(coverFile));
       const res = await fetch("/api/projects", {
         method: "POST",
         body: formData,
       });
+      if (res.status === 413) throw new Error("ขนาดข้อมูลเกินกำหนด กรุณาเลือกรูปปกที่เล็กลง");
       const result = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -273,7 +275,7 @@ export default function CreateProjectPage() {
                           <ImagePlus />
                           แนบรูป
                         </span>
-                        <p className="text-sm text-gray-400">PNG/JPG ขนาดไม่เกิน 5MB</p>
+                        <p className="text-sm text-gray-400">รูปจะถูกย่อและแปลงเป็น WebP ก่อนบันทึก</p>
                       </div>
                     )}
                   </label>
@@ -412,9 +414,13 @@ export default function CreateProjectPage() {
             </Link>
             {step < 3 ? (
               <button
+                key="next"
                 type="button"
                 disabled={!canContinue}
-                onClick={() => setStep((value) => Math.min(3, value + 1))}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setStep((value) => Math.min(3, value + 1));
+                }}
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700 disabled:opacity-50"
               >
                 ถัดไป
@@ -422,6 +428,7 @@ export default function CreateProjectPage() {
               </button>
             ) : (
               <button
+                key="save"
                 disabled={loading}
                 type="submit"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700 disabled:opacity-70 disabled:cursor-wait"
