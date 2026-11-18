@@ -112,32 +112,41 @@ function attachmentOwner(context: RouteContext) {
   return createHash("sha256").update(JSON.stringify([context.project.project_id, email])).digest("hex");
 }
 
-async function startPdfUpload(req: Request, context: RouteContext, body: Record<string, unknown>) {
+async function startAttachmentUpload(req: Request, context: RouteContext, body: Record<string, unknown>) {
   const name = text(body.file_name);
   const size = Number(body.file_size);
-  const noteId = text(body.note_id) || makeId("NOTE");
-  if (!/\.pdf$/i.test(name) || !Number.isSafeInteger(size) || size <= 0 ||
+  const legacy = body.action === "start_pdf_upload";
+  const mimeType = legacy ? "application/pdf" : text(body.mime_type);
+  const noteId = text(body.note_id) || (legacy ? makeId("NOTE") : "");
+  if (!name || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(mimeType) || mimeType.length > 100 ||
+      (mimeType.startsWith("image/") && mimeType !== "image/webp") ||
+      !Number.isSafeInteger(size) || size <= 0 ||
       !/^NOTE-[A-Z0-9]+-[A-Z0-9]+$/.test(noteId)) {
-    return NextResponse.json({ error: "ชื่อหรือขนาดไฟล์ PDF ไม่ถูกต้อง" }, { status: 400 });
+    return NextResponse.json({ error: "ชื่อ ชนิด หรือขนาดไฟล์แนบไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!legacy) {
+    const note = (await getNotes(context)).find(row => row.note_id === noteId);
+    if (!note || text(note.created_by_email).toLowerCase() !== context.session.user.email?.trim().toLowerCase()) {
+      return NextResponse.json({ error: "ไม่พบบันทึกของผู้ใช้สำหรับแนบไฟล์" }, { status: 404 });
+    }
   }
   const owner = attachmentOwner(context);
   const folder = await getNoteFolder(context, noteId);
   if (!folder?.id) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive ของไซต์");
   const session = await createResumableUploadSession({
     fileName: safeFolderName(name),
-    mimeType: "application/pdf",
+    mimeType,
     size,
     parentId: folder.id,
     origin: new URL(req.url).origin,
-    appProperties: { pmcNote: noteId, pmcOwner: owner, pmcSize: String(size) },
+    appProperties: { pmcNote: noteId, pmcOwner: owner, pmcSize: String(size), pmcMime: mimeType },
   });
   return NextResponse.json({ note_id: noteId, upload_url: session.uploadUrl }, {
     headers: { "Cache-Control": "no-store" },
   });
 }
 
-async function readUploadedPdfs(formData: FormData, context: RouteContext, noteId: string) {
-  const ids = [...new Set(formData.getAll("pdf_file_id").map(text))];
+async function readUploadedAttachments(ids: string[], context: RouteContext, noteId: string) {
   if (!ids.length) return [];
   if (ids.length > 8 || ids.some(id => !/^[a-zA-Z0-9_-]{10,}$/.test(id))) {
     throw new Error("รายการไฟล์ PDF ไม่ถูกต้อง");
@@ -149,9 +158,9 @@ async function readUploadedPdfs(formData: FormData, context: RouteContext, noteI
       supportsAllDrives: true,
       fields: "id,name,mimeType,size,trashed,appProperties,webViewLink",
     });
-    if (data.trashed || data.mimeType !== "application/pdf" || data.appProperties?.pmcNote !== noteId ||
+    if (data.trashed || data.mimeType !== (data.appProperties?.pmcMime || "application/pdf") || data.appProperties?.pmcNote !== noteId ||
         data.appProperties?.pmcOwner !== owner || !data.size || data.appProperties.pmcSize !== data.size) {
-      throw new Error("ยืนยัน PDF ของบันทึกนี้จาก Google Drive ไม่สำเร็จ");
+      throw new Error("ยืนยันไฟล์แนบของบันทึกนี้จาก Google Drive ไม่สำเร็จ");
     }
     return {
       file_id: id,
@@ -172,7 +181,7 @@ async function createNote(req: Request, context: RouteContext) {
 
   const direct = formData.has("pdf_file_id");
   const noteId = direct ? text(formData.get("draft_note_id")) : makeId("NOTE");
-  const pdfs = await readUploadedPdfs(formData, context, noteId);
+  const pdfs = await readUploadedAttachments([...new Set(formData.getAll("pdf_file_id").map(text))], context, noteId);
   if (direct) {
     const existing = (await getNotes(context)).find(row => row.note_id === noteId && row.created_by_email === context.session.user.email);
     if (existing) return NextResponse.json({ success: true, data: existing });
@@ -235,18 +244,44 @@ async function patchNote(body: Record<string, unknown>, context: RouteContext) {
   return NextResponse.json({ success: true, data: { ...current, ...patch } });
 }
 
+async function attachUploadedFile(body: Record<string, unknown>, context: RouteContext) {
+  const noteId = text(body.note_id);
+  const current = (await getNotes(context)).find(row => row.note_id === noteId);
+  if (!current?._rowIndex || text(current.created_by_email).toLowerCase() !== context.session.user.email?.trim().toLowerCase()) {
+    return NextResponse.json({ error: "ไม่พบบันทึกของผู้ใช้สำหรับแนบไฟล์" }, { status: 404 });
+  }
+
+  const fileId = text(body.file_id);
+  const previous = JSON.parse(current.attachments_json || "[]") as { file_id?: string }[];
+  if (previous.some(attachment => attachment.file_id === fileId)) {
+    return NextResponse.json({ success: true, data: current });
+  }
+  if (previous.length >= 8) return NextResponse.json({ error: "แนบไฟล์ได้สูงสุด 8 ไฟล์" }, { status: 400 });
+
+  const [verified] = await readUploadedAttachments([fileId], context, noteId);
+  const patch = {
+    attachments_json: jsonStringify([...previous, verified]),
+    updated_at: new Date().toISOString(),
+    updated_by_email: context.session.user.email || "",
+    updated_by_name: context.session.user.name || "",
+  };
+  await update("Site_Notes", noteId, patch, context.siteSheetId, current._rowIndex);
+  return NextResponse.json({ success: true, data: { ...current, ...patch } });
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
     const multipart = req.headers.get("content-type")?.includes("multipart/form-data");
     const body = multipart ? {} : await req.json().catch(() => ({})) as Record<string, unknown>;
-    const startingUpload = body.action === "start_pdf_upload";
-    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { driveOnly: startingUpload });
+    const startingUpload = ["start_pdf_upload", "start_attachment_upload"].includes(text(body.action));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { driveOnly: body.action === "start_pdf_upload", readOnly: startingUpload || body.action === "attach_uploaded_file" });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
     const routeContext = context as RouteContext;
     if (multipart) return await createNote(req, routeContext);
-    if (startingUpload) return await startPdfUpload(req, routeContext, body);
+    if (startingUpload) return await startAttachmentUpload(req, routeContext, body);
+    if (body.action === "attach_uploaded_file") return await attachUploadedFile(body, routeContext);
     if (body.action === "update_note") return await patchNote(body, routeContext);
     return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });
   } catch (error: unknown) {
