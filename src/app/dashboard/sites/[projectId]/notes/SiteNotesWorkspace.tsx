@@ -383,7 +383,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
         if (files.length > 8) throw new Error("แนบไฟล์ได้สูงสุด 8 ไฟล์");
         if (files.some(file => file.size === 0)) throw new Error("มีไฟล์แนบว่างเปล่า กรุณาเลือกไฟล์ใหม่");
         formData.delete("files");
-        const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", body: formData });
+        const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", headers: { "X-PMC-No-Global-Loading": "1" }, body: formData });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.error) throw new Error(payload.error || "บันทึกไม่สำเร็จ");
         formRef.current?.reset();
@@ -456,7 +456,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
-        <form ref={formRef} action={createNote} className="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <form ref={formRef} action={createNote} data-no-global-loading="true" className="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <Plus className="text-orange-600" size={18} />
             <h3 className="font-bold text-gray-900">เพิ่มบันทึก</h3>

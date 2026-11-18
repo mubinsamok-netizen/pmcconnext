@@ -30,7 +30,7 @@ export function NoteUploadProgress({ tasks, retry }: { tasks: NoteUploadTask[]; 
               <progress className="block w-full" max={100} value={task.percent} aria-label={task.file.name} />
             )}
             {task.status === "failed" && (
-              <button type="button" onClick={() => retry(task)} className="ml-2 font-bold text-orange-700 underline">ลองอีกครั้ง</button>
+              <button type="button" data-no-global-loading="true" onClick={() => retry(task)} className="ml-2 font-bold text-orange-700 underline">ลองอีกครั้ง</button>
             )}
           </li>
         );

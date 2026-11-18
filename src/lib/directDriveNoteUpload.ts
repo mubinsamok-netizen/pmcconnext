@@ -1,7 +1,7 @@
 export async function postNoteAttachmentAction(endpoint: string, body: Record<string, string | number>) {
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-PMC-No-Global-Loading": "1" },
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));

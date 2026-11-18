@@ -94,7 +94,8 @@ export default function GlobalLoadingIndicator() {
       queueLoader();
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = (event: SubmitEvent) => {
+      if (event.target instanceof Element && event.target.closest("[data-no-global-loading='true']")) return;
       interactionAtRef.current = Date.now();
       navigationPendingRef.current = true;
       queueLoader();
@@ -102,7 +103,10 @@ export default function GlobalLoadingIndicator() {
 
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
-      const isUserInitiated = Date.now() - interactionAtRef.current < INTERACTION_WINDOW_MS;
+      const [input, init] = args;
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      const isUserInitiated = !headers.has("X-PMC-No-Global-Loading") &&
+        Date.now() - interactionAtRef.current < INTERACTION_WINDOW_MS;
       if (isUserInitiated) {
         activeRequestsRef.current += 1;
         queueLoader();
