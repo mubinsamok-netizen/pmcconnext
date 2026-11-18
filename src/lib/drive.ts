@@ -257,16 +257,21 @@ export async function createResumableUploadSession({
   mimeType,
   size,
   parentId,
+  appProperties,
+  origin,
 }: {
   fileName: string;
   mimeType: string;
   size: number;
   parentId: string;
+  appProperties?: Record<string, string>;
+  origin?: string;
 }) {
   const token = await getDriveAccessToken();
   const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,mimeType,size,webViewLink,webContentLink", {
     method: "POST",
     headers: {
+      ...(origin ? { Origin: origin } : {}),
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=UTF-8",
       "X-Upload-Content-Type": mimeType || "application/octet-stream",
@@ -276,6 +281,7 @@ export async function createResumableUploadSession({
       name: fileName,
       mimeType: mimeType || "application/octet-stream",
       parents: [parentId],
+      appProperties,
     }),
   });
 
