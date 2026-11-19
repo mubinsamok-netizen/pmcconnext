@@ -1,9 +1,8 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { notFound } from "next/navigation";
-import { getServerSession } from "next-auth";
 import { ArrowLeft, Building2, CalendarClock, FileText, FolderKanban, PhoneCall, UserRound } from "lucide-react";
-import { authOptions } from "@/lib/authOptions";
+import { getCurrentSession } from "@/lib/currentSession";
 import { isAdminRole } from "@/lib/authz";
 import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureMasterSchema } from "@/lib/sheetsSetup";
@@ -67,7 +66,7 @@ function getStatusLabel(status?: string) {
 export default async function SalesCustomerDetailPage({ params }: { params: Promise<{ customerId: string }> }) {
   const { customerId } = await params;
   const decodedCustomerId = decodeURIComponent(customerId);
-  const session = await getServerSession(authOptions);
+  const session = await getCurrentSession();
   const isAdmin = isAdminRole(session?.user?.role);
   if (!isAdmin) notFound();
 
