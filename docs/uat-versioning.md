@@ -20,3 +20,6 @@ The user accepted the Site Notes workflow and requested the increment to
 
 On 2026-11-19 (Asia/Bangkok), the user accepted the Daily Reports workflow
 and requested the increment to `UAT v1.0.003`.
+
+The user accepted the Variation Orders workflow and requested the increment to
+`UAT v1.0.004`.
