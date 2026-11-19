@@ -56,12 +56,23 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const includeClosed = url.searchParams.get("include_closed") === "true";
     const customers = await findAllMaster("Customers");
-    const data = customers
-      .filter((customer) => includeClosed || customer.active !== "FALSE")
-      .map((customer) => ({
-        ...customer,
-        contact_logs: parseContactLogs(String(customer.contact_logs_json || "")),
-      }));
+    const activeCustomers = customers.filter((customer) => includeClosed || customer.active !== "FALSE");
+    const view = url.searchParams.get("view");
+    if (view === "history") {
+      const customer = activeCustomers.find((row) => row.id === url.searchParams.get("customer_id"));
+      if (!customer) return NextResponse.json({ error: "ไม่พบลูกค้า" }, { status: 404 });
+      return NextResponse.json({
+        success: true,
+        data: parseContactLogs(String(customer.contact_logs_json || "")),
+      });
+    }
+
+    const data = activeCustomers.map((customer) => {
+      const { contact_logs_json, ...summary } = customer;
+      const logs = parseContactLogs(String(contact_logs_json || ""));
+      if (view === "list") return { ...summary, contact_count: logs.length };
+      return { ...customer, contact_logs: logs };
+    });
 
     return NextResponse.json({ success: true, data });
   } catch (error: unknown) {

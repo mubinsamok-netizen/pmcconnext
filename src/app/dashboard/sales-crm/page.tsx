@@ -23,6 +23,7 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import useSWR from "swr";
+import CustomerContactHistory from "./CustomerContactHistory";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { fetcher } from "@/lib/fetcher";
 import { getAppRole } from "@/lib/roles";
@@ -48,7 +49,7 @@ type Customer = {
   requirements?: string;
   interest_level?: InterestLevel;
   status?: LeadStatus;
-  contact_logs_json?: string;
+  contact_count?: number;
   contact_logs?: ContactLog[];
   last_contacted_at?: string;
   next_follow_up_date?: string;
@@ -175,8 +176,7 @@ function getFollowUpInfo(customer: Customer) {
   const status = getStatus(customer.status);
   if (status === "deposited" || status === "not_interested") return null;
 
-  const logs = customer.contact_logs || [];
-  const dueDate = customer.next_follow_up_date || (logs.length === 0 ? getTodayInputValue() : "");
+  const dueDate = customer.next_follow_up_date || (customer.contact_count === 0 ? getTodayInputValue() : "");
   if (!dueDate) return null;
 
   const distance = getDateDistance(dueDate);
@@ -225,12 +225,20 @@ export default function SalesCrmPage() {
   const router = useRouter();
   const { data: session, status: sessionStatus } = useSession();
   const isAdmin = getAppRole(session?.user?.role) === "Admin";
-  const { data, error, isLoading, mutate } = useSWR<CustomersResponse>(isAdmin ? "/api/sales-customers" : null, fetcher);
+  const { data, error, isLoading, mutate } = useSWR<CustomersResponse>(isAdmin ? "/api/sales-customers?view=list" : null, fetcher);
   const [leadForm, setLeadForm] = useState(emptyLead);
   const [editForm, setEditForm] = useState(emptyLead);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [activeTab, setActiveTab] = useState<"form" | "table">("table");
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const { data: printData, error: printError, mutate: reloadPrintData } = useSWR<CustomersResponse>(
+    isAdmin && printDialogOpen ? "/api/sales-customers" : null,
+    fetcher,
+  );
+  const printLogsByCustomer = useMemo(
+    () => new Map(printData?.data?.map((customer) => [customer.id, customer.contact_logs])),
+    [printData],
+  );
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all");
   const [contactDialogCustomer, setContactDialogCustomer] = useState<Customer | null>(null);
@@ -723,9 +731,6 @@ export default function SalesCrmPage() {
                 filteredCustomers.map((customer, index) => {
                   const status = getStatus(customer.status);
                   const interest = getInterest(customer.interest_level);
-                  const logs = customer.contact_logs || [];
-                  const visibleLogs = logs.slice(-4).reverse();
-                  const hiddenLogCount = Math.max(0, logs.length - visibleLogs.length);
                   const canCreateProject = status === "deposited";
                   const followUp = getFollowUpInfo(customer);
 
@@ -763,25 +768,7 @@ export default function SalesCrmPage() {
                         </select>
                       </td>
                       <td className="px-4 py-4">
-                        {logs.length > 0 ? (
-                          <div className="space-y-2">
-                            <div className="text-xs font-semibold text-gray-400">รวม {logs.length} ครั้ง</div>
-                            {visibleLogs.map((log) => (
-                              <div key={`${customer.id}-${log.round}-${log.created_at}`} className="rounded-lg bg-gray-50 px-3 py-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="font-semibold text-gray-900">ครั้งที่ {log.round}</span>
-                                  <span className="text-xs text-gray-400">{log.date}</span>
-                                </div>
-                                <div className="mt-1 whitespace-pre-line text-gray-600">{log.note}</div>
-                              </div>
-                            ))}
-                            {hiddenLogCount > 0 && (
-                              <div className="text-xs text-gray-400">มีประวัติก่อนหน้านี้อีก {hiddenLogCount} ครั้ง</div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-gray-300">ยังไม่มีประวัติ</span>
-                        )}
+                        <CustomerContactHistory customerId={customer.id} count={customer.contact_count ?? 0} />
                       </td>
                       <td className="px-4 py-4">
                         <select
@@ -829,6 +816,7 @@ export default function SalesCrmPage() {
                             </button>
                             <Link
                               href={buildProjectLink(customer)}
+                              prefetch={false}
                               className={`inline-flex items-center justify-center rounded-lg px-3 py-2 text-xs font-semibold text-white transition ${canCreateProject ? "bg-orange-600 hover:bg-orange-700" : "pointer-events-none bg-gray-300"}`}
                             >
                               รายละเอียด
@@ -925,14 +913,30 @@ export default function SalesCrmPage() {
                 <button
                   type="button"
                   onClick={printSalesFollowUp}
-                  className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-semibold text-white transition hover:bg-orange-700"
+                  disabled={!printData?.success}
+                  className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 font-semibold text-white transition hover:bg-orange-700 disabled:opacity-50"
                 >
                   <Printer size={17} />
                   พิมพ์เอกสาร
                 </button>
               </div>
             </div>
-            <CrmPrintDocument customers={filteredCustomers} summary={summary} statusFilter={statusFilter} />
+            {printData?.success ? (
+              <CrmPrintDocument
+                customers={filteredCustomers.map((customer) => ({
+                  ...customer,
+                  contact_logs: printLogsByCustomer.get(customer.id),
+                }))}
+                summary={summary}
+                statusFilter={statusFilter}
+              />
+            ) : printError || printData ? (
+              <button type="button" onClick={() => reloadPrintData()} className="p-5 text-red-600">
+                โหลดข้อมูลรายงานไม่สำเร็จ ลองอีกครั้ง
+              </button>
+            ) : (
+              <p role="status" className="p-5 text-gray-500">กำลังเตรียมรายงาน</p>
+            )}
           </div>
         </div>
       )}
@@ -970,7 +974,7 @@ export default function SalesCrmPage() {
                   </div>
                   <div>
                     <div className="font-semibold text-gray-900">
-                      {(contactDialogCustomer.contact_logs || []).length} ครั้ง
+                      {contactDialogCustomer.contact_count ?? 0} ครั้ง
                     </div>
                     <div className="mt-1 text-xs text-gray-400">ประวัติการติดต่อเดิม</div>
                   </div>
