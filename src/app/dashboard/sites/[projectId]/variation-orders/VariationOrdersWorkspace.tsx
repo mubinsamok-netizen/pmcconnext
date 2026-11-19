@@ -395,34 +395,23 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     }
   };
 
-  const startEditVo = (vo: VoRecord & { items?: VoItemInput[] }) => {
-    const existingItems = Array.isArray(vo.items) && vo.items.length > 0
-      ? normalizeEditorItems(vo.items.map((item, index) => ({
-          item_no: item.item_no || index + 1,
-          sort_order: item.sort_order || index + 1,
-          row_type: asVoItemRowType(String(item.row_type || "")),
-          change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(String(vo.vo_type || "VO+"))),
-          parent_item_no: item.parent_item_no,
-          description: String(item.description || ""),
-          unit: String(item.unit || "LS"),
-          quantity: String(item.quantity || "1"),
-          unit_price: String(item.unit_price || ""),
-          material_unit_price: String(item.material_unit_price || ""),
-          material_amount: String(item.material_amount || ""),
-          labor_unit_price: String(item.labor_unit_price || (!item.material_unit_price && !item.labor_unit_price ? item.unit_price || "" : "")),
-          labor_amount: String(item.labor_amount || ""),
-          amount: String(item.amount || ""),
-        })))
-      : [{
-          item_no: 1,
-          sort_order: 1,
-          row_type: "group",
-          change_type: asVoType(String(vo.vo_type || "VO+")) === "VO-" ? "deduct" : "add",
-          description: String(vo.title || vo.description || "งานเพิ่ม-ลด"),
-          unit: "LS",
-          quantity: "1",
-          unit_price: String(vo.grand_total || vo.subtotal || ""),
-        }];
+  const startEditVo = (vo: VoRecord, items: VoItemInput[]) => {
+    const existingItems = normalizeEditorItems(items.map((item, index) => ({
+      item_no: item.item_no || index + 1,
+      sort_order: item.sort_order || index + 1,
+      row_type: asVoItemRowType(String(item.row_type || "")),
+      change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(String(vo.vo_type || "VO+"))),
+      parent_item_no: item.parent_item_no,
+      description: String(item.description || ""),
+      unit: String(item.unit || "LS"),
+      quantity: String(item.quantity || "1"),
+      unit_price: String(item.unit_price || ""),
+      material_unit_price: String(item.material_unit_price || ""),
+      material_amount: String(item.material_amount || ""),
+      labor_unit_price: String(item.labor_unit_price || (!item.material_unit_price && !item.labor_unit_price ? item.unit_price || "" : "")),
+      labor_amount: String(item.labor_amount || ""),
+      amount: String(item.amount || ""),
+    })));
     setSelectedVoId(vo.vo_id);
     setEditingVoId(vo.vo_id);
     setCreateForm({
@@ -523,6 +512,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   };
 
   const editVo = async (vo: VoRecord & { items?: VoItemInput[] }) => {
+    if (!Array.isArray(vo.items) || vo.items.length === 0) {
+      setError("ไม่พบรายการงานของ VO นี้ กรุณาโหลดข้อมูลใหม่ก่อนแก้ไข");
+      return;
+    }
     const status = asVoStatus(String(vo.status || ""));
     const requiresRecall = status === "pending_approval" && Boolean(vo.approval_token || vo.sent_to_customer_at);
 
@@ -534,16 +527,15 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
         ...vo,
         ...result.data,
         status: "draft",
-        items: vo.items,
-      } as VoRecord & { items?: VoItemInput[] };
+      };
       setDetailDialogOpen(false);
-      startEditVo(recalledVo);
+      startEditVo(recalledVo, vo.items);
       setMessage(`เรียกกลับ ${vo.vo_id} แล้ว ลิงก์เดิมถูกยกเลิก กรุณาบันทึกและส่ง LINE ฉบับใหม่`);
       return;
     }
 
     setDetailDialogOpen(false);
-    startEditVo(vo);
+    startEditVo(vo, vo.items);
   };
 
   const printVariationOrders = () => {

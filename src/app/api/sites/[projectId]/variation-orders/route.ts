@@ -9,7 +9,7 @@ import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/li
 import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllSupabase, getSupabaseSiteConfig } from "@/lib/supabaseCrud";
 import { getSupabaseTasks } from "@/lib/supabaseReadModel";
-import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
+import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import {
   VO_TYPE_LABELS,
   addCalendarDays,
@@ -143,7 +143,12 @@ async function getVoRows(context: RouteContext, tableName: VoTableName) {
   const projectId = context.project.project_id;
   const readSheetsRows = async () => filterProjectRows(await findAllRaw(tableName, context.siteSheetId), projectId);
 
-  if (!isSupabaseReadEnabled("site")) return readSheetsRows();
+  // These two tables are written through the primary backend even when
+  // experimental site reads are disabled.
+  const usePrimary = tableName === "Variation_Orders" || tableName === "VO_Items"
+    ? isSupabaseBackend()
+    : isSupabaseReadEnabled("site");
+  if (!usePrimary) return readSheetsRows();
 
   const supabaseConfig = getSupabaseSiteConfig(tableName);
   if (!supabaseConfig) return readSheetsRows();

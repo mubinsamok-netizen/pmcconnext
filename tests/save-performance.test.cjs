@@ -163,6 +163,7 @@ for (const databaseFails of [false, true]) {
         getErrorMessage: (error) => error.message,
       },
       "@/lib/supabaseRest": {
+        isSupabaseBackend: () => true,
         isSupabaseReadEnabled: () => true,
         readWithSheetsFallback: async (_label, primary, fallback) => {
           try { return await primary(); } catch { return fallback(); }

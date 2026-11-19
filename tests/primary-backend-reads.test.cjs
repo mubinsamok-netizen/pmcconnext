@@ -95,6 +95,36 @@ for (const mode of ["success", "empty", "fallback", "sheets", "disabled"]) {
   });
 }
 
+test("VO reopen reads the same primary backend as create and edit with experimental reads off", async () => {
+  const rows = [
+    { item_id: "GROUP-TestbyZoneIdea", vo_id: "VO-TestbyZoneIdea", project_id: "P-1", row_type: "group_add", item_no: 1, sort_order: 1 },
+    { item_id: "DETAIL-TestbyZoneIdea", vo_id: "VO-TestbyZoneIdea", project_id: "P-1", row_type: "detail", item_no: 2, parent_item_no: 1, sort_order: 2, description: "Before TestbyZoneIdea" },
+  ];
+  const api = loadTs("src/app/api/sites/[projectId]/variation-orders/route.ts", {
+    "@/lib/supabaseRest": loadTs("src/lib/supabaseRest.ts", {}, [], {
+      DATA_BACKEND: "supabase", SUPABASE_EXPERIMENTAL_SITE_READS: "false",
+    }),
+    "@/lib/sheetsCrud": { findAllRaw: async () => { throw new Error("Stale Sheets source must not be read"); } },
+    "@/lib/supabaseCrud": {
+      getSupabaseSiteConfig: (table) => ({ table }),
+      findAllSupabase: async (config, projectId) => {
+        assert.equal(projectId, "P-1");
+        return config.table === "VO_Items" ? rows : [{ vo_id: "VO-TestbyZoneIdea", project_id: "P-1" }];
+      },
+    },
+    "@/lib/variationOrders": { numberValue: Number },
+  }, ["getVoRows"]);
+  assert.equal((await api.getVoRows(context, "Variation_Orders"))[0].vo_id, "VO-TestbyZoneIdea");
+  for (const description of ["Before TestbyZoneIdea", "After TestbyZoneIdea"]) {
+    rows[1].description = description;
+    const items = await api.getVoRows(context, "VO_Items");
+    assert.equal(items.length, 2);
+    assert.equal(items[1].row_type, "detail");
+    assert.equal(items[1].parent_item_no, items[0].item_no);
+    assert.equal(items[1].description, description);
+  }
+});
+
 test("site overview and project progress retain Supabase task counts when Sheets is unavailable", async () => {
   let batches = 0;
   let sheetReads = 0;
