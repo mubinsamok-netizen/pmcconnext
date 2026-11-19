@@ -29,3 +29,6 @@ The user accepted the Sales CRM workflow and requested the increment to
 
 The user accepted the Memo page 10 workflow and requested the increment to
 `UAT v1.0.006`.
+
+The user accepted the Contractor Database page 6 workflow and requested the
+increment to `UAT v1.0.007`.
