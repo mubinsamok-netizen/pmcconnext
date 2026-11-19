@@ -23,3 +23,6 @@ and requested the increment to `UAT v1.0.003`.
 
 The user accepted the Variation Orders workflow and requested the increment to
 `UAT v1.0.004`.
+
+The user accepted the Sales CRM workflow and requested the increment to
+`UAT v1.0.005`.
