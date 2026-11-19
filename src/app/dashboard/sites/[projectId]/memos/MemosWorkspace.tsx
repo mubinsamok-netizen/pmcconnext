@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { fetcher } from "@/lib/fetcher";
 import { hasPermission } from "@/lib/permissions";
 import {
@@ -378,7 +378,18 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const { data, error, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
   const memos = useMemo(() => data?.data || [], [data?.data]);
   const evidence = useMemo(() => data?.evidence || [], [data?.evidence]);
-  const auditLogs = useMemo(() => data?.audit_logs || [], [data?.audit_logs]);
+  const auditEndpoint = `${endpoint}?view=audit`;
+  const [auditOpen, setAuditOpen] = useState(false);
+  const { mutate: mutateCache } = useSWRConfig();
+  const { data: auditData, error: auditError, mutate: retryAudit } = useSWR<ApiResponse>(
+    auditOpen ? auditEndpoint : null,
+    async (url: string) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("โหลดประวัติ Memo ไม่สำเร็จ");
+      return response.json();
+    },
+  );
+  const auditLogs = auditData?.audit_logs || [];
   const linkedVos = useMemo(() => data?.linked_vos || {}, [data?.linked_vos]);
   const canCreate = hasPermission(userRole, "siteMemo.create");
   const canIssue = hasPermission(userRole, "siteMemo.issue");
@@ -456,6 +467,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.error) throw new Error(String(result.error || "ทำรายการไม่สำเร็จ"));
+      void mutateCache(auditEndpoint, undefined, { revalidate: auditOpen }).catch(() => undefined);
       if ((action === "create_memo" || action === "update_memo") && result.data?.memo_id) {
         const saved = result.data as MemoRecord;
         await mutate((current) => ({
@@ -464,8 +476,8 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
           data: [saved, ...(current?.data || []).filter((memo) => memo.memo_id !== saved.memo_id)]
             .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime()),
         }), { revalidate: false });
-        // Refresh audit history without holding the completed save open.
-        void mutate().catch(() => setActionError("บันทึกสำเร็จแล้ว แต่โหลดประวัติล่าสุดไม่สำเร็จ กรุณารีเฟรช"));
+        // Refresh the memo list without holding the completed save open.
+        void mutate().catch(() => setActionError("บันทึกสำเร็จแล้ว แต่โหลดรายการล่าสุดไม่สำเร็จ กรุณารีเฟรช"));
       } else {
         await mutate();
       }
@@ -1023,10 +1035,25 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center gap-2">
               <History className="text-gray-500" size={18} />
-              <h3 className="font-extrabold text-gray-900">Audit Log</h3>
+              <h3 className="font-extrabold text-gray-900">ประวัติการทำรายการ</h3>
+              <button
+                type="button"
+                aria-expanded={auditOpen}
+                onClick={() => setAuditOpen(!auditOpen)}
+                className="ml-auto rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
+              >
+                {auditOpen ? "ซ่อนประวัติ" : "ดูประวัติ"}
+              </button>
             </div>
-            <div className="space-y-2">
-              {auditLogs.slice(0, 12).map((log) => (
+            {auditOpen && <div className="space-y-2">
+              {auditError ? (
+                <button type="button" onClick={() => retryAudit()} className="text-sm text-red-700">
+                  โหลดประวัติไม่สำเร็จ ลองอีกครั้ง
+                </button>
+              ) : !auditData ? (
+                <p role="status" className="text-sm text-gray-500">กำลังโหลดประวัติ</p>
+              ) : null}
+              {auditLogs.map((log) => (
                 <div key={String(log.log_id || `${log.timestamp}-${log.action}`)} className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                     <span className="font-bold text-gray-800">{log.summary || log.action}</span>
@@ -1035,8 +1062,10 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                   <p className="mt-1 text-xs text-gray-500">{log.actor_name || log.actor_email || "-"} · {log.action}</p>
                 </div>
               ))}
-              {auditLogs.length === 0 ? <p className="text-sm text-gray-500">ยังไม่มี audit log ของ Memo</p> : null}
-            </div>
+              {auditData && !auditError && auditLogs.length === 0 ? (
+                <p className="text-sm text-gray-500">ยังไม่มีประวัติการทำรายการ</p>
+              ) : null}
+            </div>}
           </div>
         </section>
       )}

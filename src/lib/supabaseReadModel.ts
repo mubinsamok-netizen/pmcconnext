@@ -713,9 +713,15 @@ export async function getSupabaseNotifications() {
   }));
 }
 
-export async function getSupabaseAuditLogs() {
+export async function getSupabaseAuditLogs(projectId?: string | null) {
   const rows = await supabaseSelect<SupabaseAuditLog>("audit_logs", {
     order: "timestamp.desc",
+    ...(projectId ? {
+      project_id: `eq.${projectId}`,
+      module: "eq.site_memos",
+      select: "log_id,timestamp,actor_name,actor_email,project_id,module,summary,action",
+      limit: "12",
+    } : {}),
   }, {
     schema: getSupabaseMasterSchema(),
   });

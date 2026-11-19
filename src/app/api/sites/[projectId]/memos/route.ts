@@ -7,6 +7,8 @@ import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAll, findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
+import { getSupabaseAuditLogs } from "@/lib/supabaseReadModel";
+import { isSupabaseBackend, readWithSheetsFallback } from "@/lib/supabaseRest";
 import {
   addCalendarDays,
   createNextVoId,
@@ -150,11 +152,37 @@ async function prepareMemoPdfAssets(memo: MemoRecord, evidence: MemoEvidenceReco
   };
 }
 
-async function getMemoData(context: RouteContext) {
-  const [siteRows, auditLogs] = await Promise.all([
-    findAllBatch(["Site_Memos", "Site_Memo_Evidence", "Variation_Orders"], context.siteSheetId) as unknown as Promise<Record<string, SheetRecord[]>>,
-    findAllMaster("AuditLogs") as Promise<SheetRecord[]>,
-  ]);
+const memoReadMetrics: Record<string, string> = {
+  Site_Memos: "memo_rows",
+  Site_Memo_Evidence: "evidence_rows",
+  Variation_Orders: "vo_rows",
+};
+
+async function getMemoHistory(projectId: string) {
+  const readSheetHistory = async () => (await findAllMaster("AuditLogs") as SheetRecord[])
+    .filter((log) => log.project_id === projectId && log.module === "site_memos")
+    .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
+    .slice(0, 12);
+
+  const logs = isSupabaseBackend()
+    ? await readWithSheetsFallback("Memo audit history", () => getSupabaseAuditLogs(projectId), readSheetHistory)
+    : await readSheetHistory();
+  return logs.map(({ log_id, timestamp, actor_name, actor_email, summary, action }) => ({
+    log_id, timestamp, actor_name, actor_email, summary, action,
+  }));
+}
+
+async function getMemoData(context: RouteContext, timings?: Record<string, number>) {
+  const started = performance.now();
+  const siteRows = await findAllBatch(["Site_Memos", "Site_Memo_Evidence", "Variation_Orders"], context.siteSheetId, {
+    projectId: context.project.project_id,
+    onTableRead: timings && ((table, durationMs) => {
+      const metric = memoReadMetrics[table];
+      if (metric) timings[metric] = durationMs;
+    }),
+  }) as unknown as Record<string, SheetRecord[]>;
+  if (timings) timings.site_reads = performance.now() - started;
+  const prepareStarted = performance.now();
   const memoRows = (siteRows.Site_Memos || []) as MemoRecord[];
   const evidenceRows = (siteRows.Site_Memo_Evidence || []) as MemoEvidenceRecord[];
   const variationOrderRows = (siteRows.Variation_Orders || []) as VoRecord[];
@@ -170,19 +198,17 @@ async function getMemoData(context: RouteContext) {
       return accumulator;
     }, {});
 
-  return {
+  const result = {
     memos: memoRows
       .filter((row) => row.project_id === projectId)
       .sort((a, b) => new Date(String(b.updated_at || b.created_at || 0)).getTime() - new Date(String(a.updated_at || a.created_at || 0)).getTime()),
     evidence: evidenceRows
       .filter((row) => row.project_id === projectId)
       .sort((a, b) => new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime()),
-    auditLogs: auditLogs
-      .filter((log) => log.project_id === projectId && log.module === "site_memos")
-      .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
-      .slice(0, 160),
     linkedVos,
   };
+  if (timings) timings.prepare = performance.now() - prepareStarted;
+  return result;
 }
 
 async function getMemoRootFolder(context: RouteContext) {
@@ -764,21 +790,35 @@ async function handleCreateVoFromMemo(body: Record<string, unknown>, context: Ro
   return NextResponse.json({ success: true, data: voPayload });
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const started = performance.now();
+  const timings: Record<string, number> = {};
+  const respond = (body: Record<string, unknown>, status = 200) => {
+    timings.total = performance.now() - started;
+    const serverTiming = Object.entries(timings).map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", ");
+    return NextResponse.json(body, { status, headers: { "Server-Timing": serverTiming } });
+  };
+
   try {
     const { projectId } = await params;
     const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    timings.site_context = performance.now() - started;
+    if ("error" in context) return respond({ error: context.error }, context.status);
 
     const routeContext = context as RouteContext;
-    const data = await getMemoData(routeContext);
+    if (new URL(req.url).searchParams.get("view") === "audit") {
+      const auditStarted = performance.now();
+      const auditLogs = await getMemoHistory(routeContext.project.project_id);
+      timings.audit = performance.now() - auditStarted;
+      return respond({ success: true, audit_logs: auditLogs });
+    }
+    const data = await getMemoData(routeContext, timings);
 
-    return NextResponse.json({
+    return respond({
       success: true,
       project: routeContext.project,
       data: data.memos,
       evidence: data.evidence,
-      audit_logs: data.auditLogs,
       linked_vos: data.linkedVos,
       line: {
         test_mode: isMemoLineTestMode(),
@@ -787,7 +827,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       },
     });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 
