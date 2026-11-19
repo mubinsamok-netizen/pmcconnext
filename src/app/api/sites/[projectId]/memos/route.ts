@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
+import { after, NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
+import { createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
@@ -254,6 +256,98 @@ async function uploadMemoFiles(context: RouteContext, memoId: string, folderName
   return uploaded.filter((file): file is MemoAttachment => Boolean(file));
 }
 
+function memoUploadOwner(context: RouteContext) {
+  const email = context.session.user.email?.trim().toLowerCase();
+  if (!email) throw new Error("ไม่พบผู้ใช้อัปโหลด");
+  return createHash("sha256").update(JSON.stringify([context.project.project_id, email])).digest("hex");
+}
+
+async function findMemo(context: RouteContext, memoId: string) {
+  const rows = await findAllBatch(["Site_Memos"], context.siteSheetId, { projectId: context.project.project_id });
+  return (rows.Site_Memos as unknown as MemoRecord[]).find(
+    (row) => row.memo_id === memoId && row.project_id === context.project.project_id
+  );
+}
+
+async function startMemoUpload(req: Request, context: RouteContext, body: Record<string, unknown>) {
+  const evidence = body.kind === "evidence";
+  const forbidden = requirePermission(context, evidence ? "siteMemo.acknowledge" : "siteMemo.create");
+  if (forbidden) return forbidden;
+
+  const memoId = textValue(body.memo_id);
+  const name = textValue(body.file_name);
+  const type = textValue(body.mime_type);
+  const size = Number(body.file_size);
+  if (!name || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(type) || type.length > 100 ||
+      (type.startsWith("image/") && type !== "image/webp") || !Number.isSafeInteger(size) || size <= 0) {
+    return NextResponse.json({ error: "ชื่อ ชนิด หรือขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
+  }
+  const memo = await findMemo(context, memoId);
+  if (!memo || (evidence && !memo.pdf_url)) {
+    return NextResponse.json({ error: "ไม่พบ Memo ที่พร้อมรับไฟล์" }, { status: 404 });
+  }
+  const parent = await getMemoFolder(context, memoId);
+  if (!parent) return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive ของไซต์" }, { status: 400 });
+  const folder = await findOrCreateFolder(evidence ? "Customer Acknowledgement" : "Attachments", parent);
+  const upload = await createResumableUploadSession({
+    fileName: safeFolderName(name),
+    mimeType: type,
+    size,
+    parentId: folder.id || parent,
+    origin: new URL(req.url).origin,
+    appProperties: { pmcMemo: memoId, pmcOwner: memoUploadOwner(context), pmcKind: evidence ? "evidence" : "attachment", pmcSize: String(size), pmcMime: type },
+  });
+  return NextResponse.json({ success: true, upload_url: upload.uploadUrl }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function readMemoUploads(context: RouteContext, memoId: string, input: unknown, kind: "evidence" | "attachment") {
+  const ids = Array.isArray(input) ? [...new Set(input.map(textValue))] : [];
+  if (ids.length > 10 || ids.some((id) => !/^[a-z0-9_-]{10,}$/i.test(id))) {
+    throw new Error("รายการไฟล์แนบไม่ถูกต้อง");
+  }
+  if (ids.length === 0) return [];
+  const owner = memoUploadOwner(context);
+  return Promise.all(ids.map(async (id): Promise<MemoAttachment> => {
+    const { data } = await drive.files.get({
+      fileId: id,
+      supportsAllDrives: true,
+      fields: "id,name,mimeType,size,trashed,appProperties,webViewLink",
+    });
+    const properties = data.appProperties;
+    if (data.trashed || properties?.pmcMemo !== memoId || properties?.pmcOwner !== owner ||
+        properties?.pmcKind !== kind || !data.size || properties.pmcSize !== data.size || properties.pmcMime !== data.mimeType) {
+      throw new Error("ยืนยันไฟล์แนบของ Memo จาก Google Drive ไม่สำเร็จ");
+    }
+    return {
+      file_id: id,
+      file_name: data.name || "",
+      file_url: data.webViewLink || `https://drive.google.com/file/d/${id}/view`,
+      mime_type: data.mimeType || "",
+    };
+  }));
+}
+
+async function attachMemoUploads(context: RouteContext, body: Record<string, unknown>) {
+  const forbidden = requirePermission(context, "siteMemo.create");
+  if (forbidden) return forbidden;
+  const memo = await findMemo(context, textValue(body.memo_id));
+  if (!memo) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
+  const files = await readMemoUploads(context, memo.memo_id, body.file_ids, "attachment");
+  const existing = parseMemoAttachments(memo.attachments_json);
+  const added = files.filter((file) => !existing.some((item) => item.file_id === file.file_id));
+  if (added.length === 0) return NextResponse.json({ success: true, data: memo });
+  const patch = {
+    attachments_json: safeJsonStringify([...existing, ...added]),
+    updated_at: new Date().toISOString(),
+  };
+  await updateSiteMemo(context, memo, patch);
+  await writeAuditLog({
+    actor: actor(context), projectId: context.project.project_id, module: "site_memos",
+    action: "attachments_added", targetId: memo.memo_id, summary: `แนบไฟล์ Memo ${added.length} ไฟล์`, after: patch,
+  });
+  return NextResponse.json({ success: true, data: { ...memo, ...patch } });
+}
+
 async function issueMemoPdfFor(req: Request, context: RouteContext, memo: MemoRecord, data: Awaited<ReturnType<typeof getMemoData>>, status: string = "issued") {
   const memoFolderId = await getMemoFolder(context, memo.memo_id);
   if (!memoFolderId) throw new Error("Project Drive folder is not configured");
@@ -262,7 +356,7 @@ async function issueMemoPdfFor(req: Request, context: RouteContext, memo: MemoRe
   const origin = req.headers.get("origin") || new URL(req.url).origin;
   const pdfAssets = await prepareMemoPdfAssets(
     { ...memo, document_no: documentNo, status },
-    data.evidence
+    data.evidence.filter((item) => item.memo_id === memo.memo_id)
   );
   const html = buildMemoPdfHtml({
     memo: pdfAssets.memo,
@@ -397,6 +491,43 @@ async function handleUpdateMemo(body: Record<string, unknown>, context: RouteCon
   return NextResponse.json({ success: true, data: { ...memo, ...patch } });
 }
 
+function queueMemoPdf(req: Request, context: RouteContext, memoId: string) {
+  after(async () => {
+    try {
+      const data = await getMemoData(context);
+      const memo = data.memos.find((row) => row.memo_id === memoId);
+      if (!memo) return;
+      const status = textValue(memo.status);
+      const issued = await issueMemoPdfFor(req, context, memo, data, status && status !== "draft" ? status : "issued");
+      const latest = await findMemo(context, memoId);
+      if (!latest || latest.updated_at !== memo.updated_at || latest.status !== memo.status ||
+          latest.pdf_file_id !== memo.pdf_file_id || latest.attachments_json !== memo.attachments_json ||
+          latest.acknowledged_date !== memo.acknowledged_date) return;
+      const patch: Record<string, string> = { ...issued.patch };
+      if (status !== "draft" && status) delete patch.status;
+      if (memo.issued_at) delete patch.issued_at;
+      await updateSiteMemo(context, memo, patch);
+      await writeAuditLog({
+        actor: actor(context), projectId: context.project.project_id, module: "site_memos",
+        action: "pdf_issued", targetId: memoId, summary: `ออก PDF Memo ${issued.patch.document_no}`, after: issued.patch,
+      });
+    } catch (error) {
+      console.error("Memo background PDF failed", { memoId, error: getErrorMessage(error) });
+    }
+  });
+}
+
+async function refreshAcknowledgedPdf(body: Record<string, unknown>, context: RouteContext, req: Request) {
+  const forbidden = requirePermission(context, "siteMemo.acknowledge");
+  if (forbidden) return forbidden;
+  const memo = await findMemo(context, textValue(body.memo_id));
+  if (!memo?.pdf_url || !memo.acknowledged_date) {
+    return NextResponse.json({ error: "ไม่พบ Memo ที่บันทึกหลักฐานรับทราบแล้ว" }, { status: 404 });
+  }
+  queueMemoPdf(req, context, memo.memo_id);
+  return NextResponse.json({ success: true, pdf_pending: true }, { status: 202 });
+}
+
 async function handleIssuePdf(body: Record<string, unknown>, context: RouteContext, req: Request) {
   const forbidden = requirePermission(context, "siteMemo.issue");
   if (forbidden) return forbidden;
@@ -405,6 +536,11 @@ async function handleIssuePdf(body: Record<string, unknown>, context: RouteConte
   const data = await getMemoData(context);
   const memo = data.memos.find((item) => item.memo_id === memoId);
   if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
+
+  if (body.defer_pdf === true) {
+    queueMemoPdf(req, context, memoId);
+    return NextResponse.json({ success: true, data: memo, pdf_pending: true }, { status: 202 });
+  }
 
   let issued;
   try {
@@ -533,7 +669,9 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   if (!memo?._rowIndex) return NextResponse.json({ error: "ไม่พบ Memo" }, { status: 404 });
   if (!memo.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF Memo ก่อนบันทึกหลักฐานรับทราบ" }, { status: 400 });
 
-  const evidenceUploads = await uploadMemoFiles(context, memoId, "Customer Acknowledgement", parseUploads(body.evidence_uploads));
+  const evidenceUploads = Array.isArray(body.file_ids)
+    ? await readMemoUploads(context, memoId, body.file_ids, "evidence")
+    : await uploadMemoFiles(context, memoId, "Customer Acknowledgement", parseUploads(body.evidence_uploads));
   if (evidenceUploads.length === 0) {
     return NextResponse.json({ error: "กรุณาแนบหลักฐานลูกค้ารับทราบ" }, { status: 400 });
   }
@@ -542,7 +680,9 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   const acknowledgedBy = textValue(body.acknowledged_by) || textValue(memo.customer_name) || String(context.project.client || "");
   const channel = textValue(body.channel) || "LINE";
   const notes = textValue(body.notes);
-  const evidenceRows = evidenceUploads.map((file) => ({
+  const evidenceRows = evidenceUploads
+    .filter((file) => !data.evidence.some((item) => item.memo_id === memoId && item.file_id === file.file_id))
+    .map((file) => ({
     evidence_id: makeId("MME"),
     memo_id: memoId,
     project_id: context.project.project_id,
@@ -569,6 +709,17 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   };
   await updateSiteMemo(context, memo, patch);
 
+  if (body.defer_pdf === true) {
+    await writeAuditLog({
+      actor: actor(context), projectId: context.project.project_id, module: "site_memos",
+      action: "customer_acknowledged", targetId: memoId,
+      summary: `แนบหลักฐานรับทราบ Memo ${memo.document_no || memoId}`,
+      before: memo, after: { ...patch, evidenceCount: evidenceUploads.length },
+    });
+    queueMemoPdf(req, context, memoId);
+    return NextResponse.json({ success: true, data: { ...memo, ...patch }, pdf_pending: true }, { status: 202 });
+  }
+
   const memoFolderId = await getMemoFolder(context, memoId);
   const documentNo = textValue(memo.document_no) || createMemoDocumentNo(context.project.project_id, data.memos);
   let refreshedPdf: Record<string, string> = {};
@@ -576,7 +727,7 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
     const origin = req.headers.get("origin") || new URL(req.url).origin;
     const pdfAssets = await prepareMemoPdfAssets(
       { ...memo, ...patch, document_no: documentNo },
-      [...data.evidence, ...evidenceRows]
+      [...data.evidence, ...evidenceRows].filter((item) => item.memo_id === memoId)
     );
     const html = buildMemoPdfHtml({
       memo: pdfAssets.memo,
@@ -841,11 +992,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = textValue(body.action);
 
+    if (action === "start_upload") return await startMemoUpload(req, routeContext, body);
+    if (action === "attach_uploads") return await attachMemoUploads(routeContext, body);
     if (action === "create_memo") return handleCreateMemo(body, routeContext);
     if (action === "update_memo") return handleUpdateMemo(body, routeContext);
+    if (action === "refresh_acknowledged_pdf") return await refreshAcknowledgedPdf(body, routeContext, req);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, req);
     if (action === "send_acknowledgement") return handleSendAcknowledgement(body, routeContext, req);
-    if (action === "acknowledge") return handleAcknowledge(body, routeContext, req);
+    if (action === "acknowledge") return await handleAcknowledge(body, routeContext, req);
     if (action === "update_status") return handleUpdateStatus(body, routeContext);
     if (action === "create_vo_from_memo") return handleCreateVoFromMemo(body, routeContext);
 

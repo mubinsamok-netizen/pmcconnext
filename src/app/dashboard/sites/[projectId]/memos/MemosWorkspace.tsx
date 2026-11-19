@@ -21,7 +21,8 @@ import {
   X,
 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
-import { fetcher } from "@/lib/fetcher";
+import { postNoteAttachmentAction, uploadDriveFile } from "@/lib/directDriveNoteUpload";
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { hasPermission } from "@/lib/permissions";
 import {
   MEMO_RELATED_LABELS,
@@ -58,14 +59,6 @@ type ApiResponse = {
   error?: string;
 };
 
-type UploadPayload = {
-  name: string;
-  type: string;
-  dataUrl: string;
-};
-
-const MEMO_IMAGE_MAX_EDGE = 1600;
-const MEMO_IMAGE_QUALITY = 0.72;
 
 type TabKey = "create" | "acknowledge" | "details";
 
@@ -154,80 +147,29 @@ function formatBytes(value: number) {
 }
 
 function isCompressibleImage(file: File) {
-  return file.type.startsWith("image/") && !["image/gif", "image/svg+xml"].includes(file.type);
+  return file.type.startsWith("image/");
 }
 
 function isPreviewableFile(file: File) {
   return file.type.startsWith("image/") || file.type === "application/pdf";
 }
 
-function loadImageFromFile(file: File) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("อ่านรูปภาพไม่สำเร็จ"));
-    };
-    image.src = url;
-  });
-}
+type MemoTransfer = { file: File; percent: number; status: string; id?: string };
+type MemoUpload = {
+  memoId: string;
+  kind: "attachment" | "evidence";
+  files: MemoTransfer[];
+  previousPdf: string;
+  issuePdf: boolean;
+  acknowledgement?: Record<string, unknown>;
+};
 
-function canvasToBlob(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("บีบอัดรูปภาพไม่สำเร็จ"));
-    }, "image/jpeg", MEMO_IMAGE_QUALITY);
-  });
-}
+const quietHeaders = { "X-PMC-No-Global-Loading": "1" };
 
-async function compressImageFile(file: File) {
-  if (!isCompressibleImage(file)) return file;
-
-  const image = await loadImageFromFile(file);
-  const scale = Math.min(1, MEMO_IMAGE_MAX_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) return file;
-
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-  const blob = await canvasToBlob(canvas);
-  if (blob.size >= file.size) return file;
-
-  const baseName = file.name.replace(/\.[^.]+$/, "") || "memo-image";
-  return new File([blob], `${baseName}.jpg`, {
-    type: "image/jpeg",
-    lastModified: Date.now(),
-  });
-}
-
-async function prepareUploadFile(file: File) {
-  try {
-    return await compressImageFile(file);
-  } catch {
-    return file;
-  }
-}
-
-async function fileToUploadPayload(file: File) {
-  const preparedFile = await prepareUploadFile(file);
-  return new Promise<UploadPayload>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: preparedFile.name, type: preparedFile.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(preparedFile);
-  });
+async function fetchMemo(url: string): Promise<ApiResponse> {
+  const response = await fetch(url, { headers: quietHeaders });
+  if (!response.ok) throw new Error("โหลดข้อมูล Memo ไม่สำเร็จ");
+  return response.json();
 }
 
 function statusClass(status?: string | number) {
@@ -375,7 +317,7 @@ function ExistingAttachmentList({ attachments }: { attachments: MemoAttachment[]
 
 export default function MemosWorkspace({ project, userRole }: { project: Project; userRole: string }) {
   const endpoint = `/api/sites/${encodeURIComponent(project.project_id)}/memos`;
-  const { data, error, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
+  const { data, error, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetchMemo);
   const memos = useMemo(() => data?.data || [], [data?.data]);
   const evidence = useMemo(() => data?.evidence || [], [data?.evidence]);
   const auditEndpoint = `${endpoint}?view=audit`;
@@ -383,11 +325,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const { mutate: mutateCache } = useSWRConfig();
   const { data: auditData, error: auditError, mutate: retryAudit } = useSWR<ApiResponse>(
     auditOpen ? auditEndpoint : null,
-    async (url: string) => {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("โหลดประวัติ Memo ไม่สำเร็จ");
-      return response.json();
-    },
+    fetchMemo,
   );
   const auditLogs = auditData?.audit_logs || [];
   const linkedVos = useMemo(() => data?.linked_vos || {}, [data?.linked_vos]);
@@ -410,6 +348,10 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   const [message, setMessage] = useState("");
   const [actionError, setActionError] = useState("");
   const [loadingAction, setLoadingAction] = useState("");
+  const [upload, setUpload] = useState<MemoUpload | null>(null);
+  const [uploadRunning, setUploadRunning] = useState(false);
+  const [pdfJob, setPdfJob] = useState<{ memoId: string; previousPdf: string; started: number; evidence: boolean } | null>(null);
+  const [pdfTimedOut, setPdfTimedOut] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const selectedMemo = useMemo(
@@ -455,6 +397,22 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     return { waitingAck, acknowledged, extensionDays, approvedDays };
   }, [memos]);
 
+  const pdfReady = pdfJob && memos.some((memo) =>
+    memo.memo_id === pdfJob.memoId && memo.pdf_file_id && memo.pdf_file_id !== pdfJob.previousPdf
+  );
+
+  useEffect(() => {
+    if (!pdfJob || pdfReady || pdfTimedOut) return;
+    const timer = window.setInterval(() => {
+      if (Date.now() - pdfJob.started > 90_000) {
+        setPdfTimedOut(true);
+        return;
+      }
+      void mutate().catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [pdfJob, pdfReady, pdfTimedOut, mutate]);
+
   const postAction = async (action: string, payload: Record<string, unknown>) => {
     setLoadingAction(action);
     setMessage("");
@@ -462,7 +420,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     try {
       const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...quietHeaders },
         body: JSON.stringify({ action, ...payload }),
       });
       const result = await response.json().catch(() => ({}));
@@ -479,7 +437,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
         // Refresh the memo list without holding the completed save open.
         void mutate().catch(() => setActionError("บันทึกสำเร็จแล้ว แต่โหลดรายการล่าสุดไม่สำเร็จ กรุณารีเฟรช"));
       } else {
-        await mutate();
+        void mutate().catch(() => undefined);
       }
       return result;
     } catch (postError) {
@@ -506,51 +464,94 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     setActiveTab("create");
   };
 
+  const requestPdf = async (memoId: string, previousPdf: string, evidence = false) => {
+    const result = await postAction(evidence ? "refresh_acknowledged_pdf" : "issue_pdf", { memo_id: memoId, defer_pdf: true });
+    if (result?.pdf_pending) {
+      setPdfTimedOut(false);
+      setPdfJob({ memoId, previousPdf, started: Date.now(), evidence });
+    }
+    return Boolean(result?.pdf_pending);
+  };
+
+  const uploadMemoFiles = async (batch: MemoUpload) => {
+    setUploadRunning(true);
+    setActionError("");
+    const files = [...batch.files];
+    const updateFile = (index: number, patch: Partial<MemoTransfer>) => {
+      files[index] = { ...files[index], ...patch };
+      setUpload({ ...batch, files: [...files] });
+    };
+    setUpload({ ...batch, files: [...files] });
+    try {
+      for (const [index, entry] of files.entries()) {
+        if (entry.id) continue;
+        try {
+          updateFile(index, { status: "กำลังเตรียมไฟล์", percent: 0 });
+          const file = isCompressibleImage(entry.file) ? await prepareProjectCover(entry.file) : entry.file;
+          const mime = /\.pdf$/i.test(file.name) ? "application/pdf" : file.type || "application/octet-stream";
+          updateFile(index, { status: "กำลังอัปโหลด" });
+          const session = await postNoteAttachmentAction(endpoint, {
+            action: "start_upload", kind: batch.kind, memo_id: batch.memoId,
+            file_name: file.name, file_size: file.size, mime_type: mime,
+          });
+          const id = await uploadDriveFile(session.upload_url, file, mime, (percent) => updateFile(index, { percent }));
+          updateFile(index, { id, percent: 100, status: "ส่งถึง Drive แล้ว" });
+        } catch (error) {
+          updateFile(index, { status: error instanceof Error ? error.message : "อัปโหลดไม่สำเร็จ" });
+        }
+      }
+      if (files.some((file) => !file.id)) {
+        setActionError("มีไฟล์อัปโหลดไม่สำเร็จ ลองอีกครั้งเพื่อส่งเฉพาะไฟล์ที่ค้าง");
+        return;
+      }
+
+      const isEvidence = batch.kind === "evidence";
+      const result = await postAction(isEvidence ? "acknowledge" : "attach_uploads", {
+        ...batch.acknowledgement, memo_id: batch.memoId,
+        file_ids: files.map((file) => file.id), defer_pdf: isEvidence,
+      });
+      if (!result?.success) return;
+      setUpload(null);
+      if (isEvidence) {
+        setEvidenceFiles([]);
+        setAckForm({ ...emptyAckForm, acknowledged_by: project.client || "" });
+        setActiveTab("details");
+        setPdfTimedOut(false);
+        setPdfJob({ memoId: batch.memoId, previousPdf: batch.previousPdf, started: Date.now(), evidence: true });
+        setMessage("บันทึกหลักฐานรับทราบแล้ว");
+      } else if (batch.issuePdf) {
+        if (await requestPdf(batch.memoId, batch.previousPdf)) setMessage("บันทึก Memo และไฟล์แนบแล้ว");
+      } else {
+        setMessage("บันทึกไฟล์แนบแล้ว");
+      }
+    } finally {
+      setUploadRunning(false);
+    }
+  };
+
   const createMemo = (issuePdf: boolean) => {
     startTransition(async () => {
-      try {
-        const attachmentUploads = await Promise.all(attachmentFiles.map(fileToUploadPayload));
-        if (editingMemoId) {
-          const updated = await postAction("update_memo", {
-            memo_id: editingMemoId,
-            ...memoForm,
-            attachment_uploads: attachmentUploads,
-          });
-          if (!updated?.success) return;
-          setSelectedMemoId(editingMemoId);
-          if (issuePdf) {
-            await postAction("issue_pdf", { memo_id: editingMemoId });
-          }
-          resetMemoEditor();
-          setMessage(issuePdf ? "บันทึกการแก้ไข Memo และออก PDF ใหม่เรียบร้อยแล้ว" : "บันทึกการแก้ไข Memo เรียบร้อยแล้ว");
-          setActiveTab(issuePdf ? "acknowledge" : "details");
-          return;
-        }
-
-        const created = await postAction("create_memo", {
-          ...memoForm,
-          attachment_uploads: attachmentUploads,
-        });
-        const memoId = String(created?.data?.memo_id || "");
-        if (!memoId) return;
-        setSelectedMemoId(memoId);
-        if (issuePdf) {
-          await postAction("issue_pdf", { memo_id: memoId });
-        }
-        resetMemoEditor();
-        setMessage(issuePdf ? "สร้าง Memo และออก PDF เรียบร้อยแล้ว" : "บันทึกร่าง Memo เรียบร้อยแล้ว");
-        setActiveTab(issuePdf ? "acknowledge" : "details");
-      } catch (uploadError) {
-        setActionError(uploadError instanceof Error ? uploadError.message : "เตรียมไฟล์แนบไม่สำเร็จ");
+      const saved = await postAction(editingMemoId ? "update_memo" : "create_memo", {
+        ...memoForm, memo_id: editingMemoId,
+      });
+      const memoId = String(saved?.data?.memo_id || "");
+      if (!memoId) return;
+      const previousPdf = String(saved.data.pdf_file_id || "");
+      const files = attachmentFiles.map((file) => ({ file, percent: 0, status: "รออัปโหลด" }));
+      resetMemoEditor();
+      setSelectedMemoId(memoId);
+      setActiveTab("details");
+      setMessage("บันทึกข้อมูล Memo แล้ว");
+      if (files.length) {
+        void uploadMemoFiles({ memoId, kind: "attachment", files, previousPdf, issuePdf });
+      } else if (issuePdf) {
+        void requestPdf(memoId, previousPdf);
       }
     });
   };
 
   const issueMemoPdf = (memoId: string) => {
-    startTransition(async () => {
-      const result = await postAction("issue_pdf", { memo_id: memoId });
-      if (result?.success) setMessage("ออก PDF Memo เรียบร้อยแล้ว");
-    });
+    void requestPdf(memoId, String(memos.find((memo) => memo.memo_id === memoId)?.pdf_file_id || ""));
   };
 
   const sendMemoAcknowledgement = (memoId: string) => {
@@ -578,24 +579,14 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
   };
 
   const acknowledgeMemo = () => {
-    if (!selectedMemo?.memo_id) return;
-    startTransition(async () => {
-      try {
-        const evidenceUploads = await Promise.all(evidenceFiles.map(fileToUploadPayload));
-        const result = await postAction("acknowledge", {
-          memo_id: selectedMemo.memo_id,
-          ...ackForm,
-          evidence_uploads: evidenceUploads,
-        });
-        if (result?.success) {
-          setEvidenceFiles([]);
-          setAckForm({ ...emptyAckForm, acknowledged_by: project.client || "" });
-          setMessage("บันทึกหลักฐานลูกค้ารับทราบเรียบร้อยแล้ว");
-          setActiveTab("details");
-        }
-      } catch (uploadError) {
-        setActionError(uploadError instanceof Error ? uploadError.message : "เตรียมไฟล์หลักฐานไม่สำเร็จ");
-      }
+    if (!selectedMemo?.memo_id || !evidenceFiles.length) return;
+    void uploadMemoFiles({
+      memoId: selectedMemo.memo_id,
+      kind: "evidence",
+      files: evidenceFiles.map((file) => ({ file, percent: 0, status: "รออัปโหลด" })),
+      previousPdf: String(selectedMemo.pdf_file_id || ""),
+      issuePdf: true,
+      acknowledgement: ackForm,
     });
   };
 
@@ -621,7 +612,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
     return evidence.filter((item) => item.memo_id === selectedMemo.memo_id);
   }, [evidence, selectedMemo]);
 
-  const busy = isPending || Boolean(loadingAction);
+  const busy = isPending || Boolean(loadingAction) || Boolean(upload) || Boolean(pdfJob && !pdfReady && !pdfTimedOut);
 
   const renderVoAction = (memo: MemoRecord, compact = false) => {
     if (!isVoMemo(memo)) return null;
@@ -681,6 +672,32 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
           {message}
         </div>
       ) : null}
+
+      {upload && (
+        <section data-no-global-loading="true" aria-label="สถานะอัปโหลดไฟล์ Memo" className="space-y-2 rounded-2xl border border-gray-200 bg-white p-4">
+          {upload.files.map(({ file, percent, status }, index) => (
+            <div key={`${index}-${file.name}`} className="text-sm">
+              <div className="flex flex-wrap justify-between gap-2"><span>{index + 1}. {file.name}</span><span>{status} · {percent}%</span></div>
+              <progress aria-label={file.name} className="w-full" value={percent} max={100} />
+            </div>
+          ))}
+          {!uploadRunning && (
+            <div className="flex gap-3">
+              <button type="button" className="text-sm font-bold text-orange-700" onClick={() => uploadMemoFiles(upload)}>ลองอัปโหลดหรือยืนยันอีกครั้ง</button>
+              <button type="button" className="text-sm text-gray-600" onClick={() => setUpload(null)}>ปิดคิวไฟล์</button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {pdfJob && (
+        <section data-no-global-loading="true" role="status" className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+          {pdfReady ? "PDF Memo พร้อมเปิดแล้ว" : pdfTimedOut ? "ยังยืนยันผลการสร้าง PDF ไม่ได้" : "กำลังสร้าง PDF Memo เบื้องหลัง"}
+          {pdfTimedOut && !pdfReady && (
+            <button type="button" disabled={Boolean(loadingAction)} className="ml-3 font-bold underline" onClick={() => requestPdf(pdfJob.memoId, pdfJob.previousPdf, pdfJob.evidence)}>ลองสร้างอีกครั้ง</button>
+          )}
+        </section>
+      )}
 
       {activeTab === "create" && (
         <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
@@ -857,7 +874,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
               />
               <p className="text-xs font-semibold text-gray-500">หลักฐานรูปภาพจะถูกย่อก่อนบันทึก เหมาะกับแคปหน้าจอ LINE และภาพหน้างาน</p>
               <FileList files={evidenceFiles} onRemove={(index) => setEvidenceFiles(evidenceFiles.filter((_file, fileIndex) => fileIndex !== index))} />
-              <button type="button" disabled={busy || !canAcknowledge || !selectedMemo?.pdf_url} onClick={acknowledgeMemo} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-slate-800 disabled:opacity-60">
+              <button type="button" disabled={busy || !canAcknowledge || !selectedMemo?.pdf_url || evidenceFiles.length === 0} onClick={acknowledgeMemo} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white hover:bg-slate-800 disabled:opacity-60">
                 {loadingAction === "acknowledge" ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
                 บันทึกรับทราบ
               </button>

@@ -18,11 +18,15 @@ export async function uploadNoteFile(endpoint: string, noteId: string, file: Fil
     mime_type: mimeType,
     note_id: noteId,
   });
-  if (!session.upload_url) throw new Error("เปิดช่องทางอัปโหลดไม่สำเร็จ");
+  return uploadDriveFile(session.upload_url, file, mimeType, onProgress);
+}
+
+export function uploadDriveFile(uploadUrl: string, file: File, mimeType: string, onProgress: (percent: number) => void) {
+  if (!uploadUrl) throw new Error("เปิดช่องทางอัปโหลดไม่สำเร็จ");
 
   return new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", session.upload_url);
+    xhr.open("PUT", uploadUrl);
     xhr.responseType = "json";
     xhr.setRequestHeader("Content-Type", mimeType);
     xhr.upload.onprogress = event => {
