@@ -26,3 +26,6 @@ The user accepted the Variation Orders workflow and requested the increment to
 
 The user accepted the Sales CRM workflow and requested the increment to
 `UAT v1.0.005`.
+
+The user accepted the Memo page 10 workflow and requested the increment to
+`UAT v1.0.006`.
