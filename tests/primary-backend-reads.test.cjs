@@ -7,7 +7,7 @@ const { test } = require("node:test");
 const ts = require("typescript");
 
 // Expose private read helpers only inside the test VM; production route exports stay unchanged.
-function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
+function loadTs(relativePath, dependencies = {}, expose = [], env = {}, globals = {}) {
   const filename = path.resolve(__dirname, "..", relativePath);
   const input = fs.readFileSync(filename, "utf8");
   const parsed = ts.createSourceFile(filename, input, ts.ScriptTarget.Latest, true);
@@ -20,6 +20,7 @@ function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
   vm.runInNewContext(source, {
     exports: loaded.exports, module: loaded, Error, URL, performance,
     process: { env },
+    ...globals,
     console: { ...console, warn() {} },
     require(name) {
       if ((name === "./projectListCache" || name === "@/lib/projectListCache") && !Object.hasOwn(dependencies, name)) return { invalidateProjectListForWrite() {}, readCachedProjectList: (load) => load(), readCachedProjectHealth: (_, load) => load() };
@@ -268,4 +269,42 @@ test("Defect reads only authorized site data and does not read master Audit Logs
   assert.equal(Object.hasOwn(result.body, "audit_logs"), false);
   assert.deepEqual(reads, ["Defect_Rounds", "Defect_Items", "Defect_Evidence"]);
   assert.match(result.headers.get("Server-Timing"), /site_context;.*defect_read;.*Defect_Rounds=sheets.*prepare;.*total;/);
+});
+
+test("a blocked Drive response confirms the reserved document without sending the PDF again", async () => {
+  const calls = [];
+  const reserved = "DriveTestbyZoneIdea";
+  let completeAttempts = 0;
+  const client = loadTs("src/lib/directDriveDocumentUpload.ts", {
+    "@/lib/directDriveNoteUpload": {
+      uploadDriveFile: async () => {
+        calls.push("drive_put");
+        throw new Error("CORS");
+      },
+    },
+    "@/lib/attachmentUpload": { validateAttachmentRequest: () => assert.fail("Unexpected fallback upload") },
+  }, [], {}, {
+    fetch: async (_url, request) => {
+      const body = JSON.parse(request.body);
+      calls.push(body.action);
+      assert.equal(body.verify_upload, true);
+      if (body.action === "create_upload_session") return {
+        ok: true, json: async () => ({ data: { upload_url: "https://example.invalid/upload", drive_file_id: reserved } }),
+      };
+      assert.equal(body.drive_file_id, reserved);
+      assert.equal(body.drive_url, undefined);
+      completeAttempts++;
+      return completeAttempts === 1
+        ? { ok: false, json: async () => ({ error: "Not visible yet" }) }
+        : { ok: true, json: async () => ({ data: { document_id: "DOC-TestbyZoneIdea" } }) };
+    },
+  });
+  let retry;
+  await assert.rejects(client.uploadProjectDocumentDirectly({
+    endpoint: "/test", category: "report", title: "TestbyZoneIdea", notes: "",
+    file: { name: "TestbyZoneIdea.pdf", type: "application/pdf", size: 5_100_000 },
+    onProgress() {}, onConfirmReady(confirm) { retry = confirm; },
+  }), /Not visible yet/);
+  assert.equal((await retry()).document_id, "DOC-TestbyZoneIdea");
+  assert.deepEqual(calls, ["create_upload_session", "drive_put", "complete_upload", "complete_upload"]);
 });

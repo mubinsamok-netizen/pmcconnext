@@ -21,7 +21,7 @@ import PaginationControls from "@/components/PaginationControls";
 import FileSourceStatus from "@/components/FileSourceStatus";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
-import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
+import { uploadProjectDocumentDirectly, type DirectDocumentUploadResult, type DocumentUploadProgress } from "@/lib/directDriveDocumentUpload";
 import { usePagination } from "@/lib/usePagination";
 import { useDriveFiles } from "@/lib/useDriveFiles";
 
@@ -568,6 +568,9 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<DocumentUploadProgress | null>(null);
+  const [uploadName, setUploadName] = useState("");
+  const [confirmUpload, setConfirmUpload] = useState<(() => Promise<DirectDocumentUploadResult>) | null>(null);
   const [openDrivePending, setOpenDrivePending] = useState(false);
   const [activePhotoFolder, setActivePhotoFolder] = useState("");
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
@@ -610,41 +613,50 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
       }));
   }, [files]);
 
-  const uploadPdf = (formData: FormData) => {
+  const finishUpload = async (uploadedDocument: DirectDocumentUploadResult) => {
+    setConfirmUpload(null);
+    setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
+    pagination.setPage(1);
+    formRef.current?.reset();
+    await documents.mutate((current) => ({
+      success: true,
+      data: [uploadedDocument, ...(current?.data || []).filter((doc) => doc.document_id !== uploadedDocument.document_id)],
+    }), { revalidate: false });
+    void documents.mutate().catch(() => undefined);
+    void refreshDriveFiles();
+  };
+
+  const runUpload = (perform: () => Promise<DirectDocumentUploadResult>) => {
     setUploadError("");
-    setUploadMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
+    setUploadMessage("");
     startTransition(async () => {
       try {
-        const file = formData.get("file");
-        if (!(file instanceof File)) {
-          setUploadError("กรุณาเลือกไฟล์ PDF");
-          setUploadMessage("");
-          return;
-        }
-
-        const uploadedDocument = await uploadProjectDocumentDirectly({
-          endpoint: `/api/sites/${projectId}/documents`,
-          category: String(formData.get("category") || "other"),
-          title: String(formData.get("title") || file.name),
-          notes: String(formData.get("notes") || ""),
-          file,
-        });
-
-        setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
-        pagination.setPage(1);
-        formRef.current?.reset();
-        if (uploadedDocument) await documents.mutate((current) => ({
-          success: true,
-          data: [uploadedDocument, ...(current?.data || []).filter((doc) => doc.document_id !== uploadedDocument.document_id)],
-        }), { revalidate: false });
-        // Network refreshes must not keep the successful upload/form pending.
-        void documents.mutate().catch(() => undefined);
-        void refreshDriveFiles();
+        await finishUpload(await perform());
       } catch (error: unknown) {
         setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
-        setUploadMessage("");
+      } finally {
+        setUploadProgress(null);
       }
     });
+  };
+
+  const uploadPdf = (formData: FormData) => {
+    if (isPending || confirmUpload) return;
+    const file = formData.get("file");
+    if (!(file instanceof File)) {
+      setUploadError("กรุณาเลือกไฟล์ PDF");
+      return;
+    }
+    setUploadName(file.name);
+    runUpload(() => uploadProjectDocumentDirectly({
+      endpoint: `/api/sites/${projectId}/documents`,
+      category: String(formData.get("category") || "other"),
+      title: String(formData.get("title") || file.name),
+      notes: String(formData.get("notes") || ""),
+      file,
+      onProgress: setUploadProgress,
+      onConfirmReady: (confirm) => setConfirmUpload(() => confirm),
+    }));
   };
 
   const openSelectedCategoryFolder = async () => {
@@ -715,6 +727,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           <form
             ref={formRef}
             className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+            data-no-global-loading="true"
             action={uploadPdf}
           >
             <div className="mb-4 flex items-center gap-2">
@@ -730,10 +743,26 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
               <input name="title" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="ชื่อเอกสาร" required />
               <input name="file" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" type="file" accept="application/pdf,.pdf" required />
               <textarea name="notes" className="min-h-20 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="หมายเหตุ" />
+              {uploadProgress && (
+                <div role="status" className="space-y-1 rounded-lg border border-orange-100 bg-orange-50 p-3 text-sm text-orange-900">
+                  <p className="break-all font-semibold">{uploadName}</p>
+                  {uploadProgress.stage === "upload" ? (
+                    <>
+                      <p>ส่งไป Google Drive {uploadProgress.percent}%</p>
+                      <progress className="w-full" aria-label="เปอร์เซ็นต์อัปโหลด PDF" value={uploadProgress.percent} max={100} />
+                    </>
+                  ) : <p>{uploadProgress.stage === "prepare" ? "กำลังเตรียมช่องทางอัปโหลด" : "กำลังตรวจไฟล์ใน Drive และบันทึกรายการ"}</p>}
+                </div>
+              )}
+              {confirmUpload && uploadError && (
+                <button type="button" disabled={isPending} onClick={() => runUpload(confirmUpload)} className="text-sm font-bold text-orange-800 underline">
+                  ลองยืนยันไฟล์เดิมอีกครั้ง
+                </button>
+              )}
               {uploadError ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{uploadError}</p> : null}
               {uploadMessage ? <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">{uploadMessage}</p> : null}
-              <button disabled={isPending || !driveUrl} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
-                {isPending ? <RefreshCw className="animate-spin" size={16} /> : <Upload size={16} />}
+              <button disabled={isPending || Boolean(confirmUpload) || !driveUrl} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                <Upload size={16} />
                 {driveUrl ? "อัปโหลดตรงไป Drive" : "ต้องตั้งค่า Drive Folder ก่อน"}
               </button>
               <button

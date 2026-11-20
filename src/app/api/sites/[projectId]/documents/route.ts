@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { findAllRaw, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
@@ -83,10 +85,28 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
   }
 }
 
+function uploadBinding(projectId: string, email: string, category: string, title: string, fileName: string, size: number, version: string, notes: string) {
+  return createHash("sha256").update(JSON.stringify([projectId, email.trim().toLowerCase(), category, title, fileName, size, version, notes])).digest("hex");
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const started = performance.now();
+  const metrics: string[] = [];
+  const measure = async <T,>(label: string, action: () => Promise<T>) => {
+    const at = performance.now();
+    try {
+      return await action();
+    } finally {
+      metrics.push(`${label};dur=${(performance.now() - at).toFixed(2)}`);
+    }
+  };
+  const respond = (body: Record<string, unknown>, status = 200) => NextResponse.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store", "Server-Timing": [...metrics, `total;dur=${(performance.now() - started).toFixed(2)}`].join(", ") },
+  });
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId)));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     if (!hasPermission(context.session.user?.role, "siteDocument.upload")) {
       return NextResponse.json({ error: permissionDeniedMessage("siteDocument.upload") }, { status: 403 });
@@ -107,6 +127,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       const size = numberValue(body.file_size);
       const title = textValue(body.title) || fileName;
       const notes = textValue(body.notes);
+      const verified = body.verify_upload === true;
+      const email = context.session.user?.email || "";
+      if (verified && !email) return respond({ error: "ไม่พบผู้ใช้อัปโหลด" }, 403);
 
       if (action === "open_category_folder") {
         const documentsFolder = await findOrCreateFolder("Project Documents", driveFolderId);
@@ -130,24 +153,38 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           return NextResponse.json({ error: "ขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
         }
 
-        const [rows, documentsFolder] = await Promise.all([
-          getDocumentRows(context.siteSheetId, context.project.project_id),
-          findOrCreateFolder("Project Documents", driveFolderId),
+        const [rows, categoryFolder, reserved] = await Promise.all([
+          measure("version_read", () => getDocumentRows(context.siteSheetId, context.project.project_id)),
+          measure("drive_folders", async () => {
+            const folder = await findOrCreateFolder("Project Documents", driveFolderId);
+            return findOrCreateFolder(safeFolderName(category), folder.id || driveFolderId);
+          }),
+          verified ? measure("drive_allocate", async () => {
+            const result = await drive.files.generateIds({ count: 1, space: "drive" });
+            const id = result.data.ids?.[0];
+            if (!id) throw new Error("Google Drive ไม่สามารถจองรหัสไฟล์ได้");
+            return id;
+          }) : undefined,
         ]);
-        const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);
         const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
         const storedName = `v${versionNumber}-${Date.now()}-${fileName}`;
-        const { uploadUrl } = await createResumableUploadSession({
+        const { uploadUrl } = await measure("drive_session", () => createResumableUploadSession({
           fileName: storedName,
-          mimeType,
+          mimeType: verified ? "application/pdf" : mimeType,
           size,
           parentId: categoryFolder.id || driveFolderId,
-        });
+          origin: new URL(req.url).origin,
+          fileId: reserved,
+          appProperties: reserved ? {
+            pmcDocument: uploadBinding(context.project.project_id, email, category, title, fileName, size, String(versionNumber), notes),
+          } : undefined,
+        }));
 
-        return NextResponse.json({
+        return respond({
           success: true,
           data: {
             upload_url: uploadUrl,
+            drive_file_id: reserved,
             folder_id: categoryFolder.id || driveFolderId,
             folder_url: categoryFolder.webViewLink || `https://drive.google.com/drive/folders/${categoryFolder.id || driveFolderId}`,
             category,
@@ -164,17 +201,41 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
       if (action === "complete_upload") {
         const driveFileId = textValue(body.drive_file_id);
-        const driveUrl = textValue(body.drive_url);
+        let driveUrl = textValue(body.drive_url);
         const versionNumber = textValue(body.version_number) || "1";
+
+        if (verified) {
+          if (!/^[a-zA-Z0-9_-]{10,}$/.test(driveFileId)) return respond({ error: "รหัสไฟล์ไม่ถูกต้อง" }, 400);
+
+          const file = await measure("drive_verify", async () => {
+            try {
+              const result = await drive.files.get({
+                fileId: driveFileId,
+                supportsAllDrives: true,
+                fields: "id,size,mimeType,trashed,appProperties,webViewLink,webContentLink",
+              });
+              return result.data;
+            } catch (error) {
+              if ((error as { code?: number }).code === 404) return null;
+              throw error;
+            }
+          });
+          if (!file) return respond({ error: "ยังไม่พบไฟล์ใน Drive กรุณาลองยืนยันอีกครั้ง" }, 409);
+          const expected = uploadBinding(context.project.project_id, email, category, title, fileName, size, versionNumber, notes);
+          if (file.trashed || file.appProperties?.pmcDocument !== expected || String(size) !== file.size || file.mimeType !== "application/pdf") {
+            return respond({ error: "ข้อมูลไฟล์ใน Drive ไม่ตรงกับรายการอัปโหลด" }, 400);
+          }
+          driveUrl = file.webViewLink || file.webContentLink || `https://drive.google.com/file/d/${driveFileId}/view`;
+        }
 
         if (!driveFileId || !driveUrl) {
           return NextResponse.json({ error: "ไม่พบข้อมูลไฟล์จาก Google Drive" }, { status: 400 });
         }
 
-        const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
+        const rows = await measure("document_read", () => getDocumentRows(context.siteSheetId, context.project.project_id));
         const existing = rows.find((row) => String(row.drive_file_id || "") === driveFileId);
-        if (existing) {
-          return NextResponse.json({ success: true, data: existing });
+        if (existing && existing.project_id === context.project.project_id) {
+          return respond({ success: true, data: existing });
         }
 
         const data = {
@@ -192,9 +253,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           uploaded_by_email: context.session.user?.email || "",
           uploaded_by_name: context.session.user?.name || "",
         };
-        const result = await insert("Project_Documents", data, context.siteSheetId);
+        const result = await measure("document_write", () => insert("Project_Documents", data, context.siteSheetId));
 
-        return NextResponse.json({ success: true, data: result.inserted });
+        return respond({ success: true, data: result.inserted });
       }
 
       return NextResponse.json({ error: "ไม่รู้จัก action นี้" }, { status: 400 });
@@ -240,6 +301,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
     return NextResponse.json({ success: true, data: result.inserted });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }

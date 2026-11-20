@@ -258,6 +258,7 @@ export async function createResumableUploadSession({
   size,
   parentId,
   appProperties,
+  fileId,
   origin,
 }: {
   fileName: string;
@@ -265,6 +266,7 @@ export async function createResumableUploadSession({
   size: number;
   parentId: string;
   appProperties?: Record<string, string>;
+  fileId?: string;
   origin?: string;
 }) {
   const token = await getDriveAccessToken();
@@ -278,6 +280,7 @@ export async function createResumableUploadSession({
       "X-Upload-Content-Length": String(size || 0),
     },
     body: JSON.stringify({
+      ...(fileId ? { id: fileId } : {}),
       name: fileName,
       mimeType: mimeType || "application/octet-stream",
       parents: [parentId],

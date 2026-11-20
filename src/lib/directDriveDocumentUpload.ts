@@ -1,3 +1,4 @@
+import { uploadDriveFile } from "@/lib/directDriveNoteUpload";
 import { validateAttachmentRequest } from "@/lib/attachmentUpload";
 
 export type DirectDocumentUploadInput = {
@@ -6,6 +7,13 @@ export type DirectDocumentUploadInput = {
   title: string;
   notes: string;
   file: File;
+  onProgress?: (status: DocumentUploadProgress) => void;
+  onConfirmReady?: (confirm: () => Promise<DirectDocumentUploadResult>) => void;
+};
+
+export type DocumentUploadProgress = {
+  stage: "prepare" | "upload" | "confirm";
+  percent?: number;
 };
 
 export type DirectDocumentUploadResult = Record<string, string | number | undefined> & {
@@ -25,6 +33,7 @@ export type DirectDocumentUploadResult = Record<string, string | number | undefi
 
 type UploadSessionPayload = {
   upload_url?: string;
+  drive_file_id?: string;
   category?: string;
   title?: string;
   notes?: string;
@@ -90,13 +99,22 @@ export async function uploadProjectDocumentDirectly({
   title,
   notes,
   file,
+  onProgress,
+  onConfirmReady,
 }: DirectDocumentUploadInput) {
   if (file.size === 0) throw new Error("ไฟล์ PDF ว่างเปล่า กรุณาเลือกไฟล์ใหม่");
+  const verified = Boolean(onProgress);
+  onProgress?.({ stage: "prepare" });
+  const jsonHeaders = {
+    "Content-Type": "application/json",
+    ...(verified ? { "X-PMC-No-Global-Loading": "1" } : {}),
+  };
   const sessionResponse = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: jsonHeaders,
     body: JSON.stringify({
       action: "create_upload_session",
+      ...(verified ? { verify_upload: true } : {}),
       category,
       title: title || file.name,
       notes,
@@ -113,6 +131,49 @@ export async function uploadProjectDocumentDirectly({
   const session = (sessionPayload.data || {}) as UploadSessionPayload;
   if (!session.upload_url) {
     throw new Error("Google Drive ไม่ได้ส่ง upload URL กลับมา");
+  }
+
+  const confirmUpload = async (driveFile: DriveUploadResponse) => {
+    const completeResponse = await fetch(endpoint, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        action: "complete_upload",
+        ...(verified ? { verify_upload: true } : {}),
+        category: session.category || category,
+        title: session.title || title || file.name,
+        notes: session.notes || notes,
+        version_number: session.version_number || "1",
+        file_name: session.file_name || file.name,
+        mime_type: session.mime_type || driveFile.mimeType || file.type || "application/pdf",
+        file_size: session.file_size || driveFile.size || String(file.size),
+        drive_file_id: driveFile.id,
+        drive_url: driveFile.webViewLink || driveFile.webContentLink,
+      }),
+    });
+    const payload = await readJson(completeResponse);
+    if (!completeResponse.ok || payload.error) {
+      throw new Error(payloadError(payload, "บันทึก Version History ไม่สำเร็จ"));
+    }
+    return payload.data as DirectDocumentUploadResult;
+  };
+
+  if (verified) {
+    const id = session.drive_file_id;
+    if (!id) throw new Error("ยังไม่ได้รับรหัสไฟล์สำหรับยืนยันกับ Google Drive");
+    onProgress?.({ stage: "upload", percent: 0 });
+    try {
+      await uploadDriveFile(session.upload_url, file, "application/pdf", (percent) => onProgress?.({ stage: "upload", percent }));
+    } catch {
+      // A CORS or network error can hide a successful Drive response.
+      // Confirm the reserved ID before allowing another upload.
+    }
+    const confirm = () => {
+      onProgress?.({ stage: "confirm" });
+      return confirmUpload({ id });
+    };
+    onConfirmReady?.(confirm);
+    return confirm();
   }
 
   let uploadResponse: Response;
@@ -133,26 +194,5 @@ export async function uploadProjectDocumentDirectly({
     return uploadThroughServer({ endpoint, category, title, notes, file });
   }
 
-  const completeResponse = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "complete_upload",
-      category: session.category || category,
-      title: session.title || title || file.name,
-      notes: session.notes || notes,
-      version_number: session.version_number || "1",
-      file_name: session.file_name || file.name,
-      mime_type: session.mime_type || driveFile.mimeType || file.type || "application/pdf",
-      file_size: session.file_size || driveFile.size || String(file.size),
-      drive_file_id: driveFile.id,
-      drive_url: driveFile.webViewLink || driveFile.webContentLink,
-    }),
-  });
-  const completePayload = await readJson(completeResponse);
-  if (!completeResponse.ok || completePayload.error) {
-    throw new Error(payloadError(completePayload, "บันทึก version history ไม่สำเร็จ"));
-  }
-
-  return completePayload.data as DirectDocumentUploadResult;
+  return confirmUpload(driveFile);
 }
