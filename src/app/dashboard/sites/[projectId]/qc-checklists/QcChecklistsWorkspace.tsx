@@ -629,7 +629,8 @@ export default function QcChecklistsWorkspace({
                       disabled={uploading || Boolean(saving)}
                       className="sr-only"
                       onChange={(event) => {
-                        setFiles((current) => [...current, ...Array.from(event.target.files || [])].slice(0, 12));
+                        const chosen = Array.from(event.currentTarget.files || []);
+                        setFiles((current) => [...current, ...chosen].slice(0, 12));
                         event.currentTarget.value = "";
                       }}
                     />
