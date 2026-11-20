@@ -1,4 +1,4 @@
-# Project document upload from the all-files page
+# Project document upload from All Files and Lifecycle
 
 POST JSON to `/api/sites/{projectId}/documents` with
 `action: "create_upload_session"`, `verify_upload: true`, category, title,
@@ -13,13 +13,15 @@ Drive file, uploader and site binding before recording it. The response
 contains the saved document in `data`. If the browser cannot read Drive's
 response, confirmation still uses the reserved ID. Status 409 means the
 file was not found yet. Retrying confirmation only sends metadata.
-The lifecycle form retains its existing request format.
+Both forms use the same verified upload flow. Lifecycle displays progress
+in the form and retries confirmation for the reserved file ID after an
+ambiguous transfer or confirmation error.
 
 Check `Server-Timing` for project context, version read, folder lookup,
 Drive ID reservation, session creation, Drive confirmation, and metadata
 write, depending on the request stage. Parallel durations overlap.
 
-The all-files form prepares the session after a short pause once a PDF and
+Both forms prepare the session after a short pause once a PDF and
 title are present. It sends the PDF only on submit. A prepared session is
 reused for up to 30 seconds for the same file and form values. If it fails
 before transfer, the submit action opens a fresh session. The server times
