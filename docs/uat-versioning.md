@@ -35,3 +35,6 @@ increment to `UAT v1.0.007`.
 
 The user accepted the Variation Orders page 12 workflow and requested the
 increment to `UAT v1.0.008`.
+
+The user accepted the Defect page 13 workflow and requested the increment to
+`UAT v1.0.009`.
