@@ -2,6 +2,7 @@
 
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { preconnect } from "react-dom";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import useSWR, { mutate as mutateScheduleCache } from "swr";
@@ -1010,12 +1011,20 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
   const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
   const preparedEvidence = useRef<{ source: File[]; result: Promise<File[]> } | null>(null);
+  const warmedEvidenceProject = useRef("");
   useEffect(() => {
     if (!decisionEvidenceFiles.length) return;
     const result = prepareDecisionEvidence(decisionEvidenceFiles);
     preparedEvidence.current = { source: decisionEvidenceFiles, result };
     void result.catch(() => undefined);
   }, [decisionEvidenceFiles]);
+  useEffect(() => {
+    if (!showDecisionForm || !selectedProject || !decisionEvidenceFiles.length || warmedEvidenceProject.current === selectedProject) return;
+    warmedEvidenceProject.current = selectedProject;
+    preconnect("https://www.googleapis.com");
+    void postDecisionJson(selectedProject, { action: "prepare_evidence_context" }, DECISION_SAVE_TIMEOUT_MS, "")
+      .catch(() => { if (warmedEvidenceProject.current === selectedProject) warmedEvidenceProject.current = ""; });
+  }, [decisionEvidenceFiles.length, selectedProject, showDecisionForm]);
   const [evidenceUploads, setEvidenceUploads] = useState<EvidenceUpload[]>([]);
   const evidenceInFlight = useRef(new Set<string>());
   const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");

@@ -12,6 +12,10 @@ the save request fails, the browser uses the separate session endpoint.
 `Server-Timing` reports the overlapping `decision_save` and
 `drive_sessions` phases.
 
+After the first selection, `prepare_evidence_context` can initialize the
+authorized server connection to Google while the form is open. It creates
+no Drive folders or files. Uploading never depends on this request succeeding.
+
 In Sheets mode, saving with evidence and confirming evidence validate
 the headers from the same fresh decision-table read used for the write.
 If the table is missing or invalid, only that table is repaired and read

@@ -17,7 +17,7 @@ import {
   type CustomerDecisionUploadPayload,
 } from "@/lib/customerDecisions";
 import { createFolder, createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
-import { drive } from "@/lib/google";
+import { auth, drive } from "@/lib/google";
 import {
   DECISION_EVIDENCE_MAX_FILES, DECISION_EVIDENCE_MAX_FILE_SIZE, DECISION_EVIDENCE_MAX_TOTAL_SIZE, decisionEvidenceMime,
 } from "@/lib/decisionEvidenceUpload";
@@ -682,9 +682,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action) || "save";
     const evidenceWrite = action === "attach_evidence" || (action === "save" && body.upload_files !== undefined);
-    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "start_evidence_uploads" || evidenceWrite });
+    const prepareContext = action === "prepare_evidence_context";
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, {
+      readOnly: prepareContext || action === "start_evidence_uploads" || evidenceWrite,
+    });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
+    if (prepareContext) {
+      if (!actor(routeContext).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+      const client = await auth.getClient();
+      await client.getAccessToken();
+      return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
+    }
     let checkedRows: CustomerDecisionRecord[] | undefined;
     if (evidenceWrite && !isSupabaseBackend()) {
       const read = () => findAllWithValidHeaders("Customer_Decisions", context.siteSheetId);
