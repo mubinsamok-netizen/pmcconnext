@@ -495,3 +495,40 @@ test("Sheets PDF confirmation checks just the document headers and repairs an in
   assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
   assert.deepEqual(calls.splice(0), ["read", "verify", "repair", "read"]);
 });
+
+test("Defect photo sessions bind WebP uploads to the site, round, item and uploader", async () => {
+  const photos = new Map();
+  const rounds = [{ round_id: "ROUND-TestbyZoneIdea", project_id: "P-1" }];
+  const items = [{ item_id: "ITEM-TestbyZoneIdea", round_id: rounds[0].round_id, project_id: "P-1" }];
+  const site = { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email: "user@example.invalid" } } };
+  const route = loadTs("src/app/api/sites/[projectId]/defects/route.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/prepareProjectCover": { PROJECT_COVER_MAX_BYTES: 4_000_000 },
+    "@/lib/sheetsCrud": { findAllBatch: async () => ({ Defect_Rounds: rounds, Defect_Items: items }) },
+    "@/lib/drive": {
+      findOrCreateFolder: async (name) => ({ id: name }),
+      createResumableUploadSession: async (input) => {
+        assert.equal(input.parentId, "After Photos");
+        assert.equal(input.origin, "https://example.invalid");
+        photos.set(input.fileId, { name: input.fileName, size: String(input.size), mimeType: input.mimeType, appProperties: input.appProperties });
+        return { uploadUrl: "https://example.invalid/upload" };
+      },
+    },
+    "@/lib/google": { drive: { files: {
+      generateIds: async ({ count }) => ({ data: { ids: Array.from({ length: count }, (_, index) => `Drive-TestbyZoneIdea-${index}`) } }),
+      get: async ({ fileId }) => ({ data: photos.get(fileId) }),
+    } } },
+  }, ["startPhotoUploads", "verifyDefectPhotos"]);
+  const req = { url: "https://example.invalid/api/defects" };
+  const files = [{ name: "One-TestbyZoneIdea.webp", size: 95 }, { name: "Two-TestbyZoneIdea.webp", size: 120 }];
+  const started = await route.startPhotoUploads(req, { item_id: items[0].item_id, files }, site);
+  assert.equal(started.status, 200);
+  const ids = started.body.data.map((file) => file.file_id);
+  const valid = await route.verifyDefectPhotos(site, rounds[0].round_id, items[0].item_id, ids);
+  assert.equal(valid.length, 2);
+  assert.ok(valid.every((photo) => photo.mime_type === "image/webp" && photo.file_name.endsWith(".webp")));
+  assert.equal(await route.verifyDefectPhotos(site, rounds[0].round_id, "", ids), null);
+  assert.equal(await route.verifyDefectPhotos({ ...site, session: { user: { email: "other@example.invalid" } } }, rounds[0].round_id, items[0].item_id, ids), null);
+  assert.equal((await route.startPhotoUploads(req, { item_id: "OTHER", files }, site)).status, 404);
+});

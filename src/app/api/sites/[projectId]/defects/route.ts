@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
   buildDefectAcknowledgementLineFlex,
@@ -14,7 +15,9 @@ import {
   type DefectPhotoRef,
   type DefectRoundRecord,
 } from "@/lib/defects";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
+import { PROJECT_COVER_MAX_BYTES } from "@/lib/prepareProjectCover";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
@@ -183,6 +186,82 @@ async function getDefectRoundFolder(context: RouteContext, roundId: string) {
   return roundFolder.id || null;
 }
 
+function defectPhotoBinding(context: RouteContext, roundId: string, itemId: string, size: number) {
+  return createHash("sha256").update(JSON.stringify([
+    context.project.project_id, roundId, itemId, actor(context).email.toLowerCase(), size,
+  ])).digest("hex");
+}
+
+async function startPhotoUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const { rounds, items } = await getDefectData(context);
+  const itemId = text(body.item_id);
+  const item = itemId ? items.find((row) => row.item_id === itemId) : undefined;
+  if (itemId && !item) return NextResponse.json({ error: "ไม่พบรายการ defect" }, { status: 404 });
+  const roundId = item?.round_id || text(body.round_id);
+  const round = rounds.find((row) => row.round_id === roundId);
+  if (!round) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
+  if (!itemId && isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้ล็อกแล้ว" }, { status: 400 });
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+
+  const files = Array.isArray(body.files) ? body.files.map((file) => ({
+    name: text(file?.name),
+    size: Number(file?.size),
+  })) : [];
+  if (!files.length || files.length > 4 || files.some(({ name, size }) => (
+    !/\.webp$/i.test(name) || !Number.isSafeInteger(size) || size <= 0 || size > PROJECT_COVER_MAX_BYTES
+  ))) return NextResponse.json({ error: "กรุณาแนบรูป WebP ที่ใช้งานได้ ไม่เกิน 4 รูป" }, { status: 400 });
+
+  const [roundFolderId, reserved] = await Promise.all([
+    getDefectRoundFolder(context, roundId),
+    drive.files.generateIds({ count: files.length, space: "drive" }),
+  ]);
+  if (!roundFolderId) return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์" }, { status: 400 });
+  const folder = await findOrCreateFolder(itemId ? "After Photos" : "Before Photos", roundFolderId);
+  const data = await Promise.all(files.map(async ({ name, size }, index) => {
+    const fileId = reserved.data.ids?.[index];
+    if (!fileId) throw new Error("Google Drive ไม่สามารถจองรหัสรูปภาพได้");
+    const session = await createResumableUploadSession({
+      fileName: `${Date.now()}-${safeFolderName(name)}`,
+      mimeType: "image/webp",
+      size,
+      parentId: folder.id || roundFolderId,
+      origin: new URL(req.url).origin,
+      fileId,
+      appProperties: { pmcDefectPhoto: defectPhotoBinding(context, roundId, itemId, size) },
+    });
+    return { file_id: fileId, upload_url: session.uploadUrl };
+  }));
+  return NextResponse.json({ success: true, data }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function verifyDefectPhotos(context: RouteContext, roundId: string, itemId: string, value: unknown) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 4 || !actor(context).email ||
+    value.some((id) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{10,}$/.test(id))) return null;
+
+  const photos = await Promise.all([...new Set<string>(value)].map(async (id) => {
+    try {
+      const { data: file } = await drive.files.get({
+        fileId: id,
+        supportsAllDrives: true,
+        fields: "name,size,mimeType,trashed,appProperties,webViewLink",
+      });
+      if (file.trashed || file.mimeType !== "image/webp" ||
+        file.appProperties?.pmcDefectPhoto !== defectPhotoBinding(context, roundId, itemId, Number(file.size))) return null;
+      return {
+        file_id: id,
+        file_name: file.name || "photo.webp",
+        file_url: file.webViewLink || `https://drive.google.com/file/d/${id}/view`,
+        mime_type: "image/webp",
+      } satisfies DefectPhotoRef;
+    } catch (error) {
+      if ((error as { code?: number }).code === 404) return null;
+      throw error;
+    }
+  }));
+  return photos.every((photo) => photo !== null) ? photos : null;
+}
+
 async function uploadDefectFiles(context: RouteContext, roundId: string, folderName: string, uploads: UploadPayload[]) {
   const files = uploads.filter((file) => file?.dataUrl && file.name).slice(0, 8);
   if (files.length === 0) return [] as DefectPhotoRef[];
@@ -298,7 +377,17 @@ async function handleAddItem(body: Record<string, unknown>, context: RouteContex
   if (!text(body.description)) return NextResponse.json({ error: "กรุณาระบุรายการที่ตรวจพบ" }, { status: 400 });
 
   const itemsInRound = data.items.filter((item) => item.round_id === roundId);
-  const beforePhotos = await uploadDefectFiles(context, roundId, "Before Photos", parseUploads(body.before_photo_uploads));
+  const beforePhotos = body.before_photo_ids === undefined
+    ? await uploadDefectFiles(context, roundId, "Before Photos", parseUploads(body.before_photo_uploads))
+    : await verifyDefectPhotos(context, roundId, "", body.before_photo_ids);
+  if (!beforePhotos) return NextResponse.json({ error: "ยังยืนยันรูปก่อนแก้ใน Drive ไม่สำเร็จ กรุณาลองบันทึกอีกครั้ง" }, { status: 409 });
+  if (body.before_photo_ids !== undefined && beforePhotos.length) {
+    const priorItem = itemsInRound.find((item) => {
+      const savedIds = new Set(parsePhotoRefs(item.before_photos_json).map((photo) => photo.file_id));
+      return beforePhotos.every((photo) => savedIds.has(photo.file_id));
+    });
+    if (priorItem) return NextResponse.json({ success: true, data: priorItem });
+  }
   const itemNo = itemsInRound.length + 1;
   const payload = {
     item_id: makeId("DFI"),
@@ -682,13 +771,17 @@ async function handleUpdateItemStatus(body: Record<string, unknown>, context: Ro
   if (!round) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
 
   const currentAfterPhotos = parsePhotoRefs(item.after_photos_json);
-  const uploadedAfterPhotos = await uploadDefectFiles(context, item.round_id, "After Photos", parseUploads(body.after_photo_uploads));
+  const uploadedAfterPhotos = body.after_photo_ids === undefined
+    ? await uploadDefectFiles(context, item.round_id, "After Photos", parseUploads(body.after_photo_uploads))
+    : await verifyDefectPhotos(context, item.round_id, itemId, body.after_photo_ids);
+  if (!uploadedAfterPhotos) return NextResponse.json({ error: "ยังยืนยันรูปหลังแก้ใน Drive ไม่สำเร็จ กรุณาลองบันทึกอีกครั้ง" }, { status: 409 });
+  const existingPhotoIds = new Set(currentAfterPhotos.map((photo) => photo.file_id));
   const patch = {
     status: text(body.status) || item.status || "open",
     owner: text(body.owner) || item.owner || "",
     due_date: text(body.due_date) || item.due_date || "",
     repair_note: text(body.repair_note) || item.repair_note || "",
-    after_photos_json: safeJsonStringify([...currentAfterPhotos, ...uploadedAfterPhotos]),
+    after_photos_json: safeJsonStringify([...currentAfterPhotos, ...uploadedAfterPhotos.filter((photo) => !existingPhotoIds.has(photo.file_id))]),
   };
 
   await updateDefectItem(context, item, patch);
@@ -754,13 +847,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-    const routeContext = context as RouteContext;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action);
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "start_photo_uploads" });
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const routeContext = context as RouteContext;
     const roundId = text(body.round_id);
 
+    if (action === "start_photo_uploads") return startPhotoUploads(req, body, routeContext);
     if (action === "create_round") return handleCreateRound(body, routeContext);
     if (action === "add_item") return handleAddItem(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, roundId);

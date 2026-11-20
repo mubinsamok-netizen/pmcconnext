@@ -16,9 +16,11 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
-import { useMemo, useState, useTransition, type ComponentType } from "react";
+import { useMemo, useRef, useState, useTransition, type ComponentType, type FormEvent } from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { postDefectAction, uploadDefectPhotos, type DefectPhotoProgress as PhotoProgress } from "@/lib/directDriveDefectUpload";
+import { DefectPhotoProgress } from "./DefectPhotoProgress";
 
 type DefectRound = Record<string, string | number | undefined> & {
   round_id: string;
@@ -239,6 +241,11 @@ export function DefectsWorkspace({
   const [activeTab, setActiveTab] = useState<TabKey>("rounds");
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
+  const [photoProgress, setPhotoProgress] = useState<PhotoProgress[]>([]);
+  const [photoTarget, setPhotoTarget] = useState("");
+  const [photoSaving, setPhotoSaving] = useState(false);
+  const savingPhotos = useRef(false);
+  const pendingPhotos = useRef<{ key: string; ids: string[] } | null>(null);
 
   const rounds = useMemo(() => (data?.rounds || []) as DefectRound[], [data?.rounds]);
   const items = useMemo(() => (data?.items || []) as DefectItem[], [data?.items]);
@@ -256,15 +263,7 @@ export function DefectsWorkspace({
   const readyForCustomerApproval = roundItems.length > 0 && roundItems.every((item) => ["fixed", "passed", "closed"].includes(String(item.status || "")));
 
   function postAction(body: Record<string, unknown>) {
-    return fetch(apiPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).then(async (response) => {
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "Request failed");
-      return payload;
-    });
+    return postDefectAction(apiPath, body, false);
   }
 
   async function createRound(formData: FormData) {
@@ -284,12 +283,9 @@ export function DefectsWorkspace({
     setMessage("สร้างรอบตรวจแล้ว ต่อไปเพิ่มรายการ defect ได้เลย");
   }
 
-  async function addItem(formData: FormData) {
+  async function addItem(formData: FormData, beforePhotoIds: string[]) {
     if (!selectedRound) return;
-    setMessage("");
-    const fileInput = document.getElementById("defect-before-photos") as HTMLInputElement | null;
-    const uploads = await filesToUploads(fileInput?.files || null, 4);
-    await postAction({
+    await postDefectAction(apiPath, {
       action: "add_item",
       round_id: selectedRound.round_id,
       zone: formData.get("zone"),
@@ -300,10 +296,8 @@ export function DefectsWorkspace({
       owner: formData.get("owner"),
       due_date: formData.get("due_date"),
       remarks: formData.get("remarks"),
-      before_photo_uploads: uploads,
-    });
-    if (fileInput) fileInput.value = "";
-    await mutate();
+      before_photo_ids: beforePhotoIds,
+    }, true);
     setMessage("เพิ่มรายการ defect แล้ว");
   }
 
@@ -367,22 +361,63 @@ export function DefectsWorkspace({
       : "ส่ง LINE ให้ลูกค้ารับรองงานแก้ไขแล้ว");
   }
 
-  async function updateItem(formData: FormData) {
+  async function updateItem(formData: FormData, afterPhotoIds: string[]) {
     const itemId = String(formData.get("item_id") || "");
-    const fileInput = document.getElementById(`after-${itemId}`) as HTMLInputElement | null;
-    const uploads = await filesToUploads(fileInput?.files || null, 4);
-    await postAction({
+    await postDefectAction(apiPath, {
       action: "update_item_status",
       item_id: itemId,
       status: formData.get("status"),
       owner: formData.get("owner"),
       due_date: formData.get("due_date"),
       repair_note: formData.get("repair_note"),
-      after_photo_uploads: uploads,
-    });
-    if (fileInput) fileInput.value = "";
-    await mutate();
+      after_photo_ids: afterPhotoIds,
+    }, true);
     setMessage("อัปเดตรายการแล้ว");
+  }
+
+  async function saveWithPhotos(event: FormEvent<HTMLFormElement>, phase: "before" | "after") {
+    event.preventDefault();
+    if (savingPhotos.current || isPending || !selectedRound) return;
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const files = values.getAll(`${phase}_photos`).filter((file): file is File => file instanceof File && file.size > 0);
+    if (files.length > 4) {
+      setMessage("กรุณาเลือกรูปไม่เกิน 4 ไฟล์ต่อครั้ง");
+      return;
+    }
+    const target = phase === "before"
+      ? { round_id: selectedRound.round_id }
+      : { item_id: String(values.get("item_id") || "") };
+    const key = JSON.stringify([apiPath, target, files.map((file) => [file.name, file.size, file.lastModified])]);
+    const previous = pendingPhotos.current?.key === key ? pendingPhotos.current : null;
+    const initialStage = previous ? "confirm" : "prepare";
+    savingPhotos.current = true;
+    setPhotoSaving(true);
+    setPhotoTarget(target.item_id || "before");
+    setMessage("");
+    setPhotoProgress(files.map((file) => ({ name: file.name, stage: initialStage, percent: previous ? 100 : 0 })));
+    try {
+      const ids = previous?.ids ?? (files.length ? await uploadDefectPhotos(apiPath, target, files,
+        (index, progress) => setPhotoProgress((current) => current.map((file, position) => position === index ? progress : file))) : []);
+      if (ids.length) pendingPhotos.current = { key, ids };
+      await (phase === "before" ? addItem(values, ids) : updateItem(values, ids));
+      pendingPhotos.current = null;
+      if (phase === "before") form.reset();
+      else {
+        const input = form.elements.namedItem("after_photos");
+        if (input instanceof HTMLInputElement) input.value = "";
+      }
+      void mutate(fetch(apiPath, { headers: { "X-PMC-No-Global-Loading": "1" } }).then((res) => {
+        if (!res.ok) throw new Error("รีเฟรชรายการ Defect ไม่สำเร็จ");
+        return res.json();
+      }), { revalidate: false }).catch(() => undefined);
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "บันทึกรูป Defect ไม่สำเร็จ");
+    } finally {
+      savingPhotos.current = false;
+      setPhotoSaving(false);
+      setPhotoProgress([]);
+    }
   }
 
   async function issueTrackingPdf() {
@@ -549,7 +584,7 @@ export function DefectsWorkspace({
           {activeTab === "items" && (
             <div className="grid gap-5 xl:grid-cols-[460px_minmax(0,1fr)]">
               {selectedRound && !locked ? (
-                <form action={(formData) => run(addItem, formData)} className="rounded-lg border border-gray-200 p-4">
+                <form onSubmit={(event) => void saveWithPhotos(event, "before")} data-no-global-loading="true" className="rounded-lg border border-gray-200 p-4">
                   <SectionHeader icon={Camera} title="เพิ่มจุดที่ลูกค้าชี้" description="กรอกหนึ่งรายการต่อหนึ่งจุด พร้อมรูปก่อนแก้เพื่อใช้ในรายงาน PDF" />
                   <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
                     <input name="zone" required className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-200" placeholder="พื้นที่/โซน เช่น ห้องน้ำ - 1" />
@@ -565,10 +600,11 @@ export function DefectsWorkspace({
                     <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
                       <Upload size={16} />
                       รูปก่อนแก้
-                      <input id="defect-before-photos" name="before_photos" type="file" accept="image/*" multiple className="sr-only" />
+                      <input name="before_photos" type="file" accept="image/*" multiple disabled={photoSaving} className="sr-only" onChange={() => { pendingPhotos.current = null; }} />
                     </label>
                   </div>
-                  <button disabled={isPending} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:opacity-60">
+                  {photoTarget === "before" && <div className="mt-3"><DefectPhotoProgress files={photoProgress} /></div>}
+                  <button disabled={isPending || photoSaving} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:opacity-60">
                     <Plus size={16} />
                     เพิ่มรายการ
                   </button>
@@ -740,7 +776,7 @@ export function DefectsWorkspace({
                   </button>
                 </div>
               </div>
-              <TrackingList items={roundItems} isLoading={isLoading} isPending={isPending} onSubmit={(formData) => run(updateItem, formData)} />
+              <TrackingList items={roundItems} isLoading={isLoading} isPending={isPending || photoSaving} photoTarget={photoTarget} photoProgress={photoProgress} onSubmit={(event) => void saveWithPhotos(event, "after")} onFilesChange={() => { pendingPhotos.current = null; }} />
             </div>
           )}
         </div>
@@ -833,11 +869,17 @@ function TrackingList({
   isLoading,
   isPending,
   onSubmit,
+  onFilesChange,
+  photoTarget,
+  photoProgress,
 }: {
   items: DefectItem[];
   isLoading: boolean;
   isPending: boolean;
-  onSubmit: (formData: FormData) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onFilesChange: () => void;
+  photoTarget: string;
+  photoProgress: PhotoProgress[];
 }) {
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -867,7 +909,7 @@ function TrackingList({
                   </span>
                 </td>
                 <td className="px-4 py-4">
-                  <form action={onSubmit} className="grid min-w-[360px] gap-2">
+                  <form onSubmit={onSubmit} data-no-global-loading="true" className="grid min-w-[360px] gap-2">
                     <input type="hidden" name="item_id" value={item.item_id} />
                     <div className="grid grid-cols-2 gap-2">
                       <select name="status" defaultValue={String(item.status || "open")} className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-orange-200">
@@ -880,8 +922,9 @@ function TrackingList({
                     <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-2 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
                       <Upload size={14} />
                       รูปหลังแก้
-                      <input id={`after-${item.item_id}`} type="file" accept="image/*" multiple className="sr-only" />
+                      <input name="after_photos" type="file" accept="image/*" multiple disabled={isPending} className="sr-only" onChange={onFilesChange} />
                     </label>
+                    {photoTarget === item.item_id && <DefectPhotoProgress files={photoProgress} />}
                     <button disabled={isPending} className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:opacity-60">
                       <CheckCircle2 size={14} />
                       บันทึก
