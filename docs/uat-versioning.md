@@ -41,3 +41,6 @@ The user accepted the Defect page 13 workflow and requested the increment to
 
 The user accepted the All Photos and Files page 17 upload workflow and requested
 the increment to `UAT v1.0.010`.
+
+The user accepted the Lifecycle page 18 PDF upload workflow and requested the
+increment to `UAT v1.0.011`.
