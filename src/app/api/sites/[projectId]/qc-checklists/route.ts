@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import fs from "fs";
 import path from "path";
 import { writeAuditLog } from "@/lib/auditLog";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
@@ -314,7 +316,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     inspected_by_name: text(body.inspected_by_name) || current.inspected_by_name || context.session.user.name || "",
     notes: text(body.notes),
     items_json: safeJsonStringify(Array.isArray(body.items) ? body.items : parseQcItems(current.items_json)),
-    evidence_files_json: safeJsonStringify([...currentEvidence, ...uploadedEvidence]),
+    ...(uploadedEvidence.length ? { evidence_files_json: safeJsonStringify([...currentEvidence, ...uploadedEvidence]) } : {}),
   };
 
   await updateQcChecklist(context, current, patch);
@@ -329,6 +331,63 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     after: patch,
   });
 
+  return NextResponse.json({ success: true });
+}
+
+async function handleEvidence(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const qcId = text(body.qc_id);
+  const current = (await getRows(context)).find(row => row.qc_id === qcId && row.project_id === context.project.project_id);
+  if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
+  const email = text(context.session.user.email).toLowerCase();
+  if (!email) return NextResponse.json({ error: "ไม่พบอีเมลผู้ใช้" }, { status: 403 });
+  const owner = createHash("sha256").update(JSON.stringify([context.project.project_id, qcId, email])).digest("hex");
+
+  if (body.action === "prepare_evidence") {
+    const name = text(body.file_name);
+    const mime = text(body.mime_type);
+    const size = Number(body.file_size);
+    if (!name || name.length > 240 || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(mime) ||
+        (mime.startsWith("image/") && mime !== "image/webp") || !Number.isSafeInteger(size) || size <= 0) {
+      return NextResponse.json({ error: "ชื่อ ชนิด หรือขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
+    }
+    const [folder, generated] = await Promise.all([
+      getQcFolder(context, qcId),
+      drive.files.generateIds({ count: 1, space: "drive" }),
+    ]);
+    if (!folder) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive ของไซต์");
+    const target = await findOrCreateFolder("Evidence", folder);
+    const id = generated.data.ids?.[0];
+    if (!target.id || !id) throw new Error("เปิดช่องทางอัปโหลดหลักฐานไม่สำเร็จ");
+    const session = await createResumableUploadSession({
+      fileName: safeFolderName(name), mimeType: mime, size, parentId: target.id, fileId: id,
+      origin: new URL(req.url).origin,
+      appProperties: { pmcQcOwner: owner, pmcSize: String(size), pmcMime: mime },
+    });
+    return NextResponse.json({ file_id: id, upload_url: session.uploadUrl }, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  const id = text(body.file_id);
+  if (!/^[a-zA-Z0-9_-]{10,}$/.test(id)) return NextResponse.json({ error: "รหัสไฟล์ไม่ถูกต้อง" }, { status: 400 });
+  const evidence = parseQcEvidence(current.evidence_files_json);
+  if (evidence.some(file => file.file_id === id)) return NextResponse.json({ success: true });
+  const { data } = await drive.files.get({
+    fileId: id, supportsAllDrives: true, fields: "id,name,mimeType,size,trashed,appProperties,webViewLink",
+  });
+  if (data.trashed || data.appProperties?.pmcQcOwner !== owner || !data.size ||
+      data.appProperties.pmcSize !== data.size || data.appProperties.pmcMime !== data.mimeType) {
+    return NextResponse.json({ error: "ยืนยันไฟล์หลักฐานจาก Google Drive ไม่สำเร็จ" }, { status: 400 });
+  }
+  const patch = {
+    evidence_files_json: safeJsonStringify([...evidence, {
+      file_id: id, file_name: data.name || id, mime_type: data.mimeType || "",
+      file_url: data.webViewLink || `https://drive.google.com/open?id=${id}`,
+    }]),
+  };
+  await updateQcChecklist(context, current, patch);
+  await writeAuditLog({
+    actor: actor(context), projectId: context.project.project_id, module: "qc_checklists",
+    action: "updated", targetId: qcId, summary: "แนบหลักฐาน QC Checklist", before: current, after: patch,
+  });
   return NextResponse.json({ success: true });
 }
 
@@ -526,6 +585,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const action = text(body.action);
 
     if (action === "create") return handleCreate(body, routeContext);
+    if (action === "prepare_evidence" || action === "confirm_evidence") return await handleEvidence(req, body, routeContext);
     if (action === "save") return handleSave(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext);
     if (action === "send_approval") return handleSendApproval(req, body, routeContext);

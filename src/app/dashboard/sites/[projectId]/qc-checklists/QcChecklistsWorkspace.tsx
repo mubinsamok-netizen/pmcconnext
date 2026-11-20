@@ -1,5 +1,6 @@
 "use client";
 
+import { uploadQcEvidence, type QcEvidenceUpload } from "@/lib/directDriveQcEvidenceUpload";
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
   CheckCircle2,
@@ -62,12 +63,6 @@ type QcResponse = {
   };
 };
 
-type UploadPayload = {
-  name: string;
-  type: string;
-  dataUrl: string;
-};
-
 const RESULT_OPTIONS: Array<QcChecklistItem["result"]> = ["pending", "pass", "repair", "fail"];
 type EditableQcField = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
@@ -116,15 +111,6 @@ function resultClass(result?: string) {
   return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
-async function fileToUploadPayload(file: File) {
-  return new Promise<UploadPayload>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function itemStats(items: QcChecklistItem[]) {
   const pass = items.filter((item) => item.result === "pass").length;
   const issue = items.filter((item) => item.result === "repair" || item.result === "fail").length;
@@ -162,6 +148,10 @@ export default function QcChecklistsWorkspace({
   const [saving, setSaving] = useState("");
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [progress, setProgress] = useState<Record<number, string>>({});
+  const [uploading, setUploading] = useState(false);
+  const uploadLock = useRef(false);
+  const sessions = useRef(new WeakMap<File, QcEvidenceUpload>());
   const editorRef = useRef<HTMLDivElement | null>(null);
 
   const selected = useMemo(() => {
@@ -218,7 +208,7 @@ export default function QcChecklistsWorkspace({
     try {
       const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(body.action === "save" ? { "X-PMC-No-Global-Loading": "1" } : {}) },
         body: JSON.stringify(body),
       });
       const json = await response.json().catch(() => ({}));
@@ -246,24 +236,46 @@ export default function QcChecklistsWorkspace({
   };
 
   const saveChecklist = async (items: QcChecklistItem[] = selectedItems, patch: Partial<QcChecklist> = {}) => {
-    if (!selected) return;
-    const uploads = await Promise.all(files.map(fileToUploadPayload));
-    const json = await request({
-      action: "save",
-      qc_id: selected.qc_id,
-      category: patch.category ?? selected.category,
-      phase: patch.phase ?? selected.phase,
-      title: patch.title ?? selected.title,
-      status: patch.status ?? selected.status ?? "in_progress",
-      approval_status: patch.approval_status ?? selected.approval_status ?? "not_sent",
-      inspection_date: patch.inspection_date ?? selected.inspection_date ?? todayInputValue(),
-      inspected_by_name: patch.inspected_by_name ?? selected.inspected_by_name ?? "",
-      notes: patch.notes ?? selected.notes ?? "",
-      items,
-      evidence_uploads: uploads,
-    }, "บันทึก QC Checklist แล้ว");
-    setFiles([]);
-    return json;
+    if (!selected || uploadLock.current) return null;
+    uploadLock.current = true;
+    setUploading(files.length > 0);
+    setProgress({});
+    try {
+      const json = await request({
+        action: "save",
+        qc_id: selected.qc_id,
+        category: patch.category ?? selected.category,
+        phase: patch.phase ?? selected.phase,
+        title: patch.title ?? selected.title,
+        status: patch.status ?? selected.status ?? "in_progress",
+        approval_status: patch.approval_status ?? selected.approval_status ?? "not_sent",
+        inspection_date: patch.inspection_date ?? selected.inspection_date ?? todayInputValue(),
+        inspected_by_name: patch.inspected_by_name ?? selected.inspected_by_name ?? "",
+        notes: patch.notes ?? selected.notes ?? "",
+        items,
+      }, "บันทึก QC Checklist แล้ว");
+      if (!json?.success || !files.length) return json;
+      const failed: File[] = [];
+      for (const [index, file] of files.entries()) {
+        const updateStatus = (status: string) => setProgress(current => ({ ...current, [index]: status }));
+        try {
+          await uploadQcEvidence(endpoint, selected.qc_id, file, sessions.current.get(file),
+            session => sessions.current.set(file, session), updateStatus);
+          updateStatus("เสร็จแล้ว");
+        } catch {
+          failed.push(file);
+          updateStatus("อัปโหลดไม่สำเร็จ");
+        }
+      }
+      setFiles(failed);
+      setProgress({});
+      if (failed.length) setMessage(`บันทึกข้อมูลแล้ว แต่แนบไฟล์ไม่สำเร็จ ${failed.length} ไฟล์ กรุณาลองอีกครั้ง`);
+      void mutate().catch(() => undefined);
+      return failed.length ? null : json;
+    } finally {
+      uploadLock.current = false;
+      setUploading(false);
+    }
   };
 
   const updateChecklistMeta = (patch: Partial<QcChecklist>) => {
@@ -370,7 +382,8 @@ export default function QcChecklistsWorkspace({
                 <button
                   key={checklist.qc_id}
                   type="button"
-                  onClick={() => setSelectedId(checklist.qc_id)}
+                  disabled={uploading}
+                  onClick={() => { setFiles([]); setSelectedId(checklist.qc_id); }}
                   className={`w-full rounded-xl border p-3 text-left transition ${selected?.qc_id === checklist.qc_id ? "border-orange-300 bg-orange-50" : "border-gray-200 bg-white hover:bg-gray-50"}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -487,11 +500,11 @@ export default function QcChecklistsWorkspace({
                       ) : null}
                     </div>
                     <div className="grid w-full grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-2 shadow-sm xl:w-[360px] [&>*]:h-10 [&>*]:min-w-0 [&>*]:justify-center [&>*]:whitespace-nowrap [&>*:nth-child(3)]:col-span-2 [&>*:nth-child(3)]:h-11 [&>*:nth-child(4)]:col-span-2">
-                      <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving) || uploading} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         {saving === "save" ? <Loader2 size={16} className="animate-spin" /> : <ClipboardCheck size={16} />}
                         บันทึก
                       </button>
-                      <button onClick={() => requestAfterSavingDraft({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving)} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      <button onClick={() => requestAfterSavingDraft({ action: "issue_pdf", qc_id: selected.qc_id }, "ออก PDF QC แล้ว")} disabled={Boolean(saving) || uploading} className="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-60">
                         <FileText size={16} />
                         ออก PDF
                       </button>
@@ -613,6 +626,7 @@ export default function QcChecklistsWorkspace({
                       type="file"
                       multiple
                       accept="image/*,.pdf,.doc,.docx"
+                      disabled={uploading || Boolean(saving)}
                       className="sr-only"
                       onChange={(event) => {
                         setFiles((current) => [...current, ...Array.from(event.target.files || [])].slice(0, 12));
@@ -626,12 +640,13 @@ export default function QcChecklistsWorkspace({
                     {files.map((file, index) => (
                       <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
                         <span className="truncate font-semibold text-gray-700">{file.name}</span>
-                        <button type="button" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-lg p-1 text-gray-400 hover:bg-red-50 hover:text-red-600">
+                        <span aria-live="polite" className="shrink-0 text-xs text-gray-600">{progress[index] || (uploading ? "รออัปโหลด" : "")}</span>
+                        <button type="button" disabled={uploading || Boolean(saving)} onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-lg p-1 text-gray-400 hover:bg-red-50 hover:text-red-600">
                           <Trash2 size={14} />
                         </button>
                       </div>
                     ))}
-                    <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving)} className="mt-2 inline-flex w-fit items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white hover:bg-orange-700 disabled:opacity-60">
+                    <button onClick={() => saveChecklist(readItemsDraft(), readMetaDraft())} disabled={Boolean(saving) || uploading} className="mt-2 inline-flex w-fit items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-bold text-white hover:bg-orange-700 disabled:opacity-60">
                       อัปโหลดหลักฐานและบันทึก
                     </button>
                   </div>
