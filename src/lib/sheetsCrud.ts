@@ -107,14 +107,14 @@ function rowsToRecords(rows: unknown[][], tableName: string, schema: SheetSchema
   });
 }
 
-async function findAllFromSheet(spreadsheetId: string, tableName: string, schema: SheetSchema) {
+async function readSheetValues(spreadsheetId: string, tableName: string) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${tableName}`,
     });
 
-    return rowsToRecords(res.data.values || [], tableName, schema);
+    return res.data.values || [];
   } catch (error) {
     if (isQuotaExceeded(error)) {
       console.warn(`Read quota exceeded in findAll(${tableName}).`);
@@ -125,8 +125,21 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string, schema
   }
 }
 
+async function findAllFromSheet(spreadsheetId: string, tableName: string, schema: SheetSchema) {
+  return rowsToRecords(await readSheetValues(spreadsheetId, tableName), tableName, schema);
+}
+
 export async function findAllRaw(tableName: string, spreadsheetId: string = SHEET_ID) {
   return findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA);
+}
+
+export async function findAllRawWithValidHeaders(tableName: SiteTable, spreadsheetId: string) {
+  const rows = await readSheetValues(spreadsheetId, tableName);
+  const headers = rows[0];
+  if (!headers || !SITE_SCHEMA[tableName].every((header, index) => headers[index] === header)) {
+    return null;
+  }
+  return rowsToRecords(rows, tableName, SITE_SCHEMA);
 }
 
 export async function findAllMasterRaw(tableName: MasterTable) {

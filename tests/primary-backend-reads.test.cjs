@@ -408,3 +408,85 @@ test("Sheets PDF preparation reuses a recent document list for the same site onl
   await sheetRoute.getDocumentRows("P-1", "P-1", true);
   assert.deepEqual(reads, ["P-1", "P-2", "P-1"]);
 });
+
+test("Sheets PDF confirmation checks just the document headers and repairs an invalid table before writing", async () => {
+  const headers = ["document_id", "project_id", "drive_file_id"];
+  const driveFileId = "DriveTestbyZoneIdea";
+  const title = "Report TestbyZoneIdea";
+  const email = "test@example.invalid";
+  const fileName = "TestbyZoneIdea.pdf";
+  const size = 5_100_425;
+  const { createHash } = require("node:crypto");
+  const binding = createHash("sha256").update(JSON.stringify([project.project_id, email, "report", title, fileName, size, "1", ""])).digest("hex");
+  const calls = [];
+  let allowed = false;
+  let invalidHeaders = false;
+  let repairSucceeds = true;
+  let driveFound = true;
+  let saved;
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./sheetsSetup": { SITE_SCHEMA: { Project_Documents: headers } },
+    "./google": { sheets: { spreadsheets: { values: { get: async ({ spreadsheetId, range }) => {
+      assert.equal(spreadsheetId, project.site_sheet_id);
+      assert.equal(range, "Project_Documents");
+      calls.push("read");
+      const firstRow = invalidHeaders ? ["project_id", "document_id", "drive_file_id"] : headers;
+      return { data: { values: saved ? [firstRow, saved] : [firstRow] } };
+    } } } } },
+  });
+  const route = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "node:crypto": { createHash },
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/siteApi": {
+      getSiteApiContext: async (_projectId, _requireAdmin, options) => {
+        assert.equal(options.readOnly, true);
+        return { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email } } };
+      },
+      makeId: () => "DOC-TestbyZoneIdea",
+      getErrorMessage: (error) => error.message,
+    },
+    "@/lib/supabaseRest": rest("sheets"),
+    "@/lib/permissions": { hasPermission: () => allowed, permissionDeniedMessage: () => "Forbidden" },
+    "@/lib/google": { drive: { files: { get: async () => {
+      calls.push("verify");
+      if (!driveFound) throw Object.assign(new Error("missing"), { code: 404 });
+      return { data: { size: String(size), mimeType: "application/pdf", appProperties: { pmcDocument: binding } } };
+    } } } },
+    "@/lib/sheetsSetup": { ensureSchema: async () => {
+      calls.push("repair");
+      if (repairSucceeds) invalidHeaders = false;
+      return { success: repairSucceeds };
+    } },
+    "@/lib/sheetsCrud": {
+      findAllRawWithValidHeaders: crud.findAllRawWithValidHeaders,
+      insert: async (_table, row) => {
+        calls.push("write");
+        saved = [row.document_id, row.project_id, row.drive_file_id];
+        return { inserted: row };
+      },
+    },
+  });
+  const complete = () => route.POST({
+    headers: { get: () => "application/json" },
+    json: async () => ({ action: "complete_upload", verify_upload: true, category: "report", title,
+      file_name: fileName, file_size: size, drive_file_id: driveFileId }),
+  }, { params: Promise.resolve({ projectId: project.project_id }) });
+  assert.equal((await complete()).status, 403);
+  assert.deepEqual(calls.splice(0), []);
+  allowed = true;
+  assert.equal((await complete()).status, 200);
+  assert.deepEqual(calls.splice(0), ["read", "verify", "write"]);
+  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.deepEqual(calls.splice(0), ["read", "verify"]);
+  invalidHeaders = true;
+  driveFound = false;
+  assert.equal((await complete()).status, 409);
+  assert.deepEqual(calls.splice(0), ["read", "verify"]);
+  driveFound = true;
+  repairSucceeds = false;
+  assert.equal((await complete()).status, 503);
+  assert.deepEqual(calls.splice(0), ["read", "verify", "repair"]);
+  repairSucceeds = true;
+  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.deepEqual(calls.splice(0), ["read", "verify", "repair", "read"]);
+});

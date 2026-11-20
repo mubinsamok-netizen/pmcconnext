@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { drive } from "@/lib/google";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
-import { findAllRaw, insert } from "@/lib/sheetsCrud";
+import { findAllRaw, findAllRawWithValidHeaders, insert } from "@/lib/sheetsCrud";
+import { ensureSchema } from "@/lib/sheetsSetup";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { getSupabaseDocumentVersions, getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
 import { isSupabaseBackend, readWithSheetsFallback } from "@/lib/supabaseRest";
@@ -175,8 +176,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const body = contentType.includes("application/json")
       ? await req.json().catch(() => ({})) as Record<string, unknown>
       : null;
+    const action = textValue(body?.action);
+    const verified = body?.verify_upload === true;
+    const checkDocumentHeaders = verified && action === "complete_upload" && !isSupabaseBackend();
     const context = await measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId), false, {
-      readOnly: body?.action === "create_upload_session" && body.verify_upload === true,
+      readOnly: (verified && action === "create_upload_session") || checkDocumentHeaders,
       onTiming: (phase, duration) => metrics.push(`${phase};dur=${duration.toFixed(2)}`),
     }));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
@@ -190,14 +194,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     }
 
     if (body) {
-      const action = textValue(body.action);
       const category = textValue(body.category) || "other";
       const fileName = safeFolderName(textValue(body.file_name) || "document.pdf");
       const mimeType = textValue(body.mime_type) || "application/pdf";
       const size = numberValue(body.file_size);
       const title = textValue(body.title) || fileName;
       const notes = textValue(body.notes);
-      const verified = body.verify_upload === true;
       const email = context.session.user?.email || "";
       if (verified && !email) return respond({ error: "ไม่พบผู้ใช้อัปโหลด" }, 403);
 
@@ -296,7 +298,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
               throw error;
             }
           });
-          const savedDocument = measure("document_read", () => findUploadedDocument(context.siteSheetId, context.project.project_id, driveFileId))
+          const readDocumentSheet = async () => {
+            const rows = await findAllRawWithValidHeaders("Project_Documents", context.siteSheetId);
+            if (!rows) return null;
+            return rows.find((row) => row.project_id === context.project.project_id && row.drive_file_id === driveFileId);
+          };
+          const savedDocument = measure("document_read", checkDocumentHeaders
+            ? readDocumentSheet
+            : () => findUploadedDocument(context.siteSheetId, context.project.project_id, driveFileId))
             .then((data) => ({ data }), (error: unknown) => ({ error }));
           const file = await verifyDriveFile();
           if (!file) return respond({ error: "ยังไม่พบไฟล์ใน Drive กรุณาลองยืนยันอีกครั้ง" }, 409);
@@ -306,8 +315,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           }
           driveUrl = file.webViewLink || file.webContentLink || `https://drive.google.com/file/d/${driveFileId}/view`;
           const result = await savedDocument;
-          if ("error" in result) throw result.error;
-          existing = result.data;
+          if (checkDocumentHeaders && ("error" in result || result.data === null)) {
+            const schema = await measure("site_schema", () => ensureSchema(context.siteSheetId));
+            const reread = schema.success ? await measure("document_reread", readDocumentSheet) : null;
+            if (reread === null) {
+              return respond({ error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้งเพื่อป้องกันข้อมูลคลาดเคลื่อน" }, 503);
+            }
+            existing = reread;
+          } else {
+            if ("error" in result) throw result.error;
+            existing = result.data ?? undefined;
+          }
         }
 
         if (!driveFileId || !driveUrl) {

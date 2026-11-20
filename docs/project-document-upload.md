@@ -33,3 +33,9 @@ record by Drive file ID while verifying Drive metadata. For Google Sheets,
 preparation can reuse the same site's read for up to 10 seconds. Listing
 refreshes and confirmation still read fresh rows, and a successful write
 clears the preparation snapshot.
+
+In Google Sheets mode, verified confirmation validates the
+`Project_Documents` header order from the same fresh read used to check
+for the existing Drive file ID. An unreadable or invalid table falls back
+to the existing schema repair after Drive verification. The write is gated
+on a successful reread with valid headers.
