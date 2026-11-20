@@ -31,6 +31,10 @@ function isPdfFile(fileName: string, mimeType: string) {
 }
 
 type DocumentRow = Awaited<ReturnType<typeof getSupabaseProjectDocuments>>[number];
+const recentSheetDocumentReads = new Map<string, {
+  expires: number;
+  rows: Promise<DocumentRow[]>;
+}>();
 
 async function getSheetDocumentRows(siteSheetId: string) {
   try {
@@ -42,11 +46,31 @@ async function getSheetDocumentRows(siteSheetId: string) {
   }
 }
 
-async function getDocumentRows(siteSheetId: string, projectId: string) {
-  if (!isSupabaseBackend()) return getSheetDocumentRows(siteSheetId);
+function readSheetDocumentsForUpload(siteSheetId: string, reuseRecent: boolean) {
+  const now = Date.now();
+  const recent = recentSheetDocumentReads.get(siteSheetId);
+  if (reuseRecent && recent && recent.expires > now) return recent.rows;
+
+  const rows = getSheetDocumentRows(siteSheetId);
+  if (recentSheetDocumentReads.size >= 128) {
+    const oldest = recentSheetDocumentReads.keys().next().value;
+    if (oldest) recentSheetDocumentReads.delete(oldest);
+  }
+  recentSheetDocumentReads.set(siteSheetId, { expires: now + 10_000, rows });
+  const discard = () => {
+    if (recentSheetDocumentReads.get(siteSheetId)?.rows === rows) recentSheetDocumentReads.delete(siteSheetId);
+  };
+  void rows.then((data) => { if (!data.length) discard(); }, discard);
+  return rows;
+}
+
+async function getDocumentRows(siteSheetId: string, projectId: string, rememberSheetRead = false) {
+  const readSheets = () => rememberSheetRead
+    ? readSheetDocumentsForUpload(siteSheetId, false)
+    : getSheetDocumentRows(siteSheetId);
+  if (!isSupabaseBackend()) return readSheets();
 
   const readSupabase = () => getSupabaseProjectDocuments(projectId);
-  const readSheets = () => getSheetDocumentRows(siteSheetId);
 
   return readWithSheetsFallback("project_documents", readSupabase, readSheets);
 }
@@ -62,16 +86,21 @@ async function getNextDocumentVersion(
     String(row.category || "") === category &&
     String(row.title || "") === title;
   const versionNumber = (row: { version_number?: string | number | null }) => Number(row.version_number || 0);
-  const readSheetVersions = async () => (await getSheetDocumentRows(siteSheetId))
+  const readSheetVersions = async () => (await readSheetDocumentsForUpload(siteSheetId, true))
     .filter(matchesDocument)
     .map((row) => Number(row.version_number || 0));
-  const versions = useScopedRead && isSupabaseBackend()
-    ? await readWithSheetsFallback(
+  let versions: number[];
+  if (!useScopedRead) {
+    versions = (await getDocumentRows(siteSheetId, projectId)).filter(matchesDocument).map((row) => Number(row.version_number || 0));
+  } else if (isSupabaseBackend()) {
+    versions = await readWithSheetsFallback(
       "project_documents",
       async () => (await getSupabaseDocumentVersions(projectId, category, title)).map(versionNumber),
       readSheetVersions,
-    )
-    : (await getDocumentRows(siteSheetId, projectId)).filter(matchesDocument).map((row) => Number(row.version_number || 0));
+    );
+  } else {
+    versions = await readSheetVersions();
+  }
   const currentVersions = versions.filter(Number.isFinite);
   return Math.max(0, ...currentVersions) + 1;
 }
@@ -90,7 +119,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
-    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
+    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id, true);
     const documents = rows
       .filter((row) => row.project_id === context.project.project_id)
       .sort((a, b) => new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime());
@@ -309,6 +338,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           uploaded_by_name: context.session.user?.name || "",
         };
         const result = await measure("document_write", () => insert("Project_Documents", data, context.siteSheetId));
+        recentSheetDocumentReads.delete(context.siteSheetId);
 
         return respond({ success: true, data: result.inserted });
       }
@@ -352,6 +382,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       uploaded_by_name: context.session.user?.name || "",
     };
     const result = await insert("Project_Documents", data, context.siteSheetId);
+    recentSheetDocumentReads.delete(context.siteSheetId);
 
     return NextResponse.json({ success: true, data: result.inserted });
   } catch (error: unknown) {

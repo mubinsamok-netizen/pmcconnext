@@ -29,5 +29,7 @@ retry once on a missing Drive parent.
 
 For verified uploads, Supabase returns only version numbers matching the
 site, category and title during preparation. Confirmation reads the saved
-record by Drive file ID while verifying Drive metadata. Google Sheets
-keeps the existing read fallback.
+record by Drive file ID while verifying Drive metadata. For Google Sheets,
+preparation can reuse the same site's read for up to 10 seconds. Listing
+refreshes and confirmation still read fresh rows, and a successful write
+clears the preparation snapshot.

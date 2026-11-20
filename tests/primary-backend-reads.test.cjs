@@ -389,3 +389,22 @@ test("verified PDF upload limits document reads and checks the saved row alongsi
   assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
   assert.equal(inserts, 1);
 });
+
+test("Sheets PDF preparation reuses a recent document list for the same site only", async () => {
+  const reads = [];
+  const sheetRoute = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "@/lib/sheetsCrud": {
+      findAllRaw: async (_table, sheet) => {
+        reads.push(sheet);
+        return [{ project_id: sheet, category: "report", title: "Report TestbyZoneIdea", version_number: "2" }];
+      },
+    },
+    "@/lib/supabaseRest": rest("sheets"),
+  }, ["getDocumentRows", "getNextDocumentVersion"]);
+  const version = (site) => sheetRoute.getNextDocumentVersion(site, site, "report", "Report TestbyZoneIdea", true);
+  await sheetRoute.getDocumentRows("P-1", "P-1", true);
+  assert.equal(await version("P-1"), 3);
+  assert.equal(await version("P-2"), 3);
+  await sheetRoute.getDocumentRows("P-1", "P-1", true);
+  assert.deepEqual(reads, ["P-1", "P-2", "P-1"]);
+});
