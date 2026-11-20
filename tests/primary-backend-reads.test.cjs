@@ -539,15 +539,24 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
     evidence_files_json: JSON.stringify([{ file_id: "ExistingFile" }]) };
   const site = { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email: "user@example.invalid" } } };
   const driveFiles = new Map();
+  let newDecisionSaved = false;
   let writes = 0;
   const route = loadTs("src/app/api/sites/[projectId]/customer-decisions/route.ts", {
     "node:crypto": require("node:crypto"),
     path: { default: require("node:path") },
     "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
-    "@/lib/customerDecisions": { parseDecisionEvidenceFiles: JSON.parse, safeJsonStringify: JSON.stringify },
+    "@/lib/customerDecisions": {
+      parseDecisionEvidenceFiles: JSON.parse, safeJsonStringify: JSON.stringify,
+      createCustomerDecisionId: () => "NEW-DEC-TestbyZoneIdea",
+    },
     "@/lib/decisionEvidenceUpload": limits,
     "@/lib/auditLog": { writeAuditLog: async () => {} },
     "@/lib/sheetsCrud": {
+      findAll: async () => [decision],
+      insert: async (_table, row) => {
+        assert.equal(row.decision_id, "NEW-DEC-TestbyZoneIdea");
+        newDecisionSaved = true;
+      },
       findAllBatch: async () => ({ Customer_Decisions: [
         decision, { decision_id: "OTHER", project_id: "P-2", _rowIndex: 3 },
       ] }),
@@ -560,6 +569,7 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
     },
     "@/lib/drive": {
       findOrCreateFolder: async (name) => ({ id: name }),
+      createFolder: async (name) => ({ id: name }),
       createResumableUploadSession: async (input) => {
         assert.equal(input.parentId, "Evidence");
         driveFiles.set(input.fileId, { name: input.fileName, size: String(input.size),
@@ -571,7 +581,7 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
       generateIds: async () => ({ data: { ids: ["Drive-WebP-TestbyZoneIdea", "Drive-PDF-TestbyZoneIdea"] } }),
       get: async ({ fileId }) => ({ data: driveFiles.get(fileId) }),
     } } },
-  }, ["startEvidenceUploads", "attachEvidence"], {}, { process: { env: {}, cwd: () => "/tmp" } });
+  }, ["startEvidenceUploads", "attachEvidence", "handleSave"], {}, { process: { env: {}, cwd: () => "/tmp" } });
   const files = [{ name: "Evidence-TestbyZoneIdea.webp", size: 800 }, { name: "Evidence-TestbyZoneIdea.pdf", size: 1000 }];
   const request = { url: "https://example.invalid" };
   assert.equal((await route.startEvidenceUploads(request, { decision_id: "OTHER", files }, site)).status, 404);
@@ -583,4 +593,11 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
   assert.equal((await route.attachEvidence(body, site)).status, 200);
   assert.equal(writes, 1);
   assert.deepEqual(JSON.parse(decision.evidence_files_json).map((file) => file.mime_type), [undefined, "image/webp", "application/pdf"]);
+  const saved = await route.handleSave(request, {
+    title: "New TestbyZoneIdea", phase: "Structure", decision_before: "TestbyZoneIdea",
+    impact_if_changed: "TestbyZoneIdea", upload_files: files,
+  }, site);
+  assert.equal(newDecisionSaved, true);
+  assert.equal(saved.body.data.decision_id, "NEW-DEC-TestbyZoneIdea");
+  assert.equal(saved.body.upload_sessions.length, 2);
 });

@@ -4,6 +4,14 @@ The schedule saves or edits the decision first. The background upload
 converts images to aspect-ratio-preserving WebP using the project-cover
 encoder. PDF, Word and Excel attachments retain their original bytes.
 
+The browser starts preparing WebP when files are selected. A save with
+`upload_files: [{ name, size }]` opens Drive sessions in parallel with
+the decision write and returns them in `upload_sessions` after the save.
+The browser starts the transfer after that response. If preparation in
+the save request fails, the browser uses the separate session endpoint.
+`Server-Timing` reports the overlapping `decision_save` and
+`drive_sessions` phases.
+
 The site customer-decisions route accepts `start_evidence_uploads` with
 `decision_id` and `files: [{ name, size }]`. It returns Drive IDs and
 resumable URLs in file order. The browser uploads directly to each URL and
