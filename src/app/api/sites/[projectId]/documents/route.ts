@@ -85,6 +85,26 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
   }
 }
 
+type DocumentFolder = Awaited<ReturnType<typeof findOrCreateFolder>>;
+const uploadFolders = new Map<string, { expires: number; folder: Promise<DocumentFolder> }>();
+
+function getUploadFolder(root: string, category: string, refresh = false) {
+  const name = safeFolderName(category);
+  const key = JSON.stringify([root, name]);
+  const cached = uploadFolders.get(key);
+  if (!refresh && cached && cached.expires > Date.now()) return cached.folder;
+
+  const folder = findOrCreateFolder("Project Documents", root, refresh)
+    .then((parent) => findOrCreateFolder(name, parent.id || root, refresh))
+    .catch((error: unknown) => {
+      if (uploadFolders.get(key)?.folder === folder) uploadFolders.delete(key);
+      throw error;
+    });
+  if (uploadFolders.size >= 256) uploadFolders.delete(uploadFolders.keys().next().value!);
+  uploadFolders.set(key, { expires: Date.now() + 60_000, folder });
+  return folder;
+}
+
 function uploadBinding(projectId: string, email: string, category: string, title: string, fileName: string, size: number, version: string, notes: string) {
   return createHash("sha256").update(JSON.stringify([projectId, email.trim().toLowerCase(), category, title, fileName, size, version, notes])).digest("hex");
 }
@@ -106,7 +126,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
   });
   try {
     const { projectId } = await params;
-    const context = await measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId)));
+    const contentType = req.headers.get("content-type") || "";
+    const body = contentType.includes("application/json")
+      ? await req.json().catch(() => ({})) as Record<string, unknown>
+      : null;
+    const context = await measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId), false, {
+      readOnly: body?.action === "create_upload_session" && body.verify_upload === true,
+      onTiming: (phase, duration) => metrics.push(`${phase};dur=${duration.toFixed(2)}`),
+    }));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     if (!hasPermission(context.session.user?.role, "siteDocument.upload")) {
       return NextResponse.json({ error: permissionDeniedMessage("siteDocument.upload") }, { status: 403 });
@@ -117,9 +144,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       return NextResponse.json({ error: "Project has no Google Drive folder" }, { status: 400 });
     }
 
-    const contentType = req.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    if (body) {
       const action = textValue(body.action);
       const category = textValue(body.category) || "other";
       const fileName = safeFolderName(textValue(body.file_name) || "document.pdf");
@@ -155,10 +180,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
         const [rows, categoryFolder, reserved] = await Promise.all([
           measure("version_read", () => getDocumentRows(context.siteSheetId, context.project.project_id)),
-          measure("drive_folders", async () => {
-            const folder = await findOrCreateFolder("Project Documents", driveFolderId);
-            return findOrCreateFolder(safeFolderName(category), folder.id || driveFolderId);
-          }),
+          measure("drive_folders", () => getUploadFolder(driveFolderId, category)),
           verified ? measure("drive_allocate", async () => {
             const result = await drive.files.generateIds({ count: 1, space: "drive" });
             const id = result.data.ids?.[0];
@@ -168,17 +190,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         ]);
         const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
         const storedName = `v${versionNumber}-${Date.now()}-${fileName}`;
-        const { uploadUrl } = await measure("drive_session", () => createResumableUploadSession({
+        const openSession = (folder: DocumentFolder) => createResumableUploadSession({
           fileName: storedName,
           mimeType: verified ? "application/pdf" : mimeType,
           size,
-          parentId: categoryFolder.id || driveFolderId,
+          parentId: folder.id || driveFolderId,
           origin: new URL(req.url).origin,
           fileId: reserved,
           appProperties: reserved ? {
             pmcDocument: uploadBinding(context.project.project_id, email, category, title, fileName, size, String(versionNumber), notes),
           } : undefined,
-        }));
+        });
+        const { uploadUrl } = await measure("drive_session", async () => {
+          try {
+            return await openSession(categoryFolder);
+          } catch (error) {
+            if ((error as { status?: number }).status !== 404) throw error;
+            const refreshed = await measure("drive_folders_refresh", () => getUploadFolder(driveFolderId, category, true));
+            return openSession(refreshed);
+          }
+        });
 
         return respond({
           success: true,

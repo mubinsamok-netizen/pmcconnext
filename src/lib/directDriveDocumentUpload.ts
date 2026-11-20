@@ -7,6 +7,7 @@ export type DirectDocumentUploadInput = {
   title: string;
   notes: string;
   file: File;
+  preparedSession?: ReturnType<typeof prepareDocumentUpload>;
   onProgress?: (status: DocumentUploadProgress) => void;
   onConfirmReady?: (confirm: () => Promise<DirectDocumentUploadResult>) => void;
 };
@@ -93,22 +94,12 @@ async function uploadThroughServer({
   return payload.data as DirectDocumentUploadResult;
 }
 
-export async function uploadProjectDocumentDirectly({
-  endpoint,
-  category,
-  title,
-  notes,
-  file,
-  onProgress,
-  onConfirmReady,
-}: DirectDocumentUploadInput) {
-  if (file.size === 0) throw new Error("ไฟล์ PDF ว่างเปล่า กรุณาเลือกไฟล์ใหม่");
-  const verified = Boolean(onProgress);
-  onProgress?.({ stage: "prepare" });
-  const jsonHeaders = {
-    "Content-Type": "application/json",
-    ...(verified ? { "X-PMC-No-Global-Loading": "1" } : {}),
-  };
+export async function prepareDocumentUpload(
+  { endpoint, category, title, notes, file }: DirectDocumentUploadInput,
+  verified: boolean,
+) {
+  if (!file.size) throw new Error("ไฟล์ PDF ว่างเปล่า กรุณาเลือกไฟล์ใหม่");
+  const jsonHeaders = documentUploadHeaders(verified);
   const sessionResponse = await fetch(endpoint, {
     method: "POST",
     headers: jsonHeaders,
@@ -132,6 +123,23 @@ export async function uploadProjectDocumentDirectly({
   if (!session.upload_url) {
     throw new Error("Google Drive ไม่ได้ส่ง upload URL กลับมา");
   }
+
+  return { ...session, upload_url: session.upload_url };
+}
+
+function documentUploadHeaders(verified: boolean) {
+  return {
+    "Content-Type": "application/json",
+    ...(verified ? { "X-PMC-No-Global-Loading": "1" } : {}),
+  };
+}
+
+export async function uploadProjectDocumentDirectly(input: DirectDocumentUploadInput) {
+  const { endpoint, category, title, notes, file, onProgress, onConfirmReady } = input;
+  const verified = Boolean(onProgress);
+  const jsonHeaders = documentUploadHeaders(verified);
+  onProgress?.({ stage: "prepare" });
+  const session = await (input.preparedSession || prepareDocumentUpload(input, verified));
 
   const confirmUpload = async (driveFile: DriveUploadResponse) => {
     const completeResponse = await fetch(endpoint, {

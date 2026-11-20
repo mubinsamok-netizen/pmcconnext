@@ -56,11 +56,11 @@ export async function createFolder(folderName: string, parentId: string = DRIVE_
   }
 }
 
-export async function findOrCreateFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
+export async function findOrCreateFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID, refresh = false) {
   try {
     const cacheKey = getFolderCacheKey(folderName, parentId);
     const cached = folderLookupCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (!refresh && cached && cached.expiresAt > Date.now()) {
       return cached.folder;
     }
 
@@ -290,7 +290,7 @@ export async function createResumableUploadSession({
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Google Drive upload session failed: ${errorText || response.statusText}`);
+    throw Object.assign(new Error(`Google Drive upload session failed: ${errorText || response.statusText}`), { status: response.status });
   }
 
   const uploadUrl = response.headers.get("location");

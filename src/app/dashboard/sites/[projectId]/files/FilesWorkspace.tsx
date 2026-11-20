@@ -21,7 +21,7 @@ import PaginationControls from "@/components/PaginationControls";
 import FileSourceStatus from "@/components/FileSourceStatus";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
-import { uploadProjectDocumentDirectly, type DirectDocumentUploadResult, type DocumentUploadProgress } from "@/lib/directDriveDocumentUpload";
+import { prepareDocumentUpload, uploadProjectDocumentDirectly, type DirectDocumentUploadInput, type DirectDocumentUploadResult, type DocumentUploadProgress } from "@/lib/directDriveDocumentUpload";
 import { usePagination } from "@/lib/usePagination";
 import { useDriveFiles } from "@/lib/useDriveFiles";
 
@@ -577,6 +577,43 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
+  const preparation = useRef<{
+    key: string;
+    expires: number;
+    session: ReturnType<typeof prepareDocumentUpload>;
+  } | null>(null);
+  const prepareTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const getUploadInput = (formData: FormData, file: File): DirectDocumentUploadInput => ({
+    endpoint: `/api/sites/${projectId}/documents`,
+    category: String(formData.get("category") || "other"),
+    title: String(formData.get("title") || ""),
+    notes: String(formData.get("notes") || ""),
+    file,
+  });
+  const uploadKey = (input: DirectDocumentUploadInput) => JSON.stringify([
+    input.endpoint, input.category, input.title, input.notes,
+    input.file.name, input.file.size, input.file.type, input.file.lastModified,
+  ]);
+
+  const prepareFromForm = (form: HTMLFormElement) => {
+    clearTimeout(prepareTimer.current);
+    preparation.current = null;
+    if (isPending || confirmUpload || !project.drive_folder_id) return;
+    prepareTimer.current = setTimeout(() => {
+      if (!form.isConnected) return;
+      const data = new FormData(form);
+      const file = data.get("file");
+      if (!(file instanceof File) || !file.size || !String(data.get("title") || "").trim()) return;
+      const input = getUploadInput(data, file);
+      const session = prepareDocumentUpload(input, true);
+      preparation.current = { key: uploadKey(input), expires: Date.now() + 30_000, session };
+      void session.catch(() => {
+        if (preparation.current?.session === session) preparation.current = null;
+      });
+    }, 400);
+  };
+
   const files = useMemo(
     () => collectFiles(documents.data?.data || [], defects.data, driveFiles.data?.data || []),
     [documents.data, defects.data, driveFiles.data]
@@ -647,13 +684,16 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
       setUploadError("กรุณาเลือกไฟล์ PDF");
       return;
     }
+    clearTimeout(prepareTimer.current);
+    const input = getUploadInput(formData, file);
+    const candidate = preparation.current;
+    preparation.current = null;
     setUploadName(file.name);
     runUpload(() => uploadProjectDocumentDirectly({
-      endpoint: `/api/sites/${projectId}/documents`,
-      category: String(formData.get("category") || "other"),
-      title: String(formData.get("title") || file.name),
-      notes: String(formData.get("notes") || ""),
-      file,
+      ...input,
+      preparedSession: candidate && candidate.expires > Date.now() && candidate.key === uploadKey(input)
+        ? candidate.session.catch(() => prepareDocumentUpload(input, true))
+        : undefined,
       onProgress: setUploadProgress,
       onConfirmReady: (confirm) => setConfirmUpload(() => confirm),
     }));
@@ -728,6 +768,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             ref={formRef}
             className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
             data-no-global-loading="true"
+            onChange={(event) => prepareFromForm(event.currentTarget)}
             action={uploadPdf}
           >
             <div className="mb-4 flex items-center gap-2">

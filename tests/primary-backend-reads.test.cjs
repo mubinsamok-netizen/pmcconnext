@@ -300,11 +300,15 @@ test("a blocked Drive response confirms the reserved document without sending th
     },
   });
   let retry;
-  await assert.rejects(client.uploadProjectDocumentDirectly({
+  const input = {
     endpoint: "/test", category: "report", title: "TestbyZoneIdea", notes: "",
     file: { name: "TestbyZoneIdea.pdf", type: "application/pdf", size: 5_100_000 },
     onProgress() {}, onConfirmReady(confirm) { retry = confirm; },
-  }), /Not visible yet/);
+  };
+  const preparedSession = client.prepareDocumentUpload(input, true);
+  await preparedSession;
+  assert.deepEqual(calls, ["create_upload_session"]);
+  await assert.rejects(client.uploadProjectDocumentDirectly({ ...input, preparedSession }), /Not visible yet/);
   assert.equal((await retry()).document_id, "DOC-TestbyZoneIdea");
   assert.deepEqual(calls, ["create_upload_session", "drive_put", "complete_upload", "complete_upload"]);
 });

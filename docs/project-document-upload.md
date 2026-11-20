@@ -18,3 +18,11 @@ The lifecycle form retains its existing request format.
 Check `Server-Timing` for project context, version read, folder lookup,
 Drive ID reservation, session creation, Drive confirmation, and metadata
 write, depending on the request stage. Parallel durations overlap.
+
+The all-files form prepares the session after a short pause once a PDF and
+title are present. It sends the PDF only on submit. A prepared session is
+reused for up to 30 seconds for the same file and form values. If it fails
+before transfer, the submit action opens a fresh session. The server times
+session lookup, project reads, site authorization and Sheets schema checks
+separately. Folder lookups reuse the same root/category result briefly and
+retry once on a missing Drive parent.
