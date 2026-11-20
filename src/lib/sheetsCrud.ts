@@ -133,6 +133,15 @@ export async function findAllRaw(tableName: string, spreadsheetId: string = SHEE
   return findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA);
 }
 
+function hasValidHeaders(tableName: SiteTable, headers: unknown[] | undefined): headers is unknown[] {
+  return Boolean(headers && SITE_SCHEMA[tableName].every((header, index) => headers[index] === header));
+}
+
+export async function findAllWithValidHeaders(tableName: SiteTable, spreadsheetId: string) {
+  const rows = await readSheetValues(spreadsheetId, tableName);
+  return hasValidHeaders(tableName, rows[0]) ? rowsToRecords(rows, tableName, SITE_SCHEMA) : null;
+}
+
 export async function findRowWithValidHeaders(
   tableName: SiteTable,
   spreadsheetId: string,
@@ -140,7 +149,7 @@ export async function findRowWithValidHeaders(
 ) {
   const rows = await readSheetValues(spreadsheetId, tableName);
   const headers = rows[0];
-  if (!headers || !SITE_SCHEMA[tableName].every((header, index) => headers[index] === header)) {
+  if (!hasValidHeaders(tableName, headers)) {
     return null;
   }
   const columns = Object.entries(match).map(([header, value]) => [headers.lastIndexOf(header), value] as const);

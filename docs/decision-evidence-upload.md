@@ -12,6 +12,11 @@ the save request fails, the browser uses the separate session endpoint.
 `Server-Timing` reports the overlapping `decision_save` and
 `drive_sessions` phases.
 
+In Sheets mode, saving with evidence and confirming evidence validate
+the headers from the same fresh decision-table read used for the write.
+If the table is missing or invalid, only that table is repaired and read
+again before proceeding.
+
 The site customer-decisions route accepts `start_evidence_uploads` with
 `decision_id` and `files: [{ name, size }]`. It returns Drive IDs and
 resumable URLs in file order. The browser uploads directly to each URL and

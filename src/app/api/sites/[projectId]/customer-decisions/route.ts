@@ -24,7 +24,7 @@ import {
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAll, findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllRaw, findAllWithValidHeaders, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 import { ensureSiteTableSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
@@ -153,10 +153,12 @@ async function getDecisionFolder(context: RouteContext, decisionId: string) {
   return decisionFolder.id || rootFolderId;
 }
 
-async function getEvidenceDecision(context: RouteContext, decisionId: string) {
+async function getEvidenceDecision(context: RouteContext, decisionId: string, checkedRows?: CustomerDecisionRecord[]) {
   const projectId = context.project.project_id;
-  const rows = await findAllBatch(["Customer_Decisions"], context.siteSheetId, { projectId, fresh: true });
-  return (rows.Customer_Decisions as unknown as CustomerDecisionRecord[]).find((row) =>
+  const rows = checkedRows ?? (
+    await findAllBatch(["Customer_Decisions"], context.siteSheetId, { projectId, fresh: true })
+  ).Customer_Decisions as unknown as CustomerDecisionRecord[];
+  return rows.find((row) =>
     row.project_id === projectId && row.decision_id === decisionId && row.active !== "FALSE");
 }
 
@@ -223,7 +225,7 @@ async function openEvidenceSessions(req: Request, context: RouteContext, decisio
   }));
 }
 
-async function attachEvidence(body: Record<string, unknown>, context: RouteContext) {
+async function attachEvidence(body: Record<string, unknown>, context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
   const decisionId = text(body.decision_id);
   const ids = body.file_ids;
   if (!Array.isArray(ids) || !ids.length || ids.length > DECISION_EVIDENCE_MAX_FILES ||
@@ -231,7 +233,7 @@ async function attachEvidence(body: Record<string, unknown>, context: RouteConte
     return NextResponse.json({ error: "รหัสไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
   }
   if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
-  const current = decisionId ? await getEvidenceDecision(context, decisionId) : undefined;
+  const current = decisionId ? await getEvidenceDecision(context, decisionId, checkedRows) : undefined;
   if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแนบหลักฐาน" }, { status: 404 });
   const existing = parseDecisionEvidenceFiles(current.evidence_files_json);
   const knownIds = new Set(existing.map((file) => file.file_id));
@@ -379,8 +381,8 @@ async function seedDefaultRows(context: RouteContext) {
   }, context.siteSheetId)));
 }
 
-async function getDecisionData(context: RouteContext) {
-  let rows = await getRows(context);
+async function getDecisionData(context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
+  let rows = checkedRows ?? await getRows(context);
   const projectRows = rows.filter((row) => row.project_id === context.project.project_id);
 
   if (projectRows.length === 0) {
@@ -394,7 +396,7 @@ async function getDecisionData(context: RouteContext) {
     .sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0));
 }
 
-async function handleSave(req: Request, body: Record<string, unknown>, context: RouteContext) {
+async function handleSave(req: Request, body: Record<string, unknown>, context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
   const decisionId = text(body.decision_id);
   const payload = {
     project_id: context.project.project_id,
@@ -438,7 +440,7 @@ async function handleSave(req: Request, body: Record<string, unknown>, context: 
   const started = performance.now();
 
   if (decisionId) {
-    const rows = await getRows(context);
+    const rows = checkedRows ?? await getRows(context);
     const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
     if (!current?._rowIndex || (uploadFiles && current.active === "FALSE")) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแก้ไข" }, { status: 404 });
     const prepared = prepare(decisionId, false);
@@ -469,7 +471,7 @@ async function handleSave(req: Request, body: Record<string, unknown>, context: 
 
   const createdId = createCustomerDecisionId();
   const prepared = prepare(createdId, true);
-  const nextRows = await getDecisionData(context);
+  const nextRows = await getDecisionData(context, checkedRows);
   const nextEvidenceFiles = await uploadDecisionFiles(context, createdId, parseUploads(body.evidence_uploads));
   const createdPayload = applyConfirmationDefaults(payload, context);
   const created = {
@@ -683,14 +685,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "start_evidence_uploads" || evidenceWrite });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
+    let checkedRows: CustomerDecisionRecord[] | undefined;
     if (evidenceWrite && !isSupabaseBackend()) {
-      const schema = await ensureSiteTableSchema(context.siteSheetId, "Customer_Decisions");
-      if (!schema.success) return NextResponse.json({ error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" }, { status: 503 });
+      const read = () => findAllWithValidHeaders("Customer_Decisions", context.siteSheetId);
+      let rows = await read().catch(() => null);
+      if (!rows) {
+        const schema = await ensureSiteTableSchema(context.siteSheetId, "Customer_Decisions");
+        if (schema.success) rows = await read();
+      }
+      if (!rows) return NextResponse.json({ error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" }, { status: 503 });
+      checkedRows = rows as unknown as CustomerDecisionRecord[];
     }
 
     if (action === "start_evidence_uploads") return startEvidenceUploads(req, body, routeContext);
-    if (action === "attach_evidence") return attachEvidence(body, routeContext);
-    if (action === "save") return handleSave(req, body, routeContext);
+    if (action === "attach_evidence") return attachEvidence(body, routeContext, checkedRows);
+    if (action === "save") return handleSave(req, body, routeContext, checkedRows);
     if (action === "delete") return handleDelete(body, routeContext);
     if (action === "notify_line") return handleNotify(req, body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(req, body, routeContext);
