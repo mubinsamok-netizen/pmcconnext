@@ -38,3 +38,6 @@ increment to `UAT v1.0.008`.
 
 The user accepted the Defect page 13 workflow and requested the increment to
 `UAT v1.0.009`.
+
+The user accepted the All Photos and Files page 17 upload workflow and requested
+the increment to `UAT v1.0.010`.
