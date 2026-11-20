@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import fs from "fs";
 import path from "path";
 import { writeAuditLog } from "@/lib/auditLog";
@@ -15,11 +16,15 @@ import {
   type CustomerDecisionRecord,
   type CustomerDecisionUploadPayload,
 } from "@/lib/customerDecisions";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
+import {
+  DECISION_EVIDENCE_MAX_FILES, DECISION_EVIDENCE_MAX_FILE_SIZE, DECISION_EVIDENCE_MAX_TOTAL_SIZE, decisionEvidenceMime,
+} from "@/lib/decisionEvidenceUpload";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -144,6 +149,97 @@ async function getDecisionFolder(context: RouteContext, decisionId: string) {
   if (!rootFolderId) return null;
   const decisionFolder = await findOrCreateFolder(safeFolderName(decisionId), rootFolderId);
   return decisionFolder.id || rootFolderId;
+}
+
+async function getEvidenceDecision(context: RouteContext, decisionId: string) {
+  const projectId = context.project.project_id;
+  const rows = await findAllBatch(["Customer_Decisions"], context.siteSheetId, { projectId, fresh: true });
+  return (rows.Customer_Decisions as unknown as CustomerDecisionRecord[]).find((row) =>
+    row.project_id === projectId && row.decision_id === decisionId && row.active !== "FALSE");
+}
+
+function evidenceBinding(context: RouteContext, decisionId: string, storedName: string, size: number, mimeType: string) {
+  return createHash("sha256").update(JSON.stringify([
+    context.project.project_id, decisionId, actor(context).email.toLowerCase(), storedName, size, mimeType,
+  ])).digest("hex");
+}
+
+async function startEvidenceUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const decisionId = text(body.decision_id);
+  const files = Array.isArray(body.files) ? body.files.map((file) => ({
+    name: text(file?.name), size: Number(file?.size),
+  })) : [];
+  if (!files.length || files.length > DECISION_EVIDENCE_MAX_FILES ||
+    files.some(({ name, size }) => !decisionEvidenceMime(name) || !Number.isSafeInteger(size) || size <= 0 || size > DECISION_EVIDENCE_MAX_FILE_SIZE) ||
+    files.reduce((sum, file) => sum + file.size, 0) > DECISION_EVIDENCE_MAX_TOTAL_SIZE) {
+    return NextResponse.json({ error: "ชนิด จำนวน หรือขนาดไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+  if (!decisionId || !await getEvidenceDecision(context, decisionId)) {
+    return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแนบหลักฐาน" }, { status: 404 });
+  }
+  const [parent, reserved] = await Promise.all([
+    getDecisionFolder(context, decisionId),
+    drive.files.generateIds({ count: files.length, space: "drive" }),
+  ]);
+  if (!parent) return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์" }, { status: 400 });
+  const folder = await findOrCreateFolder("Evidence", parent);
+  const data = await Promise.all(files.map(async ({ name, size }, index) => {
+    const fileId = reserved.data.ids?.[index];
+    const mimeType = decisionEvidenceMime(name);
+    if (!fileId || !mimeType) throw new Error("เปิดช่องทางอัปโหลดหลักฐานไม่ครบ");
+    const fileName = `${Date.now()}-${safeFolderName(name)}`;
+    const session = await createResumableUploadSession({
+      fileName, mimeType, size, parentId: folder.id || parent, origin: new URL(req.url).origin, fileId,
+      appProperties: { pmcDecisionEvidence: evidenceBinding(context, decisionId, fileName, size, mimeType) },
+    });
+    return { file_id: fileId, upload_url: session.uploadUrl };
+  }));
+  return NextResponse.json({ success: true, data }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function attachEvidence(body: Record<string, unknown>, context: RouteContext) {
+  const decisionId = text(body.decision_id);
+  const ids = body.file_ids;
+  if (!Array.isArray(ids) || !ids.length || ids.length > DECISION_EVIDENCE_MAX_FILES ||
+    ids.some((id) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{10,}$/.test(id))) {
+    return NextResponse.json({ error: "รหัสไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+  const current = decisionId ? await getEvidenceDecision(context, decisionId) : undefined;
+  if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแนบหลักฐาน" }, { status: 404 });
+  const existing = parseDecisionEvidenceFiles(current.evidence_files_json);
+  const knownIds = new Set(existing.map((file) => file.file_id));
+  const pending = [...new Set<string>(ids)].filter((id) => !knownIds.has(id));
+  if (!pending.length) return NextResponse.json({ success: true, data: current });
+
+  const files = await Promise.all(pending.map(async (fileId) => {
+    try {
+      const { data: file } = await drive.files.get({
+        fileId, supportsAllDrives: true, fields: "name,size,mimeType,trashed,appProperties,webViewLink",
+      });
+      const name = file.name || "";
+      const mimeType = decisionEvidenceMime(name);
+      const size = Number(file.size);
+      if (file.trashed || !mimeType || file.mimeType !== mimeType || !Number.isSafeInteger(size) || size <= 0 ||
+        file.appProperties?.pmcDecisionEvidence !== evidenceBinding(context, decisionId, name, size, mimeType)) return null;
+      return { file_id: fileId, file_name: name.replace(/^\d+-/, ""), file_url: file.webViewLink || `https://drive.google.com/file/d/${fileId}/view`, mime_type: mimeType };
+    } catch (error) {
+      if ((error as { code?: number }).code === 404) return null;
+      throw error;
+    }
+  }));
+  if (files.some((file) => !file)) {
+    return NextResponse.json({ error: "ยังยืนยันไฟล์ใน Drive ไม่สำเร็จ กรุณาลองยืนยันอีกครั้ง" }, { status: 409 });
+  }
+  const patch = { evidence_files_json: safeJsonStringify([...existing, ...files]) };
+  await updateCustomerDecision(context, current, patch);
+  await writeAuditLog({
+    actor: actor(context), projectId: context.project.project_id, module: "customer_decisions",
+    action: "updated", targetId: decisionId, summary: `แนบหลักฐานการตัดสินใจ: ${current.title}`,
+    before: current, after: patch,
+  });
+  return NextResponse.json({ success: true, data: { ...current, ...patch } });
 }
 
 async function uploadDecisionFiles(context: RouteContext, decisionId: string, uploads: CustomerDecisionUploadPayload[]) {
@@ -532,12 +628,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-    const routeContext = context as RouteContext;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action) || "save";
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "start_evidence_uploads" });
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const routeContext = context as RouteContext;
 
+    if (action === "start_evidence_uploads") return startEvidenceUploads(req, body, routeContext);
+    if (action === "attach_evidence") return attachEvidence(body, routeContext);
     if (action === "save") return handleSave(body, routeContext);
     if (action === "delete") return handleDelete(body, routeContext);
     if (action === "notify_line") return handleNotify(req, body, routeContext);

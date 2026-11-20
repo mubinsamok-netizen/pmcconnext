@@ -4,7 +4,7 @@ import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
-import useSWR from "swr";
+import useSWR, { mutate as mutateScheduleCache } from "swr";
 import {
   ArrowDown,
   ArrowUp,
@@ -41,6 +41,9 @@ import {
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { CUSTOMER_DECISION_PHASES, CUSTOMER_DECISION_STATUSES } from "@/lib/customerDecisions";
+import { DECISION_EVIDENCE_MAX_FILES, DECISION_EVIDENCE_MAX_FILE_SIZE, DECISION_EVIDENCE_MAX_TOTAL_SIZE } from "@/lib/decisionEvidenceUpload";
+import { uploadDecisionEvidence } from "@/lib/directDriveDecisionEvidenceUpload";
+import { DecisionEvidenceUploadProgress, type EvidenceUpload } from "./DecisionEvidenceProgress";
 import ScheduleSkeleton from "./ScheduleSkeleton";
 import { downloadScheduleWorkbook } from "@/lib/scheduleExcel";
 import ScheduleTemplateLibrary from "./ScheduleTemplateLibrary";
@@ -123,12 +126,6 @@ type DecisionEvidenceFile = {
   file_name?: string;
   file_url?: string;
   mime_type?: string;
-};
-
-type UploadPayload = {
-  name: string;
-  type: string;
-  dataUrl: string;
 };
 
 type TaskForm = {
@@ -305,8 +302,6 @@ const GANTT_PRINT_HEADER_HEIGHT = 86;
 const GANTT_PRINT_ROW_HEIGHT = 34;
 const DECISION_SAVE_TIMEOUT_MS = 25000;
 const DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS = 90000;
-const DECISION_EVIDENCE_MAX_FILE_SIZE = 10 * 1024 * 1024;
-const DECISION_EVIDENCE_MAX_TOTAL_SIZE = 25 * 1024 * 1024;
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -958,16 +953,8 @@ function parseDecisionEvidence(value?: string | number) {
   }
 }
 
-async function fileToUploadPayload(file: File) {
-  return new Promise<UploadPayload>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function validateDecisionEvidenceFiles(files: File[]) {
+  if (files.length > DECISION_EVIDENCE_MAX_FILES) throw new Error("แนบหลักฐานได้ไม่เกิน 10 ไฟล์ต่อครั้ง");
   const oversized = files.find((file) => file.size > DECISION_EVIDENCE_MAX_FILE_SIZE);
   if (oversized) {
     throw new Error(`ไฟล์ "${oversized.name}" ใหญ่เกิน 10 MB กรุณาลดขนาดไฟล์ก่อนแนบ`);
@@ -986,7 +973,7 @@ async function postDecisionJson(projectId: string, body: Record<string, unknown>
   try {
     const res = await fetchWithAttachmentLimit(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-PMC-No-Global-Loading": "1" },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -1022,6 +1009,8 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(emptyMilestoneForm);
   const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
   const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
+  const [evidenceUploads, setEvidenceUploads] = useState<EvidenceUpload[]>([]);
+  const evidenceInFlight = useRef(new Set<string>());
   const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");
   const [saving, setSaving] = useState(false);
   const [importingScheduleTemplate, setImportingScheduleTemplate] = useState(false);
@@ -1809,6 +1798,9 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
 
     try {
       validateDecisionEvidenceFiles(decisionEvidenceFiles);
+      if (decisionEvidenceFiles.length && evidenceInFlight.current.has(JSON.stringify([selectedProject, decisionForm.decision_id]))) {
+        throw new Error("รายการนี้กำลังอัปโหลดหลักฐาน กรุณารอให้เสร็จก่อน");
+      }
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
       return;
@@ -1829,7 +1821,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
         evidence_uploads: [],
       }, DECISION_SAVE_TIMEOUT_MS, "บันทึกรายการนานเกินไป กรุณาลองใหม่อีกครั้ง");
 
-      await mutateDecisions();
+      void mutateDecisions().catch(() => undefined);
       setCurrentDecisionPhase(resolvedPhase);
       setShowDecisionForm(false);
       setDecisionEvidenceFiles([]);
@@ -1837,7 +1829,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
       if (evidenceFilesToUpload.length > 0 && savedDecisionId) {
         setSaving(false);
         setMessage("บันทึกรายการแล้ว กำลังอัปโหลดหลักฐานต่อเบื้องหลัง...");
-        void uploadDecisionEvidenceInBackground(selectedProject, savedDecisionId, evidenceFilesToUpload, decisionPayload);
+        void uploadDecisionEvidenceInBackground(selectedProject, savedDecisionId, decisionForm.title, evidenceFilesToUpload);
         return;
       }
 
@@ -1852,20 +1844,49 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const uploadDecisionEvidenceInBackground = async (
     projectId: string,
     decisionId: string,
+    title: string,
     files: File[],
-    decisionPayload: Record<string, unknown>
   ) => {
-    try {
-      const evidenceUploads = await Promise.all(files.map(fileToUploadPayload));
-      await postDecisionJson(projectId, {
-        ...decisionPayload,
-        decision_id: decisionId,
-        evidence_uploads: evidenceUploads,
-      }, DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS, "อัปโหลดหลักฐานนานเกินไป รายการถูกบันทึกแล้ว แต่ไฟล์ยังไม่สำเร็จ กรุณาแนบใหม่ภายหลัง");
-      await mutateDecisions();
+    const key = JSON.stringify([projectId, decisionId]);
+    if (evidenceInFlight.current.has(key)) return;
+    const job: EvidenceUpload = { id: key, title, files: files.map((file) => ({ name: file.name, stage: "prepare", percent: 0 })) };
+    const post = (body: Record<string, unknown>) =>
+      postDecisionJson(projectId, body, DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS, "จัดการไฟล์หลักฐานนานเกินไป กรุณาลองอีกครั้ง");
+    const updateJob = (update: (current: EvidenceUpload) => EvidenceUpload) =>
+      setEvidenceUploads((current) => current.map((item) => item.id === key ? update(item) : item));
+    const refresh = () => {
+      const endpoint = `/api/sites/${encodeURIComponent(projectId)}/customer-decisions`;
+      void mutateScheduleCache(endpoint, fetchScheduleData(endpoint), { revalidate: false }).catch(() => undefined);
+    };
+    const confirm = async (ids: string[]) => {
+      await post({ action: "attach_evidence", decision_id: decisionId, file_ids: ids });
+      setEvidenceUploads((current) => current.filter((item) => item.id !== key));
+      refresh();
       setMessage("บันทึกรายการและอัปโหลดหลักฐานเรียบร้อยแล้ว");
+    };
+    const confirmOrOfferRetry = async (ids: string[]) => {
+      try {
+        await confirm(ids);
+      } catch (error: unknown) {
+        updateJob((current) => ({ ...current, error: getErrorMessage(error), retry: () => {
+          if (evidenceInFlight.current.has(key)) return;
+          evidenceInFlight.current.add(key);
+          updateJob((item) => ({ ...item, error: undefined, retry: undefined }));
+          void confirmOrOfferRetry(ids).finally(() => evidenceInFlight.current.delete(key));
+        } }));
+      }
+    };
+    evidenceInFlight.current.add(key);
+    setEvidenceUploads((current) => [...current.filter((item) => item.id !== key), job]);
+    try {
+      const ids = await uploadDecisionEvidence(decisionId, files, post, (index, file) => {
+        updateJob((current) => ({ ...current, files: current.files.map((entry, position) => position === index ? file : entry) }));
+      });
+      await confirmOrOfferRetry(ids);
     } catch (error: unknown) {
-      setMessage(`${getErrorMessage(error)} (รายการถูกบันทึกแล้ว สามารถแก้ไขรายการเพื่อแนบหลักฐานใหม่ได้)`);
+      updateJob((current) => ({ ...current, error: `${getErrorMessage(error)} สามารถแก้ไขรายการเพื่อแนบหลักฐานใหม่ได้` }));
+    } finally {
+      evidenceInFlight.current.delete(key);
     }
   };
 
@@ -2056,6 +2077,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
           {message}
         </div>
       )}
+      <DecisionEvidenceUploadProgress uploads={evidenceUploads} />
 
       {shareUrl && (
         <div className="schedule-screen-only flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:flex-row sm:items-center">
@@ -4591,7 +4613,7 @@ function CustomerDecisionModal({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
+        <form onSubmit={onSubmit} data-no-global-loading="true" className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
           <div className="grid gap-4 md:grid-cols-3">
             <Field label="ช่วงงาน / สถานะงาน">
               <select
