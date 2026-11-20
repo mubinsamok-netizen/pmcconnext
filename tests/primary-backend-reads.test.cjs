@@ -238,3 +238,34 @@ test("VO list skips Tasks and the protected plan view returns only selector fiel
   ]);
   assert.match(options.headers.get("Server-Timing"), /tasks;dur=.*desc="sheets"/);
 });
+
+test("Defect reads only authorized site data and does not read master Audit Logs", async () => {
+  let allowed = false;
+  const reads = [];
+  const route = loadTs("src/app/api/sites/[projectId]/defects/route.ts", {
+    "next/server": { NextResponse: { json: (body, options) => ({ body, headers: new Headers(), status: options?.status || 200 }) } },
+    "@/lib/siteApi": { getSiteApiContext: async () => allowed ? context : { error: "Forbidden", status: 403 } },
+    "@/lib/sheetsCrud": {
+      findAllBatch: async (tables, sheet, options) => {
+        assert.equal(sheet, project.site_sheet_id);
+        assert.equal(options.projectId, project.project_id);
+        reads.push(...tables);
+        for (const table of tables) options.onSource(table, "sheets");
+        return { Defect_Rounds: [{ project_id: "P-1" }, { project_id: "OTHER" }] };
+      },
+      findAllMaster: () => { throw new Error("Unexpected Audit Logs read"); },
+    },
+  });
+
+  const get = () => route.GET({}, { params: Promise.resolve({ projectId: "P-1" }) });
+  assert.equal((await get()).status, 403);
+  assert.equal(reads.length, 0);
+
+  allowed = true;
+  const result = await get();
+  assert.equal(result.status, 200);
+  assert.equal(result.body.rounds.length, 1);
+  assert.equal(Object.hasOwn(result.body, "audit_logs"), false);
+  assert.deepEqual(reads, ["Defect_Rounds", "Defect_Items", "Defect_Evidence"]);
+  assert.match(result.headers.get("Server-Timing"), /site_context;.*defect_read;.*Defect_Rounds=sheets.*prepare;.*total;/);
+});

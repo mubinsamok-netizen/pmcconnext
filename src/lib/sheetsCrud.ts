@@ -365,7 +365,7 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
 export async function findAllBatch(
   tableNames: SiteTable[],
   spreadsheetId: string = SHEET_ID,
-  options: { projectId?: string; fresh?: boolean; projectHealth?: boolean; overviewOnly?: boolean; onTableRead?: (table: string, durationMs: number) => void } = {}
+  options: { projectId?: string; fresh?: boolean; projectHealth?: boolean; overviewOnly?: boolean; onTableRead?: (table: string, durationMs: number) => void; onSource?: (table: string, source: "supabase" | "sheets" | "sheets_fallback") => void } = {}
 ) {
   const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
   const result = {} as Record<SiteTable, SheetRow[]>;
@@ -383,6 +383,7 @@ export async function findAllBatch(
       pendingPromises.push(
         findAllSupabase(supabaseConfig, supabaseProjectId, options.projectHealth, options.overviewOnly)
           .then((rows) => {
+            options.onSource?.(tableName, "supabase");
             result[tableName as SiteTable] = rows;
           })
           .catch((error) => {
@@ -391,6 +392,7 @@ export async function findAllBatch(
             return (options.fresh
               ? findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA)
               : findAllFromSiteCache(spreadsheetId, tableName)).then((rows) => {
+              options.onSource?.(tableName, "sheets_fallback");
               result[tableName as SiteTable] = rows;
             });
           })
@@ -399,6 +401,7 @@ export async function findAllBatch(
       return;
     }
 
+    options.onSource?.(tableName, "sheets");
     const cacheKey = getReadCacheKey(spreadsheetId, tableName);
     const cached = options.fresh ? undefined : siteReadCache.get(cacheKey);
 

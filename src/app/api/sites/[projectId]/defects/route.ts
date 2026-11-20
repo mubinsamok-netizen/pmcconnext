@@ -18,7 +18,7 @@ import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -159,28 +159,20 @@ async function updateDefectItem(context: RouteContext, item: DefectItemRecord, p
   );
 }
 
-async function getDefectData(context: RouteContext) {
-  const [siteRows, auditLogs] = await Promise.all([
-    findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, Record<string, string | number | undefined>[]>>,
-    findAllMaster("AuditLogs") as Promise<Record<string, string | number | undefined>[]>,
-  ]);
-  const roundRows = (siteRows.Defect_Rounds || []) as DefectRoundRecord[];
-  const itemRows = (siteRows.Defect_Items || []) as DefectItemRecord[];
-  const evidenceRows = siteRows.Defect_Evidence || [];
+async function getDefectData(
+  context: RouteContext,
+  onSource?: NonNullable<Parameters<typeof findAllBatch>[2]>["onSource"],
+) {
   const projectId = context.project.project_id;
-  const rounds = roundRows.filter((row) => row.project_id === projectId);
-  const items = itemRows.filter((row) => row.project_id === projectId);
-  const evidence = evidenceRows.filter((row) => row.project_id === projectId);
+  const siteRows = await findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId, {
+    projectId,
+    onSource,
+  });
+  const rounds = ((siteRows.Defect_Rounds || []) as unknown as DefectRoundRecord[]).filter((row) => row.project_id === projectId);
+  const items = ((siteRows.Defect_Items || []) as unknown as DefectItemRecord[]).filter((row) => row.project_id === projectId);
+  const evidence = (siteRows.Defect_Evidence || []).filter((row) => row.project_id === projectId);
 
-  return {
-    rounds,
-    items,
-    evidence,
-    auditLogs: auditLogs
-      .filter((log) => log.project_id === projectId && log.module === "defects")
-      .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
-      .slice(0, 120),
-  };
+  return { rounds, items, evidence };
 }
 
 async function getDefectRoundFolder(context: RouteContext, roundId: string) {
@@ -717,28 +709,45 @@ async function handleUpdateItemStatus(body: Record<string, unknown>, context: Ro
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const started = performance.now();
+  const metrics: string[] = [];
+  const record = (name: string, since: number, description?: string) => {
+    metrics.push(`${name};dur=${(performance.now() - since).toFixed(2)}${description ? `;desc="${description}"` : ""}`);
+  };
+  const finish = (response: NextResponse) => {
+    record("total", started);
+    response.headers.set("Server-Timing", metrics.join(", "));
+    return response;
+  };
+
   try {
     const { projectId } = await params;
     const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    record("site_context", started);
+    if ("error" in context) return finish(NextResponse.json({ error: context.error }, { status: context.status }));
     const routeContext = context as RouteContext;
-    const data = await getDefectData(routeContext);
+    const readStarted = performance.now();
+    const sources = new Set<string>();
+    const data = await getDefectData(routeContext, (table, source) => sources.add(`${table}=${source}`));
+    record("defect_read", readStarted, [...sources].sort().join(" "));
+    const prepareStarted = performance.now();
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       project: routeContext.project,
       rounds: data.rounds.sort((a, b) => new Date(String(b.created_at || b.inspection_date || 0)).getTime() - new Date(String(a.created_at || a.inspection_date || 0)).getTime()),
       items: data.items.sort((a, b) => Number(a.item_no || 0) - Number(b.item_no || 0)),
       evidence: data.evidence,
-      audit_logs: data.auditLogs,
       line: {
         test_mode: isDefectLineTestMode(),
         target_group_id: lineTargetFor(routeContext),
         target_group_name: isDefectLineTestMode() ? "Defect LINE Test Group" : text(routeContext.project.line_group_name),
       },
     });
+    record("prepare", prepareStarted);
+    return finish(response);
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return finish(NextResponse.json({ error: getErrorMessage(error) }, { status: 500 }));
   }
 }
 
