@@ -343,17 +343,22 @@ function textValue(value: unknown) {
   return String(value ?? "").trim();
 }
 
-export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID) {
+export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void) {
+  let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await findAllSupabase(supabaseConfig, await resolveSiteProjectId(spreadsheetId));
+      const rows = await findAllSupabase(supabaseConfig, await resolveSiteProjectId(spreadsheetId));
+      onSource?.("supabase");
+      return rows;
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
+      source = "sheets_fallback";
       warnSupabaseFallback(`read ${String(tableName)}`, error);
     }
   }
 
+  onSource?.(source);
   return findAllFromSiteCache(spreadsheetId, String(tableName));
 }
 

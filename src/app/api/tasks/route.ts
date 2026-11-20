@@ -1,3 +1,4 @@
+import { createScheduleReadTiming } from "@/lib/scheduleReadTiming";
 import { NextResponse } from "next/server";
 import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
@@ -52,27 +53,36 @@ function getTaskDeleteTargets<T extends Record<string, string | number | undefin
 }
 
 export async function GET(req: Request) {
+  const timing = createScheduleReadTiming();
+  let source: "none" | "supabase" | "sheets" | "sheets_fallback" = "none";
+  const respond = (body: Record<string, unknown>, status = 200) => {
+    const started = performance.now();
+    return timing.finish(NextResponse.json(body, { status }), started, source);
+  };
+
   try {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
 
     const readSheetsTasks = async () => {
-      const { sheetId } = await getProjectContext(projectId);
-      if (!isSupabaseBackend()) await ensureSchema(sheetId);
+      source = source === "supabase" ? "sheets_fallback" : "sheets";
+      const { sheetId } = await timing.measure("site_context", () => getProjectContext(projectId));
+      if (!isSupabaseBackend()) await timing.measure("sheets_schema", () => ensureSchema(sheetId));
 
-      return filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
+      return filterProjectTasks(await timing.measure("sheets_read", () => findAllRaw("Tasks", sheetId)), projectId);
     };
 
     if (isSupabaseReadEnabled("site")) {
+      source = "supabase";
       // Sheets is a fallback for failed reads, not a required second data source.
-      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
-      return NextResponse.json({ success: true, data: tasks });
+      const tasks = await readWithSheetsFallback("tasks", () => timing.measure("supabase_read", () => getSupabaseTasks(projectId)), readSheetsTasks);
+      return respond({ success: true, data: tasks });
     }
 
     const tasks = await readSheetsTasks();
-    return NextResponse.json({ success: true, data: tasks });
+    return respond({ success: true, data: tasks });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 

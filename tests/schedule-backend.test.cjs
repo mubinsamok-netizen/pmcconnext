@@ -23,6 +23,7 @@ function loadTs(relativePath, dependencies = {}, env = {}) {
     console: { ...console, warn() {} },
     process: { env },
     URL,
+    performance,
     Error,
   }, { filename });
   return loaded.exports;
@@ -38,11 +39,12 @@ function fixture({ backend = "supabase", fallback = "sheets", databaseFails = fa
     SUPABASE_EXPERIMENTAL_SITE_READS: "true",
   });
   const dependencies = {
+    "@/lib/scheduleReadTiming": loadTs("src/lib/scheduleReadTiming.ts"),
     "node:crypto": require("node:crypto"),
     "@/lib/siteApi": { getSiteApiContext: async () => ({ siteSheetId: "missing-legacy-sheet" }) },
     "@/lib/scheduleTemplateStore": { listSavedScheduleTemplates: async () => [] },
     "@/lib/scheduleTemplates": loadTs("src/lib/scheduleTemplates.ts"),
-    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200, headers: new Headers(options?.headers) }) } },
     "@/lib/sheetsCrud": {
       findAllRaw: async () => {
         calls.sheets++;
@@ -95,6 +97,7 @@ test("full schedule creation and reload succeed with a missing legacy sheet; rep
   const empty = await f.tasks.GET(listRequest);
   assert.equal(empty.status, 200);
   assert.equal(empty.body.data.length, 0);
+  assert.match(empty.headers.get("Server-Timing"), /supabase_read;dur=.*source;desc="supabase"/);
   const created = await f.importer.POST(importRequest());
   assert.equal(created.status, 200);
   assert.equal(created.body.count, f.template.SCHEDULE_TEMPLATE_TASKS.length);
@@ -142,6 +145,7 @@ for (const mode of ["sheets", "fallback"]) {
     assert.equal(listed.body.data.length, result.body.count);
     assert.ok(listed.body.data.every((row) => row.project_id === "P-1"));
     assert.equal(f.calls.sheets, 2);
+    assert.match(listed.headers.get("Server-Timing"), new RegExp('source;desc="' + (mode === "fallback" ? "sheets_fallback" : "sheets") + '"'));
   });
 }
 

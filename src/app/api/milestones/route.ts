@@ -1,3 +1,4 @@
+import { createScheduleReadTiming } from "@/lib/scheduleReadTiming";
 import { NextResponse } from "next/server";
 import { deleteRow, findAll, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
@@ -19,15 +20,26 @@ async function findMilestoneRowIndex(sheetId: string, projectId: string | null, 
 }
 
 export async function GET(req: Request) {
+  const timing = createScheduleReadTiming();
+  let source: "none" | "supabase" | "sheets" | "sheets_fallback" = "none";
+  const respond = (body: Record<string, unknown>, status = 200) => {
+    const started = performance.now();
+    return timing.finish(NextResponse.json(body, { status }), started, source);
+  };
+
   try {
     const { searchParams } = new URL(req.url);
     const projectId = searchParams.get("project_id");
 
     const readSheetsMilestones = async () => {
-      const { sheetId } = await getProjectContext(projectId);
-      await ensureSchema(sheetId);
+      const fallback = source === "supabase";
+      source = fallback ? "sheets_fallback" : "sheets";
+      const { sheetId } = await timing.measure("site_context", () => getProjectContext(projectId));
+      await timing.measure("sheets_schema", () => ensureSchema(sheetId));
 
-      let milestones = await findAll("Milestones", sheetId);
+      let milestones = await timing.measure("legacy_read", () => findAll("Milestones", sheetId, (actualSource) => {
+        source = fallback && actualSource === "sheets" ? "sheets_fallback" : actualSource;
+      }));
       if (projectId) {
         milestones = milestones.filter((milestone) => milestone.project_id === projectId);
       }
@@ -36,14 +48,15 @@ export async function GET(req: Request) {
     };
 
     if (isSupabaseReadEnabled("site")) {
-      const milestones = await readWithSheetsFallback("milestones", () => getSupabaseMilestones(projectId), readSheetsMilestones);
-      return NextResponse.json({ success: true, data: milestones });
+      source = "supabase";
+      const milestones = await readWithSheetsFallback("milestones", () => timing.measure("supabase_read", () => getSupabaseMilestones(projectId)), readSheetsMilestones);
+      return respond({ success: true, data: milestones });
     }
 
     const milestones = await readSheetsMilestones();
-    return NextResponse.json({ success: true, data: milestones });
+    return respond({ success: true, data: milestones });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 
