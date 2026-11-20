@@ -47,3 +47,6 @@ increment to `UAT v1.0.011`.
 
 The user accepted the Defect page 21 photo upload workflow and requested the
 increment to `UAT v1.0.012`.
+
+The user accepted the Schedule page 22 decision-evidence upload workflow and
+requested the increment to `UAT v1.0.013`.
