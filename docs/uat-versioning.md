@@ -32,3 +32,6 @@ The user accepted the Memo page 10 workflow and requested the increment to
 
 The user accepted the Contractor Database page 6 workflow and requested the
 increment to `UAT v1.0.007`.
+
+The user accepted the Variation Orders page 12 workflow and requested the
+increment to `UAT v1.0.008`.
