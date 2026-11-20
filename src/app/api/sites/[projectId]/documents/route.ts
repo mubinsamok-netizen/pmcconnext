@@ -5,7 +5,7 @@ import { drive } from "@/lib/google";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
 import { findAllRaw, insert } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
-import { getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
+import { getSupabaseDocumentVersions, getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
 import { isSupabaseBackend, readWithSheetsFallback } from "@/lib/supabaseRest";
 
 function safeFolderName(value: string) {
@@ -51,21 +51,37 @@ async function getDocumentRows(siteSheetId: string, projectId: string) {
   return readWithSheetsFallback("project_documents", readSupabase, readSheets);
 }
 
-function getNextVersion(
-  rows: DocumentRow[],
+async function getNextDocumentVersion(
+  siteSheetId: string,
   projectId: string,
   category: string,
-  title: string
+  title: string,
+  useScopedRead = false,
 ) {
-  const currentVersions = rows
-    .filter((row) => (
-      row.project_id === projectId &&
-      String(row.category || "") === category &&
-      String(row.title || "") === title
-    ))
-    .map((row) => Number(row.version_number || 0))
-    .filter(Number.isFinite);
+  const matchesDocument = (row: DocumentRow) => row.project_id === projectId &&
+    String(row.category || "") === category &&
+    String(row.title || "") === title;
+  const versionNumber = (row: { version_number?: string | number | null }) => Number(row.version_number || 0);
+  const readSheetVersions = async () => (await getSheetDocumentRows(siteSheetId))
+    .filter(matchesDocument)
+    .map((row) => Number(row.version_number || 0));
+  const versions = useScopedRead && isSupabaseBackend()
+    ? await readWithSheetsFallback(
+      "project_documents",
+      async () => (await getSupabaseDocumentVersions(projectId, category, title)).map(versionNumber),
+      readSheetVersions,
+    )
+    : (await getDocumentRows(siteSheetId, projectId)).filter(matchesDocument).map((row) => Number(row.version_number || 0));
+  const currentVersions = versions.filter(Number.isFinite);
   return Math.max(0, ...currentVersions) + 1;
+}
+
+async function findUploadedDocument(siteSheetId: string, projectId: string, driveFileId: string) {
+  const readSheets = () => getSheetDocumentRows(siteSheetId);
+  const rows = isSupabaseBackend()
+    ? await readWithSheetsFallback("project_documents", () => getSupabaseProjectDocuments(projectId, false, false, driveFileId), readSheets)
+    : await readSheets();
+  return rows.find((row) => row.project_id === projectId && String(row.drive_file_id || "") === driveFileId);
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
@@ -178,8 +194,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           return NextResponse.json({ error: "ขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
         }
 
-        const [rows, categoryFolder, reserved] = await Promise.all([
-          measure("version_read", () => getDocumentRows(context.siteSheetId, context.project.project_id)),
+        const [versionNumber, categoryFolder, reserved] = await Promise.all([
+          measure("version_read", () => getNextDocumentVersion(context.siteSheetId, context.project.project_id, category, title, verified)),
           measure("drive_folders", () => getUploadFolder(driveFolderId, category)),
           verified ? measure("drive_allocate", async () => {
             const result = await drive.files.generateIds({ count: 1, space: "drive" });
@@ -188,7 +204,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
             return id;
           }) : undefined,
         ]);
-        const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
         const storedName = `v${versionNumber}-${Date.now()}-${fileName}`;
         const openSession = (folder: DocumentFolder) => createResumableUploadSession({
           fileName: storedName,
@@ -234,11 +249,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         const driveFileId = textValue(body.drive_file_id);
         let driveUrl = textValue(body.drive_url);
         const versionNumber = textValue(body.version_number) || "1";
+        let existing: DocumentRow | undefined;
 
         if (verified) {
           if (!/^[a-zA-Z0-9_-]{10,}$/.test(driveFileId)) return respond({ error: "รหัสไฟล์ไม่ถูกต้อง" }, 400);
 
-          const file = await measure("drive_verify", async () => {
+          const verifyDriveFile = () => measure("drive_verify", async () => {
             try {
               const result = await drive.files.get({
                 fileId: driveFileId,
@@ -251,21 +267,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
               throw error;
             }
           });
+          const savedDocument = measure("document_read", () => findUploadedDocument(context.siteSheetId, context.project.project_id, driveFileId))
+            .then((data) => ({ data }), (error: unknown) => ({ error }));
+          const file = await verifyDriveFile();
           if (!file) return respond({ error: "ยังไม่พบไฟล์ใน Drive กรุณาลองยืนยันอีกครั้ง" }, 409);
           const expected = uploadBinding(context.project.project_id, email, category, title, fileName, size, versionNumber, notes);
           if (file.trashed || file.appProperties?.pmcDocument !== expected || String(size) !== file.size || file.mimeType !== "application/pdf") {
             return respond({ error: "ข้อมูลไฟล์ใน Drive ไม่ตรงกับรายการอัปโหลด" }, 400);
           }
           driveUrl = file.webViewLink || file.webContentLink || `https://drive.google.com/file/d/${driveFileId}/view`;
+          const result = await savedDocument;
+          if ("error" in result) throw result.error;
+          existing = result.data;
         }
 
         if (!driveFileId || !driveUrl) {
           return NextResponse.json({ error: "ไม่พบข้อมูลไฟล์จาก Google Drive" }, { status: 400 });
         }
 
-        const rows = await measure("document_read", () => getDocumentRows(context.siteSheetId, context.project.project_id));
-        const existing = rows.find((row) => String(row.drive_file_id || "") === driveFileId);
-        if (existing && existing.project_id === context.project.project_id) {
+        if (!verified) {
+          const rows = await measure("document_read", () => getDocumentRows(context.siteSheetId, context.project.project_id));
+          existing = rows.find((row) => row.project_id === context.project.project_id && String(row.drive_file_id || "") === driveFileId);
+        }
+        if (existing) {
           return respond({ success: true, data: existing });
         }
 
@@ -304,8 +328,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const category = String(formData.get("category") || "other");
     const title = String(formData.get("title") || file.name).trim() || file.name;
     const notes = String(formData.get("notes") || "");
-    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id);
-    const versionNumber = getNextVersion(rows, context.project.project_id, category, title);
+    const versionNumber = await getNextDocumentVersion(context.siteSheetId, context.project.project_id, category, title);
 
     const documentsFolder = await findOrCreateFolder("Project Documents", driveFolderId);
     const categoryFolder = await findOrCreateFolder(safeFolderName(category), documentsFolder.id || driveFolderId);

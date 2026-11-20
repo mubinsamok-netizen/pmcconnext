@@ -26,3 +26,8 @@ before transfer, the submit action opens a fresh session. The server times
 session lookup, project reads, site authorization and Sheets schema checks
 separately. Folder lookups reuse the same root/category result briefly and
 retry once on a missing Drive parent.
+
+For verified uploads, Supabase returns only version numbers matching the
+site, category and title during preparation. Confirmation reads the saved
+record by Drive file ID while verifying Drive metadata. Google Sheets
+keeps the existing read fallback.

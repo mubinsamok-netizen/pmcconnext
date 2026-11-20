@@ -1151,12 +1151,30 @@ export async function getSupabaseSiteMemoEvidence(projectId?: string | null) {
   }));
 }
 
-export async function getSupabaseProjectDocuments(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
+export async function getSupabaseDocumentVersions(projectId: string, category: string, title: string) {
+  return supabaseSiteSelect<Pick<SupabaseProjectDocument, "version_number">>(projectId, "project_documents", {
+    select: "version_number",
+    project_id: `eq.${projectId}`,
+    category: `eq.${category}`,
+    title: `eq.${title}`,
+  });
+}
+
+export async function getSupabaseProjectDocuments(
+  projectId?: string | null,
+  _healthOnly = false,
+  overviewOnly = false,
+  driveFileId?: string,
+) {
   void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {
     order: "created_at.desc",
   };
   if (projectId) params.project_id = `eq.${projectId}`;
+  if (driveFileId) {
+    params.drive_file_id = `eq.${driveFileId}`;
+    params.limit = "1";
+  }
 
   const rows = await supabaseSiteSelect<SupabaseProjectDocument>(projectId, "project_documents", params, overviewOnly);
 

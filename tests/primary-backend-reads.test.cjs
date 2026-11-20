@@ -312,3 +312,80 @@ test("a blocked Drive response confirms the reserved document without sending th
   assert.equal((await retry()).document_id, "DOC-TestbyZoneIdea");
   assert.deepEqual(calls, ["create_upload_session", "drive_put", "complete_upload", "complete_upload"]);
 });
+
+test("verified PDF upload limits document reads and checks the saved row alongside Drive", async () => {
+  const driveFileId = "DriveTestbyZoneIdea";
+  const title = "รายงาน (ทดสอบ).pdf TestbyZoneIdea";
+  const fileSize = 5_100_425;
+  let savedDocument;
+  let driveProperties;
+  let readStarted = false;
+  let finishRead;
+  let inserts = 0;
+  const route = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/siteApi": {
+      getSiteApiContext: async () => ({
+        ...context,
+        project: { ...project, drive_folder_id: "root" },
+        session: { user: { email: "test@example.invalid" } },
+      }),
+      makeId: () => "DOC-TestbyZoneIdea",
+      getErrorMessage: (error) => error.message,
+    },
+    "@/lib/supabaseRest": rest("supabase", "none"),
+    "@/lib/permissions": { hasPermission: () => true },
+    "@/lib/drive": {
+      findOrCreateFolder: async () => ({ id: "folder" }),
+      createResumableUploadSession: async (input) => {
+        driveProperties = input.appProperties;
+        assert.equal(input.fileId, driveFileId);
+        return { uploadUrl: "https://example.invalid/upload" };
+      },
+    },
+    "@/lib/google": {
+      drive: { files: {
+        generateIds: async () => ({ data: { ids: [driveFileId] } }),
+        get: async () => {
+          assert.equal(readStarted, true);
+          finishRead(savedDocument ? [savedDocument] : []);
+          return { data: { size: String(fileSize), mimeType: "application/pdf", appProperties: driveProperties } };
+        },
+      } },
+    },
+    "@/lib/supabaseReadModel": {
+      getSupabaseDocumentVersions: async (...args) => {
+        assert.deepEqual(args, [project.project_id, "report", title]);
+        return [{ version_number: "2" }, { version_number: "10" }];
+      },
+      getSupabaseProjectDocuments: async (...args) => {
+        assert.deepEqual(args, [project.project_id, false, false, driveFileId]);
+        readStarted = true;
+        return new Promise((resolve) => { finishRead = resolve; });
+      },
+    },
+    "@/lib/sheetsCrud": {
+      findAllRaw: () => assert.fail("Unexpected full Sheets read"),
+      insert: async (_table, row) => {
+        inserts++;
+        savedDocument = row;
+        return { inserted: row };
+      },
+    },
+  });
+  const input = { verify_upload: true, category: "report", title, file_name: "TestbyZoneIdea.pdf", file_size: fileSize };
+  const post = ({ action, ...body }) => route.POST({
+    url: "https://example.invalid/api/documents",
+    headers: { get: () => "application/json" },
+    json: async () => ({ ...input, action, ...body }),
+  }, { params: Promise.resolve({ projectId: project.project_id }) });
+  const prepared = await post({ action: "create_upload_session" });
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.body.data.version_number, "11");
+  const complete = () => post({ action: "complete_upload", drive_file_id: driveFileId, version_number: "11" });
+  assert.equal((await complete()).status, 200);
+  readStarted = false;
+  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.equal(inserts, 1);
+});
