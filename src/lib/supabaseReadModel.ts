@@ -781,6 +781,21 @@ export async function getSupabaseTasks(projectId?: string | null, healthOnly = f
   }));
 }
 
+export async function getSupabaseTaskOptions(projectId: string) {
+  const rows = await supabaseSiteSelect<Pick<SupabaseTask, "task_id" | "name" | "task_type" | "parent_task_id" | "order_index">>(projectId, "tasks", {
+    select: "task_id,name,task_type,parent_task_id,order_index",
+    project_id: `eq.${projectId}`,
+    order: "order_index.asc",
+  });
+  return rows.map((row) => ({
+    task_id: text(row.task_id),
+    name: text(row.name),
+    task_type: text(row.task_type),
+    parent_task_id: text(row.parent_task_id),
+    order_index: text(row.order_index),
+  }));
+}
+
 export async function getSupabaseMilestones(projectId?: string | null, _healthOnly = false, overviewOnly = false) {
   void _healthOnly; // Preserve the shared adapter signature; this table has no health-only mode.
   const params: Record<string, string> = {

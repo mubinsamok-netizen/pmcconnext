@@ -474,17 +474,21 @@ export async function findAllBatch(
   return result;
 }
 
-export async function findAllMaster(tableName: MasterTable) {
+export async function findAllMaster(tableName: MasterTable, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void) {
+  let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseMasterConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
+      onSource?.("supabase");
       return await findAllSupabase(supabaseConfig);
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
+      source = "sheets_fallback";
       warnSupabaseFallback(`read ${String(tableName)}`, error);
     }
   }
 
+  onSource?.(source);
   const cacheKey = `${MASTER_SHEET_ID}:${String(tableName)}`;
   const cached = masterReadCache.get(cacheKey);
   const now = Date.now();

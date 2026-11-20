@@ -8,7 +8,7 @@ import { writeAuditLog } from "@/lib/auditLog";
 import { hasPermission, permissionDeniedMessage, type AppPermission } from "@/lib/permissions";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
 import { findAllSupabase, getSupabaseSiteConfig } from "@/lib/supabaseCrud";
-import { getSupabaseTasks } from "@/lib/supabaseReadModel";
+import { getSupabaseTaskOptions, getSupabaseTasks } from "@/lib/supabaseReadModel";
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import {
   VO_TYPE_LABELS,
@@ -139,7 +139,49 @@ async function getTaskRows(context: RouteContext) {
   return readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
 }
 
-async function getVoRows(context: RouteContext, tableName: VoTableName) {
+function createVoReadTiming() {
+  const started = performance.now();
+  const metrics: string[] = [];
+  return {
+    async measure<T>(name: string, read: (source: (name: string) => void) => Promise<T>) {
+      const stepStarted = performance.now();
+      let source = "";
+      try {
+        return await read((value) => { source = value; });
+      } finally {
+        metrics.push(`${name};dur=${(performance.now() - stepStarted).toFixed(2)}${source ? `;desc="${source}"` : ""}`);
+      }
+    },
+    finish(response: NextResponse) {
+      response.headers.set("Server-Timing", [...metrics, `total;dur=${(performance.now() - started).toFixed(2)}`].join(", "));
+      return response;
+    },
+  };
+}
+
+type VoReadTiming = ReturnType<typeof createVoReadTiming>;
+
+async function getPlanTaskOptions(context: RouteContext, timing: VoReadTiming) {
+  const projectId = context.project.project_id;
+  return timing.measure("tasks", async (source) => {
+    const usePrimary = isSupabaseReadEnabled("site");
+    const readSheets = async () => {
+      source(usePrimary ? "sheets_fallback" : "sheets");
+      const rows = filterProjectRows(await findAllRaw("Tasks", context.siteSheetId), projectId);
+      return rows.map(({ task_id, name, task_type, parent_task_id, order_index }) => ({
+        task_id: text(task_id), name: text(name), task_type: text(task_type),
+        parent_task_id: text(parent_task_id), order_index: text(order_index),
+      }));
+    };
+    if (!usePrimary) return readSheets();
+    return readWithSheetsFallback("VO plan tasks", () => {
+      source("supabase");
+      return getSupabaseTaskOptions(projectId);
+    }, readSheets);
+  });
+}
+
+async function getVoRows(context: RouteContext, tableName: VoTableName, source?: (name: string) => void) {
   const projectId = context.project.project_id;
   const readSheetsRows = async () => filterProjectRows(await findAllRaw(tableName, context.siteSheetId), projectId);
 
@@ -148,14 +190,24 @@ async function getVoRows(context: RouteContext, tableName: VoTableName) {
   const usePrimary = tableName === "Variation_Orders" || tableName === "VO_Items"
     ? isSupabaseBackend()
     : isSupabaseReadEnabled("site");
-  if (!usePrimary) return readSheetsRows();
+  if (!usePrimary) {
+    source?.("sheets");
+    return readSheetsRows();
+  }
 
   const supabaseConfig = getSupabaseSiteConfig(tableName);
-  if (!supabaseConfig) return readSheetsRows();
+  if (!supabaseConfig) {
+    source?.("sheets");
+    return readSheetsRows();
+  }
 
   return readWithSheetsFallback(tableName, async () => {
+    source?.("supabase");
     return filterProjectRows(await findAllSupabase(supabaseConfig, projectId), projectId);
-  }, readSheetsRows);
+  }, () => {
+    source?.("sheets_fallback");
+    return readSheetsRows();
+  });
 }
 
 async function fallbackRowIndex(context: RouteContext, tableName: string, keyColumn: string, keyValue: string, currentRowIndex?: string | number) {
@@ -375,15 +427,18 @@ async function handleCreateSupportingUploadSession(body: Record<string, unknown>
   });
 }
 
-async function getVoData(context: RouteContext) {
+async function getVoData(context: RouteContext, { timing, includeTasks = true }: { timing?: VoReadTiming; includeTasks?: boolean } = {}) {
+  const read = (table: VoTableName) => timing
+    ? timing.measure(table.toLowerCase(), (source) => getVoRows(context, table, source))
+    : getVoRows(context, table);
   const [voRows, itemRows, documents, payments, taskLinks, tasks, ledger] = await Promise.all([
-    getVoRows(context, "Variation_Orders"),
-    getVoRows(context, "VO_Items"),
-    getVoRows(context, "VO_Documents"),
-    getVoRows(context, "VO_Payments"),
-    getVoRows(context, "VO_Task_Links"),
-    getTaskRows(context),
-    getVoRows(context, "VO_Finance_Ledger"),
+    read("Variation_Orders"),
+    read("VO_Items"),
+    read("VO_Documents"),
+    read("VO_Payments"),
+    read("VO_Task_Links"),
+    includeTasks ? getTaskRows(context) : Promise.resolve([]),
+    read("VO_Finance_Ledger"),
   ]);
   const vos = parseRows<VoRecord>(voRows);
   const items = parseRows<VoItemRecord>(itemRows);
@@ -1854,16 +1909,24 @@ async function handleGenerateMonthlyReport(body: Record<string, unknown>, contex
   return NextResponse.json({ success: true, data: { month, scope: isAllScope ? "all" : "monthly", generated_at: generatedAt, count: reportVos.length }, document_html: html });
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const timing = createVoReadTiming();
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const context = await timing.measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId)));
+    if ("error" in context) return timing.finish(NextResponse.json({ error: context.error }, { status: context.status }));
 
     const routeContext = context as RouteContext;
+    if (new URL(req.url).searchParams.get("view") === "plan-tasks") {
+      const forbidden = requirePermission(routeContext, "vo.addToPlan");
+      if (forbidden) return timing.finish(forbidden);
+      const tasks = await getPlanTaskOptions(routeContext, timing);
+      return timing.finish(NextResponse.json({ success: true, data: tasks }));
+    }
+
     const [data, auditLogs] = await Promise.all([
-      getVoData(routeContext),
-      findAllMaster("AuditLogs") as Promise<SheetRecord[]>,
+      timing.measure("vo_data", () => getVoData(routeContext, { timing, includeTasks: false })),
+      timing.measure("audit_logs", (source) => findAllMaster("AuditLogs", source)) as Promise<SheetRecord[]>,
     ]);
     const itemsByVo = new Map<string, VoItemRecord[]>();
     data.items.forEach((item) => {
@@ -1881,14 +1944,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       return copy;
     });
 
-    return NextResponse.json({
+    return timing.finish(NextResponse.json({
       success: true,
       project: routeContext.project,
       data: vos,
       documents,
       payments: data.payments,
       task_links: data.taskLinks,
-      tasks: data.tasks,
       ledger: data.ledger,
       line: {
         test_mode: isVoLineTestMode(),
@@ -1899,9 +1961,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
         .filter((log) => log.project_id === routeContext.project.project_id && log.module === "variation_orders")
         .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
         .slice(0, 200),
-    });
+    }));
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return timing.finish(NextResponse.json({ error: getErrorMessage(error) }, { status: 500 }));
   }
 }
 

@@ -18,7 +18,7 @@ function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
   }).outputText;
   const loaded = { exports: {} };
   vm.runInNewContext(source, {
-    exports: loaded.exports, module: loaded, Error, URL,
+    exports: loaded.exports, module: loaded, Error, URL, performance,
     process: { env },
     console: { ...console, warn() {} },
     require(name) {
@@ -201,3 +201,40 @@ for (const backend of ["supabase", "sheets"]) {
     }
   });
 }
+
+test("VO list skips Tasks and the protected plan view returns only selector fields", async () => {
+  const reads = [];
+  let canPlan = true;
+  const api = loadTs("src/app/api/sites/[projectId]/variation-orders/route.ts", {
+    "next/server": { NextResponse: { json: (body, options) => ({ body, headers: new Headers(), status: options?.status || 200 }) } },
+    "@/lib/siteApi": { getSiteApiContext: async () => context, getErrorMessage: (error) => error.message },
+    "@/lib/permissions": { hasPermission: () => canPlan, permissionDeniedMessage: () => "Denied" },
+    "@/lib/supabaseRest": rest("sheets"),
+    "@/lib/sheetsCrud": {
+      findAllMaster: async (_table, reportSource) => { reportSource("sheets"); return []; },
+      findAllRaw: async (table) => {
+        reads.push(table);
+        return table === "Tasks" ? [
+          { project_id: "P-1", task_id: "T1", name: "Heading", task_type: "heading", parent_task_id: "", order_index: "1", notes: "unused" },
+          { project_id: "OTHER", task_id: "T2" },
+        ] : [];
+      },
+    },
+  });
+  const request = (suffix = "") => api.GET({ url: `http://localhost/api/vo${suffix}` }, { params: Promise.resolve({ projectId: "P-1" }) });
+  const list = await request();
+  assert.equal(list.status, 200);
+  assert.equal(Object.hasOwn(list.body, "tasks"), false);
+  assert.equal(reads.includes("Tasks"), false);
+  assert.match(list.headers.get("Server-Timing"), /audit_logs;dur=.*desc="sheets"/);
+  canPlan = false;
+  assert.equal((await request("?view=plan-tasks")).status, 403);
+  assert.equal(reads.includes("Tasks"), false);
+  canPlan = true;
+  const options = await request("?view=plan-tasks");
+  assert.equal(options.status, 200);
+  assert.deepEqual(JSON.parse(JSON.stringify(options.body.data)), [
+    { task_id: "T1", name: "Heading", task_type: "heading", parent_task_id: "", order_index: "1" },
+  ]);
+  assert.match(options.headers.get("Server-Timing"), /tasks;dur=.*desc="sheets"/);
+});

@@ -69,7 +69,6 @@ type ApiResponse = {
   success: boolean;
   project: Project;
   data: Array<VoRecord & { items?: VoItemInput[] }>;
-  tasks: TaskRecord[];
   documents: Array<Record<string, string | number | undefined>>;
   payments: Array<Record<string, string | number | undefined>>;
   ledger: Array<Record<string, string | number | undefined>>;
@@ -246,13 +245,16 @@ type VoPermissions = {
   generateMonthlyReport: boolean;
 };
 
+async function fetchPlanTasks(url: string) {
+  const response = await fetch(url, { headers: { "X-PMC-No-Global-Loading": "1" } });
+  if (!response.ok) throw new Error("โหลดตัวเลือกงานไม่สำเร็จ");
+  return response.json();
+}
+
 export default function VariationOrdersWorkspace({ project, userRole }: { project: Project; userRole: string }) {
   const endpoint = `/api/sites/${encodeURIComponent(project.project_id)}/variation-orders`;
   const { data, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
   const vos = useMemo(() => data?.data || [], [data?.data]);
-  const tasks = useMemo(() => data?.tasks || [], [data?.tasks]);
-  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading").sort((a, b) => taskOrder(a) - taskOrder(b)), [tasks]);
-  const workTasks = useMemo(() => tasks.filter((task) => task.task_type !== "heading"), [tasks]);
   const normalizedRole = String(userRole || "").toLowerCase();
   const isClient = normalizedRole === "client";
   const permissions = useMemo(() => ({
@@ -276,6 +278,13 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     });
   }, [isClient, permissions]);
   const [activeTab, setActiveTab] = useState("history");
+  const { data: taskOptions, isLoading: planTasksLoading, error: planTasksError, mutate: reloadPlanTasks } = useSWR<{ data: TaskRecord[] }>(
+    activeTab === "plan" && !isClient && permissions.addToPlan ? `${endpoint}?view=plan-tasks` : null,
+    fetchPlanTasks,
+  );
+  const tasks = useMemo(() => taskOptions?.data || [], [taskOptions?.data]);
+  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading").sort((a, b) => taskOrder(a) - taskOrder(b)), [tasks]);
+  const workTasks = useMemo(() => tasks.filter((task) => task.task_type !== "heading"), [tasks]);
   const [selectedVoId, setSelectedVoId] = useState("");
   const [editingVoId, setEditingVoId] = useState("");
   const [createForm, setCreateForm] = useState<CreateForm>({
@@ -454,6 +463,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     };
     const result = await postAction("add_to_plan", { vo_id: selectedVo.vo_id, plan: planPayload });
     if (result?.success) {
+      void reloadPlanTasks().catch(() => undefined);
       setPlan(emptyPlan);
       setActiveTab("history");
     }
@@ -600,7 +610,23 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               onCancelEdit={cancelEdit}
             />
           )}
-          {activeTab === "plan" && (
+          {activeTab === "plan" && (planTasksLoading ? (
+            <div role="status" aria-label="กำลังเตรียมตัวเลือกแผนงาน" className="space-y-4 rounded-2xl border border-gray-200 bg-white p-5">
+              <div aria-hidden="true" className="space-y-4 motion-safe:animate-pulse">
+                <div className="h-4 w-36 rounded bg-gray-200" />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="h-10 rounded bg-gray-100" />
+                  <div className="h-10 rounded bg-gray-100" />
+                </div>
+              </div>
+            </div>
+          ) : planTasksError ? (
+            <div className="rounded-2xl border border-gray-200 bg-white p-5">
+              <button type="button" onClick={() => reloadPlanTasks()} className="font-semibold text-red-700">
+                โหลดตัวเลือกงานไม่สำเร็จ ลองอีกครั้ง
+              </button>
+            </div>
+          ) : (
             <PlanSection
               vo={selectedVo}
               plan={plan}
@@ -611,7 +637,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               loading={loadingAction === "add_to_plan"}
               canAddToPlan={permissions.addToPlan}
             />
-          )}
+          ))}
           {activeTab === "history" && (
             <HistoryPrintSection
               vos={vos}
