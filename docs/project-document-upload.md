@@ -38,6 +38,7 @@ clears the preparation snapshot.
 
 In Google Sheets mode, verified confirmation validates the
 `Project_Documents` header order from the same fresh read used to check
-for the existing Drive file ID. An unreadable or invalid table falls back
-to the existing schema repair after Drive verification. The write is gated
-on a successful reread with valid headers.
+for the existing project and Drive file ID. Only a matching row is converted
+to a document record. An unreadable or invalid table falls back to repairing
+only that tab after Drive verification. The write is gated on a successful
+reread with valid headers.

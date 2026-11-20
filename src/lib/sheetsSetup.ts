@@ -986,6 +986,10 @@ export async function ensureSchema(spreadsheetId: string = SHEET_ID) {
   return ensureSchemaFor(spreadsheetId, SITE_SCHEMA);
 }
 
+export async function ensureSiteTableSchema(spreadsheetId: string, tableName: keyof typeof SITE_SCHEMA) {
+  return ensureSchemaFor(spreadsheetId, { [tableName]: SITE_SCHEMA[tableName] });
+}
+
 export async function ensureMasterSchema() {
   return ensureSchemaFor(MASTER_SHEET_ID, MASTER_SCHEMA);
 }

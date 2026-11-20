@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { drive } from "@/lib/google";
 import { hasPermission, permissionDeniedMessage } from "@/lib/permissions";
-import { findAllRaw, findAllRawWithValidHeaders, insert } from "@/lib/sheetsCrud";
-import { ensureSchema } from "@/lib/sheetsSetup";
+import { findAllRaw, findRowWithValidHeaders, insert } from "@/lib/sheetsCrud";
+import { ensureSiteTableSchema } from "@/lib/sheetsSetup";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 import { getSupabaseDocumentVersions, getSupabaseProjectDocuments } from "@/lib/supabaseReadModel";
 import { isSupabaseBackend, readWithSheetsFallback } from "@/lib/supabaseRest";
@@ -298,11 +298,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
               throw error;
             }
           });
-          const readDocumentSheet = async () => {
-            const rows = await findAllRawWithValidHeaders("Project_Documents", context.siteSheetId);
-            if (!rows) return null;
-            return rows.find((row) => row.project_id === context.project.project_id && row.drive_file_id === driveFileId);
-          };
+          const readDocumentSheet = () => findRowWithValidHeaders("Project_Documents", context.siteSheetId, {
+            project_id: context.project.project_id,
+            drive_file_id: driveFileId,
+          });
           const savedDocument = measure("document_read", checkDocumentHeaders
             ? readDocumentSheet
             : () => findUploadedDocument(context.siteSheetId, context.project.project_id, driveFileId))
@@ -316,7 +315,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
           driveUrl = file.webViewLink || file.webContentLink || `https://drive.google.com/file/d/${driveFileId}/view`;
           const result = await savedDocument;
           if (checkDocumentHeaders && ("error" in result || result.data === null)) {
-            const schema = await measure("site_schema", () => ensureSchema(context.siteSheetId));
+            const schema = await measure("site_schema", () => ensureSiteTableSchema(context.siteSheetId, "Project_Documents"));
             const reread = schema.success ? await measure("document_reread", readDocumentSheet) : null;
             if (reread === null) {
               return respond({ error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้งเพื่อป้องกันข้อมูลคลาดเคลื่อน" }, 503);

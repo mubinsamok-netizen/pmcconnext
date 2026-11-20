@@ -133,13 +133,25 @@ export async function findAllRaw(tableName: string, spreadsheetId: string = SHEE
   return findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA);
 }
 
-export async function findAllRawWithValidHeaders(tableName: SiteTable, spreadsheetId: string) {
+export async function findRowWithValidHeaders(
+  tableName: SiteTable,
+  spreadsheetId: string,
+  match: Record<string, string>,
+) {
   const rows = await readSheetValues(spreadsheetId, tableName);
   const headers = rows[0];
   if (!headers || !SITE_SCHEMA[tableName].every((header, index) => headers[index] === header)) {
     return null;
   }
-  return rowsToRecords(rows, tableName, SITE_SCHEMA);
+  const columns = Object.entries(match).map(([header, value]) => [headers.lastIndexOf(header), value] as const);
+  for (let index = 1; index < rows.length; index++) {
+    const row = rows[index];
+    if (columns.every(([column, value]) => column >= 0 && String(row[column] ?? "") === value)) {
+      const [record] = rowsToRecords([headers, row], tableName, SITE_SCHEMA);
+      return { ...record, _rowIndex: index + 1 };
+    }
+  }
+  return undefined;
 }
 
 export async function findAllMasterRaw(tableName: MasterTable) {

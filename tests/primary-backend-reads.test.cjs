@@ -431,7 +431,8 @@ test("Sheets PDF confirmation checks just the document headers and repairs an in
       assert.equal(range, "Project_Documents");
       calls.push("read");
       const firstRow = invalidHeaders ? ["project_id", "document_id", "drive_file_id"] : headers;
-      return { data: { values: saved ? [firstRow, saved] : [firstRow] } };
+      const otherSite = ["OTHER-DOC", "OTHER-SITE", driveFileId];
+      return { data: { values: saved ? [firstRow, otherSite, saved] : [firstRow, otherSite] } };
     } } } } },
   });
   const route = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
@@ -452,13 +453,15 @@ test("Sheets PDF confirmation checks just the document headers and repairs an in
       if (!driveFound) throw Object.assign(new Error("missing"), { code: 404 });
       return { data: { size: String(size), mimeType: "application/pdf", appProperties: { pmcDocument: binding } } };
     } } } },
-    "@/lib/sheetsSetup": { ensureSchema: async () => {
+    "@/lib/sheetsSetup": { ensureSiteTableSchema: async (sheet, table) => {
+      assert.equal(sheet, project.site_sheet_id);
+      assert.equal(table, "Project_Documents");
       calls.push("repair");
       if (repairSucceeds) invalidHeaders = false;
       return { success: repairSucceeds };
     } },
     "@/lib/sheetsCrud": {
-      findAllRawWithValidHeaders: crud.findAllRawWithValidHeaders,
+      findRowWithValidHeaders: crud.findRowWithValidHeaders,
       insert: async (_table, row) => {
         calls.push("write");
         saved = [row.document_id, row.project_id, row.drive_file_id];
@@ -476,7 +479,9 @@ test("Sheets PDF confirmation checks just the document headers and repairs an in
   allowed = true;
   assert.equal((await complete()).status, 200);
   assert.deepEqual(calls.splice(0), ["read", "verify", "write"]);
-  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  const repeated = await complete();
+  assert.equal(repeated.body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.equal(repeated.body.data._rowIndex, 3);
   assert.deepEqual(calls.splice(0), ["read", "verify"]);
   invalidHeaders = true;
   driveFound = false;
