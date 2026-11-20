@@ -396,7 +396,26 @@ async function getDecisionData(context: RouteContext, checkedRows?: CustomerDeci
     .sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0));
 }
 
-async function handleSave(req: Request, body: Record<string, unknown>, context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
+const invalidDecisionSchema = () => NextResponse.json({
+  error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+}, { status: 503 });
+
+async function readCheckedDecisionRows(siteSheetId: string) {
+  const read = () => findAllWithValidHeaders("Customer_Decisions", siteSheetId);
+  let rows = await read().catch(() => null);
+  if (!rows) {
+    const schema = await ensureSiteTableSchema(siteSheetId, "Customer_Decisions");
+    if (schema.success) rows = await read().catch(() => null);
+  }
+  return rows as unknown as CustomerDecisionRecord[] | null;
+}
+
+async function handleSave(
+  req: Request,
+  body: Record<string, unknown>,
+  context: RouteContext,
+  checkRows?: () => Promise<CustomerDecisionRecord[] | null>,
+) {
   const decisionId = text(body.decision_id);
   const payload = {
     project_id: context.project.project_id,
@@ -440,6 +459,8 @@ async function handleSave(req: Request, body: Record<string, unknown>, context: 
   const started = performance.now();
 
   if (decisionId) {
+    const checkedRows = await checkRows?.();
+    if (checkedRows === null) return invalidDecisionSchema();
     const rows = checkedRows ?? await getRows(context);
     const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
     if (!current?._rowIndex || (uploadFiles && current.active === "FALSE")) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแก้ไข" }, { status: 404 });
@@ -471,6 +492,8 @@ async function handleSave(req: Request, body: Record<string, unknown>, context: 
 
   const createdId = createCustomerDecisionId();
   const prepared = prepare(createdId, true);
+  const checkedRows = await checkRows?.();
+  if (checkedRows === null) return invalidDecisionSchema();
   const nextRows = await getDecisionData(context, checkedRows);
   const nextEvidenceFiles = await uploadDecisionFiles(context, createdId, parseUploads(body.evidence_uploads));
   const createdPayload = applyConfirmationDefaults(payload, context);
@@ -694,21 +717,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       await client.getAccessToken();
       return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
     }
-    let checkedRows: CustomerDecisionRecord[] | undefined;
-    if (evidenceWrite && !isSupabaseBackend()) {
-      const read = () => findAllWithValidHeaders("Customer_Decisions", context.siteSheetId);
-      let rows = await read().catch(() => null);
-      if (!rows) {
-        const schema = await ensureSiteTableSchema(context.siteSheetId, "Customer_Decisions");
-        if (schema.success) rows = await read();
-      }
-      if (!rows) return NextResponse.json({ error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" }, { status: 503 });
-      checkedRows = rows as unknown as CustomerDecisionRecord[];
-    }
-
     if (action === "start_evidence_uploads") return startEvidenceUploads(req, body, routeContext);
-    if (action === "attach_evidence") return attachEvidence(body, routeContext, checkedRows);
-    if (action === "save") return handleSave(req, body, routeContext, checkedRows);
+    const checkRows = evidenceWrite && !isSupabaseBackend() ? () => readCheckedDecisionRows(context.siteSheetId) : undefined;
+    if (action === "attach_evidence") {
+      const rows = await checkRows?.();
+      if (rows === null) return invalidDecisionSchema();
+      return attachEvidence(body, routeContext, rows);
+    }
+    if (action === "save") return handleSave(req, body, routeContext, checkRows);
     if (action === "delete") return handleDelete(body, routeContext);
     if (action === "notify_line") return handleNotify(req, body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(req, body, routeContext);

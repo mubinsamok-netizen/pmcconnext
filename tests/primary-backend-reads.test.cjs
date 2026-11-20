@@ -540,6 +540,7 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
   const site = { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email: "user@example.invalid" } } };
   const driveFiles = new Map();
   let newDecisionSaved = false;
+  let drivePreparationStarted = false;
   let writes = 0;
   const route = loadTs("src/app/api/sites/[projectId]/customer-decisions/route.ts", {
     "node:crypto": require("node:crypto"),
@@ -568,7 +569,10 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
       },
     },
     "@/lib/drive": {
-      findOrCreateFolder: async (name) => ({ id: name }),
+      findOrCreateFolder: async (name) => {
+        drivePreparationStarted = true;
+        return { id: name };
+      },
       createFolder: async (name) => ({ id: name }),
       createResumableUploadSession: async (input) => {
         assert.equal(input.parentId, "Evidence");
@@ -593,10 +597,15 @@ test("decision evidence verifies Drive metadata, preserves prior evidence and co
   assert.equal((await route.attachEvidence(body, site)).status, 200);
   assert.equal(writes, 1);
   assert.deepEqual(JSON.parse(decision.evidence_files_json).map((file) => file.mime_type), [undefined, "image/webp", "application/pdf"]);
+  drivePreparationStarted = false;
   const saved = await route.handleSave(request, {
     title: "New TestbyZoneIdea", phase: "Structure", decision_before: "TestbyZoneIdea",
     impact_if_changed: "TestbyZoneIdea", upload_files: files,
-  }, site);
+  }, site, async () => {
+    assert.equal(drivePreparationStarted, true);
+    assert.equal(newDecisionSaved, false);
+    return [decision];
+  });
   assert.equal(newDecisionSaved, true);
   assert.equal(saved.body.data.decision_id, "NEW-DEC-TestbyZoneIdea");
   assert.equal(saved.body.upload_sessions.length, 2);
