@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -839,7 +840,7 @@ function PipelineSection({
               <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
             )}
             {isLoading && (
-              <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
+              <tr><td colSpan={9}><DataSkeleton /></td></tr>
             )}
           </tbody>
         </table>

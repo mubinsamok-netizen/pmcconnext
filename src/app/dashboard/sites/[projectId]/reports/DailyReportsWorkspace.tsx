@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
@@ -465,7 +466,7 @@ export function DailyReportsWorkspace({
                     )}
                     {isLoading && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-10 text-center text-gray-500">กำลังโหลดข้อมูล...</td>
+                        <td colSpan={5}><DataSkeleton /></td>
                       </tr>
                     )}
                   </tbody>

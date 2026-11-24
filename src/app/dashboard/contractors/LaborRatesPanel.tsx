@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
@@ -246,7 +247,7 @@ export default function LaborRatesPanel() {
             <thead className="border-b border-gray-100 bg-slate-50/80 text-[11px] font-extrabold tracking-wide text-gray-500"><tr><th className="px-5 py-3.5">รายการงาน</th><th className="px-4 py-3.5">หมวดงาน</th><th className="px-4 py-3.5">หน่วย</th><th className="px-4 py-3.5">ช่วงราคา</th><th className="px-4 py-3.5">ราคากลาง</th><th className="px-4 py-3.5">พื้นที่</th><th className="px-4 py-3.5">เริ่มใช้</th><th className="w-32 px-4 py-3.5 text-center">จัดการ</th></tr></thead>
             <tbody className="divide-y divide-gray-100 text-sm">
               {filtered.map((rate) => <LaborRateRow key={rate.rate_id} rate={rate} deleting={deletingId === rate.rate_id} onView={() => setSelectedRate(rate)} onEdit={() => openEdit(rate)} onDelete={() => handleDelete(rate)} />)}
-              {isLoading && <tr><td colSpan={8}><PanelState icon={<Loader2 size={22} className="animate-spin text-orange-600" />} text="กำลังโหลดข้อมูลค่าแรง..." /></td></tr>}
+              {isLoading && <tr><td colSpan={8}><DataSkeleton /></td></tr>}
               {!isLoading && error && <tr><td colSpan={8}><PanelState icon={<X size={22} className="text-red-500" />} text="ไม่สามารถโหลดข้อมูลค่าแรงได้" tone="error" /></td></tr>}
               {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={8}><PanelState icon={<Banknote size={23} />} text={rates.length ? "ไม่พบข้อมูลที่ตรงกับตัวกรอง" : "ยังไม่มีข้อมูลค่าแรง เริ่มต้นโดยกด “เพิ่มรายการค่าแรง”"} /></td></tr>}
             </tbody>
@@ -261,7 +262,7 @@ export default function LaborRatesPanel() {
               <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setSelectedRate(rate)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-orange-200 bg-orange-50 px-3 text-xs font-bold text-orange-700"><Eye size={14} />รายละเอียด</button><button type="button" onClick={() => openEdit(rate)} className="grid h-9 w-9 place-items-center rounded-xl border border-gray-200 text-gray-500" aria-label={`แก้ไข ${rate.work_name}`}><Edit3 size={14} /></button><button type="button" onClick={() => handleDelete(rate)} className="grid h-9 w-9 place-items-center rounded-xl border border-red-100 bg-red-50 text-red-500" aria-label={`ลบ ${rate.work_name}`}>{deletingId === rate.rate_id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button></div>
             </article>
           ))}
-          {isLoading && <PanelState icon={<Loader2 size={22} className="animate-spin text-orange-600" />} text="กำลังโหลดข้อมูลค่าแรง..." />}
+          {isLoading && <DataSkeleton />}
           {!isLoading && error && <PanelState icon={<X size={22} className="text-red-500" />} text="ไม่สามารถโหลดข้อมูลค่าแรงได้" tone="error" />}
           {!isLoading && !error && filtered.length === 0 && <PanelState icon={<Banknote size={23} />} text={rates.length ? "ไม่พบข้อมูลที่ตรงกับตัวกรอง" : "ยังไม่มีข้อมูลค่าแรง เริ่มต้นโดยกด “เพิ่มรายการค่าแรง”"} />}
         </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useState, useTransition, type ComponentType } from "react";
 import {
@@ -656,8 +657,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
             ))}
           </div>
           <div className="flex items-center gap-2 text-xs font-bold text-gray-500">
-            {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Clock3 size={16} />}
-            {isLoading ? "กำลังโหลด Memo" : `แสดง ${filteredMemos.length} จาก ${memos.length} รายการ`}
+            {isLoading ? <DataSkeleton rows={1} /> : <><Clock3 size={16} />{`แสดง ${filteredMemos.length} จาก ${memos.length} รายการ`}</>}
           </div>
         </div>
       </div>
@@ -1039,7 +1039,8 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                       </td>
                     </tr>
                   ))}
-                  {filteredMemos.length === 0 && (
+                  {isLoading && <tr><td colSpan={6}><DataSkeleton /></td></tr>}
+                  {!isLoading && filteredMemos.length === 0 && (
                     <tr>
                       <td colSpan={6} className="px-4 py-10 text-center text-sm font-semibold text-gray-500">ยังไม่มี Memo ตาม filter ที่เลือก</td>
                     </tr>
@@ -1068,7 +1069,7 @@ export default function MemosWorkspace({ project, userRole }: { project: Project
                   โหลดประวัติไม่สำเร็จ ลองอีกครั้ง
                 </button>
               ) : !auditData ? (
-                <p role="status" className="text-sm text-gray-500">กำลังโหลดประวัติ</p>
+                <DataSkeleton rows={2} />
               ) : null}
               {auditLogs.map((log) => (
                 <div key={String(log.log_id || `${log.timestamp}-${log.action}`)} className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-sm">

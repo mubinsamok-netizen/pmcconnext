@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { postNoteAttachmentAction, uploadNoteFile } from "@/lib/directDriveNoteUpload";
 import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { NoteUploadProgress, type NoteUploadTask } from "./NoteUploadProgress";
@@ -549,10 +550,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
           ) : null}
 
           {isLoading ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm font-bold text-gray-500">
-              <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
-              กำลังโหลดบันทึก
-            </div>
+            <DataSkeleton />
           ) : filtered.length === 0 ? (
             <EmptyState />
           ) : (

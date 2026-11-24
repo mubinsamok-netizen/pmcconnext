@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import CoverUploadProgress from "../../CoverUploadProgress";
 import { submitProjectWithCover } from "@/lib/submitProjectWithCover";
 import { prepareProjectCover } from "@/lib/prepareProjectCover";
@@ -284,10 +285,7 @@ export default function EditProjectPage() {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
-        <span className="inline-block animate-spin text-xl">↻</span>
-        <span className="ml-2">กำลังโหลดข้อมูลไซต์งาน...</span>
-      </div>
+      <DataSkeleton rows={6} />
     );
   }
 

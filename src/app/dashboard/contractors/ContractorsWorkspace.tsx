@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
@@ -446,7 +447,7 @@ export default function ContractorsWorkspace() {
                   </tr>
                 );
               })}
-              {isLoading && <tr><td colSpan={7}><TableState icon={<Loader2 size={22} className="animate-spin text-orange-600" />} text="กำลังโหลดฐานข้อมูลช่าง..." /></td></tr>}
+              {isLoading && <tr><td colSpan={7}><DataSkeleton /></td></tr>}
               {!isLoading && error && <tr><td colSpan={7}><TableState icon={<X size={22} className="text-red-500" />} text="ไม่สามารถโหลดข้อมูลช่างได้ กรุณาลองใหม่อีกครั้ง" tone="error" /></td></tr>}
               {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={7}><TableState icon={<HardHat size={24} />} text={contractors.length ? "ไม่พบข้อมูลที่ตรงกับตัวกรอง" : "ยังไม่มีข้อมูลช่าง เริ่มต้นโดยกด “เพิ่มข้อมูลช่าง”"} /></td></tr>}
             </tbody>
@@ -479,7 +480,7 @@ export default function ContractorsWorkspace() {
               </article>
             );
           })}
-          {isLoading && <TableState icon={<Loader2 size={22} className="animate-spin text-orange-600" />} text="กำลังโหลดฐานข้อมูลช่าง..." />}
+          {isLoading && <DataSkeleton />}
           {!isLoading && error && <TableState icon={<X size={22} className="text-red-500" />} text="ไม่สามารถโหลดข้อมูลช่างได้ กรุณาลองใหม่อีกครั้ง" tone="error" />}
           {!isLoading && !error && filtered.length === 0 && <TableState icon={<HardHat size={24} />} text={contractors.length ? "ไม่พบข้อมูลที่ตรงกับตัวกรอง" : "ยังไม่มีข้อมูลช่าง เริ่มต้นโดยกด “เพิ่มข้อมูลช่าง”"} />}
         </div>

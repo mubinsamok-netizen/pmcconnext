@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { prepareQcEvidence, uploadQcEvidence, type QcEvidenceUpload } from "@/lib/directDriveQcEvidenceUpload";
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
@@ -396,7 +397,7 @@ export default function QcChecklistsWorkspace({
             </div>
             <div className="max-h-[580px] space-y-2 overflow-y-auto p-3">
               {isLoading ? (
-                <div className="py-8 text-center text-sm text-gray-400"><Loader2 className="mr-2 inline animate-spin" size={16} />กำลังโหลด</div>
+                <DataSkeleton />
               ) : checklists.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-gray-200 p-5 text-center text-sm text-gray-400">ยังไม่มี QC Checklist</div>
               ) : checklists.map((checklist) => (

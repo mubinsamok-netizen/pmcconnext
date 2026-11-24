@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useState } from "react";
 import useSWR from "swr";
 
@@ -51,7 +52,7 @@ export default function CustomerContactHistory({ customerId, count }: { customer
             </div>
           ))
         ) : (
-          <p role="status" className="text-xs text-gray-500">กำลังโหลดประวัติการติดต่อ</p>
+          <DataSkeleton rows={2} />
         )
       )}
     </div>

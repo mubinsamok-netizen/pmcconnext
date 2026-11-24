@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import Link from "next/link";
@@ -797,7 +798,7 @@ export default function LifecycleWorkspace({
               </thead>
               <tbody>
                 {driveFilesLoading && documentHistory.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">กำลังโหลดเอกสาร...</td></tr>
+                  <tr><td colSpan={5}><DataSkeleton /></td></tr>
                 ) : documentHistory.length === 0 ? (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">ยังไม่มีเอกสาร</td></tr>
                 ) : (

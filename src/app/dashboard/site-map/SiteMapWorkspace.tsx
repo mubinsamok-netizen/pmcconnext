@@ -313,7 +313,7 @@ function renderPopup(point: SitePoint) {
       </div>
       <div style="margin-top:2px;font-size:15px;font-weight:900;color:#0f172a;line-height:1.25;">${escapeHtml(project.name || project.project_id)}</div>
       <div style="margin-top:8px;font-size:12px;color:#475569;">SE: ${escapeHtml(engineerName)}</div>
-      <div style="margin-top:4px;font-size:12px;color:#475569;">Progress: ${project.healthLoaded ? `${Math.round(percentValue(project.percent_done))}%` : "กำลังโหลดรายละเอียด"}</div>
+      <div style="margin-top:4px;font-size:12px;color:#475569;">Progress: ${project.healthLoaded ? `${Math.round(percentValue(project.percent_done))}%` : '<span role="status" aria-label="กำลังเตรียมความคืบหน้า" class="motion-safe:animate-pulse" style="display:inline-block;width:70px;height:12px;border-radius:4px;background:#e2e8f0;"></span>'}</div>
       <div style="margin-top:8px;font-size:12px;font-weight:800;color:#0f172a;">${escapeHtml(getRiskLabel(point.risk))}</div>
     </div>
   `;

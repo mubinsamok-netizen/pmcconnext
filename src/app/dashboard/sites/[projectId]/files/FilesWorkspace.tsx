@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import {
   AlertCircle,
   CheckCircle2,
@@ -899,18 +900,14 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
 
           {project.drive_folder_id ? (
             <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600">
-              <span className={driveError && !driveLoading ? "font-semibold text-red-700" : ""}>
-                {driveLoading
-                  ? `กำลังโหลดไฟล์จาก Google Drive ต่อ… พบแล้ว ${totalDriveFiles} ไฟล์ ค้นหาและเปิดรายการที่พร้อมได้ก่อน`
-                  : driveError || `โหลดไฟล์จาก Google Drive ครบแล้ว ${totalDriveFiles} ไฟล์ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}
-              </span>
+              {driveLoading ? <div className="min-w-0 flex-1"><DataSkeleton rows={1} label="กำลังเตรียมไฟล์จาก Google Drive" /><p className="text-xs">พบแล้ว {totalDriveFiles} ไฟล์ เปิดรายการที่พร้อมได้ก่อน</p></div> : <span className={driveError ? "font-semibold text-red-700" : ""}>{driveError || `โหลดไฟล์จาก Google Drive ครบแล้ว ${totalDriveFiles} ไฟล์ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}</span>}
               <button
                 type="button"
                 onClick={() => { if (driveFiles.error && !driveRefreshError) driveFiles.retry(); else void refreshDriveFiles(); }}
                 disabled={driveLoading}
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <RefreshCw size={14} className={driveLoading ? "animate-spin" : ""} />
+                <RefreshCw size={14} />
                 {driveFiles.error && !driveRefreshError ? "ลองโหลดต่อ" : "รีเฟรชจาก Drive"}
               </button>
             </div>
@@ -929,10 +926,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           )}
 
           {isLoading ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm font-semibold text-gray-500">
-              <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
-              กำลังโหลดไฟล์
-            </div>
+            <DataSkeleton />
           ) : activeTab === "photos" ? (
             <PhotoGallery files={pagination.items.filter(isPhotoFile)} onPreview={setPreviewFile} />
           ) : (

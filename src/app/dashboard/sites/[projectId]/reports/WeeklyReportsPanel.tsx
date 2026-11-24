@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useMemo, useState } from "react";
 import { BarChart3, FileSpreadsheet, Loader2, Printer, RefreshCcw } from "lucide-react";
 import useSWR from "swr";
@@ -183,7 +184,7 @@ export function WeeklyReportsPanel({ project }: { project: MasterProject }) {
                 <tr><td colSpan={3} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายงานประจำสัปดาห์</td></tr>
               )}
               {isLoading && (
-                <tr><td colSpan={3} className="px-4 py-10 text-center text-gray-500">กำลังโหลดข้อมูล...</td></tr>
+                <tr><td colSpan={3}><DataSkeleton /></td></tr>
               )}
             </tbody>
           </table>

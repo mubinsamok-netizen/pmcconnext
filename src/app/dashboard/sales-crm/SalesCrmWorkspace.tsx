@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useMemo, useState } from "react";
 import {
   Archive,
@@ -467,7 +468,7 @@ export default function SalesCrmWorkspace() {
           onClick={() => mutate()}
           className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 font-semibold text-gray-700 transition hover:bg-gray-50"
         >
-          <RefreshCw size={17} className={isLoading ? "animate-spin" : ""} />
+          <RefreshCw size={17} />
           โหลดใหม่
         </button>
       </div>
@@ -703,7 +704,7 @@ export default function SalesCrmWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {filteredCustomers.length === 0 ? (
+              {isLoading ? <tr><td colSpan={7}><DataSkeleton /></td></tr> : filteredCustomers.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-10 text-center text-gray-500">ยังไม่มี Lead ใน Master Sheet</td>
                 </tr>

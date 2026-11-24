@@ -7,6 +7,11 @@ const INTERACTION_WINDOW_MS = 1400;
 const SHOW_DELAY_MS = 120;
 const MAX_VISIBLE_MS = 9000;
 
+function usesSkeleton(pathname: string) {
+  return /^\/dashboard\/(projects|site-map|sales-crm|contractors|schedule)(?:\/|$)/.test(pathname) ||
+    /^\/dashboard\/sites\/[^/]+(?:\/(details|reports|memos|notes|lifecycle|files|qc-checklists|variation-orders|schedule|defects))?\/?$/.test(pathname);
+}
+
 function isSameAppNavigation(anchor: HTMLAnchorElement) {
   if (anchor.target || anchor.hasAttribute("download")) return false;
 
@@ -89,6 +94,7 @@ export default function GlobalLoadingIndicator() {
       const anchor = target?.closest("a[href]");
       if (!(anchor instanceof HTMLAnchorElement) || !isSameAppNavigation(anchor)) return;
 
+      if (usesSkeleton(new URL(anchor.href).pathname)) return;
       navigationPendingRef.current = true;
       interactionAtRef.current = Date.now();
       queueLoader();
@@ -145,7 +151,7 @@ export default function GlobalLoadingIndicator() {
     }
   }, [pathname]);
 
-  if (!visible || pathname === "/dashboard/projects") return null;
+  if (!visible || usesSkeleton(pathname)) return null;
 
   return (
     <div className="pmc-global-loading" role="status" aria-live="polite" aria-label="กำลังโหลด">
