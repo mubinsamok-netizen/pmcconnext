@@ -10,6 +10,7 @@ The browser resizes photos proportionally and encodes them as WebP. PDFs retain 
 The save action also returns the saved checklist in `data`. The dashboard applies both responses to its current list without waiting for a separate refresh.
 
 For the first selected file, the dashboard can convert the file and request its
-upload session while the checklist save is in flight. It sends file bytes only
+upload session as soon as the file is selected. If the session is stale or
+preparation fails, it requests a fresh session during save. It sends file bytes only
 after the save succeeds. In Sheets mode, confirmation validates the QC table
 headers and repairs that table if needed before writing.

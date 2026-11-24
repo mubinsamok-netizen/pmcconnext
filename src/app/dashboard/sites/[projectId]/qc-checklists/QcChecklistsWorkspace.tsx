@@ -152,6 +152,12 @@ export default function QcChecklistsWorkspace({
   const [uploading, setUploading] = useState(false);
   const uploadLock = useRef(false);
   const sessions = useRef(new WeakMap<File, QcEvidenceUpload>());
+  const preparedEvidence = useRef<{
+    file: File;
+    qcId: string;
+    startedAt: number;
+    result: ReturnType<typeof prepareQcEvidence>;
+  } | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
 
   const selected = useMemo(() => {
@@ -248,8 +254,12 @@ export default function QcChecklistsWorkspace({
     setProgress({});
     try {
       const first = files[0];
+      const warmed = preparedEvidence.current;
+      preparedEvidence.current = null;
       const preparation = first && !sessions.current.has(first)
-        ? prepareQcEvidence(endpoint, selected.qc_id, first)
+        ? warmed?.file === first && warmed.qcId === selected.qc_id && Date.now() - warmed.startedAt < 300_000
+          ? warmed.result.catch(() => prepareQcEvidence(endpoint, selected.qc_id, first))
+          : prepareQcEvidence(endpoint, selected.qc_id, first)
         : undefined;
       void preparation?.catch(() => undefined);
       const json = await request({
@@ -394,7 +404,7 @@ export default function QcChecklistsWorkspace({
                   key={checklist.qc_id}
                   type="button"
                   disabled={uploading}
-                  onClick={() => { setFiles([]); setSelectedId(checklist.qc_id); }}
+                  onClick={() => { preparedEvidence.current = null; setFiles([]); setSelectedId(checklist.qc_id); }}
                   className={`w-full rounded-xl border p-3 text-left transition ${selected?.qc_id === checklist.qc_id ? "border-orange-300 bg-orange-50" : "border-gray-200 bg-white hover:bg-gray-50"}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -641,6 +651,13 @@ export default function QcChecklistsWorkspace({
                       className="sr-only"
                       onChange={(event) => {
                         const chosen = Array.from(event.currentTarget.files || []);
+                        if (!files.length && chosen[0]) {
+                          const result = prepareQcEvidence(endpoint, selected.qc_id, chosen[0]);
+                          void result.catch(() => undefined);
+                          preparedEvidence.current = {
+                            file: chosen[0], qcId: selected.qc_id, startedAt: Date.now(), result,
+                          };
+                        }
                         setFiles((current) => [...current, ...chosen].slice(0, 12));
                         event.currentTarget.value = "";
                       }}
