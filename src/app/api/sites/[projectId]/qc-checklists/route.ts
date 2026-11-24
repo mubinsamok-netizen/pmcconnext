@@ -27,7 +27,7 @@ import {
   type QcEvidenceFile,
   type QcUploadPayload,
 } from "@/lib/qcChecklists";
-import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -331,18 +331,27 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     after: patch,
   });
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, data: normalizeChecklist({ ...current, ...patch }) });
 }
 
 async function handleEvidence(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const qcId = text(body.qc_id);
-  const current = (await getRows(context)).find(row => row.qc_id === qcId && row.project_id === context.project.project_id);
-  if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
+  const getCurrent = async () => {
+    const rows = await findAllBatch(["QC_Checklists"], context.siteSheetId, {
+      projectId: context.project.project_id,
+      fresh: body.action === "confirm_evidence",
+    });
+    return (rows.QC_Checklists as unknown as QcChecklistRecord[]).find(
+      row => row.qc_id === qcId && row.project_id === context.project.project_id
+    );
+  };
   const email = text(context.session.user.email).toLowerCase();
   if (!email) return NextResponse.json({ error: "ไม่พบอีเมลผู้ใช้" }, { status: 403 });
   const owner = createHash("sha256").update(JSON.stringify([context.project.project_id, qcId, email])).digest("hex");
 
   if (body.action === "prepare_evidence") {
+    const current = await getCurrent();
+    if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
     const name = text(body.file_name);
     const mime = text(body.mime_type);
     const size = Number(body.file_size);
@@ -368,11 +377,19 @@ async function handleEvidence(req: Request, body: Record<string, unknown>, conte
 
   const id = text(body.file_id);
   if (!/^[a-zA-Z0-9_-]{10,}$/.test(id)) return NextResponse.json({ error: "รหัสไฟล์ไม่ถูกต้อง" }, { status: 400 });
+  const [current, file] = await Promise.all([
+    getCurrent(),
+    drive.files.get({
+      fileId: id, supportsAllDrives: true, fields: "id,name,mimeType,size,trashed,appProperties,webViewLink",
+    }).then(result => ({ data: result.data, error: null }), error => ({ data: null, error })),
+  ]);
+  if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
   const evidence = parseQcEvidence(current.evidence_files_json);
-  if (evidence.some(file => file.file_id === id)) return NextResponse.json({ success: true });
-  const { data } = await drive.files.get({
-    fileId: id, supportsAllDrives: true, fields: "id,name,mimeType,size,trashed,appProperties,webViewLink",
-  });
+  if (evidence.some(entry => entry.file_id === id)) {
+    return NextResponse.json({ success: true, data: normalizeChecklist(current) });
+  }
+  if (!file.data) throw file.error;
+  const { data } = file;
   if (data.trashed || data.appProperties?.pmcQcOwner !== owner || !data.size ||
       data.appProperties.pmcSize !== data.size || data.appProperties.pmcMime !== data.mimeType) {
     return NextResponse.json({ error: "ยืนยันไฟล์หลักฐานจาก Google Drive ไม่สำเร็จ" }, { status: 400 });
@@ -388,7 +405,7 @@ async function handleEvidence(req: Request, body: Record<string, unknown>, conte
     actor: actor(context), projectId: context.project.project_id, module: "qc_checklists",
     action: "updated", targetId: qcId, summary: "แนบหลักฐาน QC Checklist", before: current, after: patch,
   });
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, data: normalizeChecklist({ ...current, ...patch }) });
 }
 
 async function handleIssuePdf(body: Record<string, unknown>, context: RouteContext) {
@@ -578,11 +595,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-    const routeContext = context as RouteContext;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action);
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "prepare_evidence" });
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const routeContext = context as RouteContext;
 
     if (action === "create") return handleCreate(body, routeContext);
     if (action === "prepare_evidence" || action === "confirm_evidence") return await handleEvidence(req, body, routeContext);

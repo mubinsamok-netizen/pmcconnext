@@ -16,7 +16,8 @@ export async function uploadQcEvidence(
   });
   if (pending) {
     onStatus("กำลังตรวจสอบไฟล์ใน Drive");
-    if (await confirm(pending).then(() => true, () => false)) return;
+    const confirmed = await confirm(pending).catch(() => null);
+    if (confirmed) return confirmed;
   }
   onStatus("กำลังเตรียมไฟล์");
   const file = original.type.startsWith("image/") ? await prepareProjectCover(original) : original;
@@ -32,5 +33,5 @@ export async function uploadQcEvidence(
     // Drive may have received the file even if the browser could not read its response.
   }
   onStatus("กำลังยืนยันไฟล์ใน Drive");
-  await confirm(session);
+  return confirm(session);
 }

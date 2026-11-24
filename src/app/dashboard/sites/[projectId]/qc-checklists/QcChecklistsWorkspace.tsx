@@ -202,6 +202,11 @@ export default function QcChecklistsWorkspace({
     notes: readItemFieldDraft(item.item_id, "notes", item.notes || ""),
   }));
 
+  const applySavedChecklist = (saved: QcChecklist) => mutate(
+    current => current && ({ ...current, data: current.data?.map(row => row.qc_id === saved.qc_id ? saved : row) }),
+    { revalidate: false },
+  );
+
   const request = async (body: Record<string, unknown>, successMessage: string) => {
     setSaving(String(body.action || "save"));
     setMessage("");
@@ -213,7 +218,8 @@ export default function QcChecklistsWorkspace({
       });
       const json = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(json.error || "ดำเนินการไม่สำเร็จ");
-      await mutate();
+      if (body.action === "save" && json.data) await applySavedChecklist(json.data);
+      else await mutate();
       setMessage(successMessage);
       return json;
     } catch (requestError: unknown) {
@@ -259,8 +265,9 @@ export default function QcChecklistsWorkspace({
       for (const [index, file] of files.entries()) {
         const updateStatus = (status: string) => setProgress(current => ({ ...current, [index]: status }));
         try {
-          await uploadQcEvidence(endpoint, selected.qc_id, file, sessions.current.get(file),
+          const confirmed = await uploadQcEvidence(endpoint, selected.qc_id, file, sessions.current.get(file),
             session => sessions.current.set(file, session), updateStatus);
+          if (confirmed?.data) await applySavedChecklist(confirmed.data);
           updateStatus("เสร็จแล้ว");
         } catch {
           failed.push(file);
@@ -270,7 +277,6 @@ export default function QcChecklistsWorkspace({
       setFiles(failed);
       setProgress({});
       if (failed.length) setMessage(`บันทึกข้อมูลแล้ว แต่แนบไฟล์ไม่สำเร็จ ${failed.length} ไฟล์ กรุณาลองอีกครั้ง`);
-      void mutate().catch(() => undefined);
       return failed.length ? null : json;
     } finally {
       uploadLock.current = false;
