@@ -322,7 +322,6 @@ export default function EditProjectPage() {
       </div>
 
       <form data-no-global-loading={coverFile ? "true" : undefined} onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
         {error && (
           <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
             {error}
@@ -502,6 +501,7 @@ export default function EditProjectPage() {
           </div>
         </div>
 
+        {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
         <div className="flex justify-end gap-3 border-t border-gray-100 pt-6">
           <Link href="/dashboard/projects" className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-semibold text-gray-700 hover:bg-gray-50">
             ยกเลิก

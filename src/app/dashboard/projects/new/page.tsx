@@ -237,7 +237,6 @@ export default function CreateProjectPage() {
         </div>
 
         <form data-no-global-loading={coverFile ? "true" : undefined} onSubmit={handleSubmit}>
-          {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
           <div className="p-6 space-y-6">
             {error && (
               <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
@@ -403,6 +402,7 @@ export default function CreateProjectPage() {
             )}
           </div>
 
+          {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
           <div className="p-5 border-t border-gray-100 bg-gray-50 flex items-center gap-3">
             <button
               type="button"
