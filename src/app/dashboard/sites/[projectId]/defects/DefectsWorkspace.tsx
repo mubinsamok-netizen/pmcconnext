@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState, useTransition, type ComponentType, type FormEvent } from "react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/fetcher";
+import DefectLoading from "./loading";
 import { postDefectAction, prepareDefectPhotos, uploadDefectPhotos, type DefectPhotoProgress as PhotoProgress } from "@/lib/directDriveDefectUpload";
 import { DefectPhotoProgress } from "./DefectPhotoProgress";
 
@@ -210,6 +210,12 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
+async function fetchDefects(url: string) {
+  const response = await fetch(url, { headers: { "X-PMC-No-Global-Loading": "1" } });
+  if (!response.ok) throw new Error("รีเฟรชรายการ Defect ไม่สำเร็จ");
+  return response.json();
+}
+
 export function DefectsWorkspace({
   projectId,
   projectName,
@@ -220,7 +226,7 @@ export function DefectsWorkspace({
   clientName?: string;
 }) {
   const apiPath = `/api/sites/${encodeURIComponent(projectId)}/defects`;
-  const { data, error, isLoading, mutate } = useSWR(apiPath, fetcher);
+  const { data, error, isLoading, mutate } = useSWR(apiPath, fetchDefects);
   const [selectedRoundId, setSelectedRoundId] = useState("");
   const [activeTab, setActiveTab] = useState<TabKey>("rounds");
   const [message, setMessage] = useState("");
@@ -247,7 +253,7 @@ export function DefectsWorkspace({
   const readyForCustomerApproval = roundItems.length > 0 && roundItems.every((item) => ["fixed", "passed", "closed"].includes(String(item.status || "")));
 
   function postAction(body: Record<string, unknown>) {
-    return postDefectAction(apiPath, body, false);
+    return postDefectAction(apiPath, body, true);
   }
 
   async function createRound(formData: FormData) {
@@ -351,10 +357,7 @@ export function DefectsWorkspace({
       acknowledgementPreparation.current = null;
       setActiveTab("tracking");
       setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
-      void mutate(fetch(apiPath, { headers: { "X-PMC-No-Global-Loading": "1" } }).then(res => {
-        if (!res.ok) throw new Error("รีเฟรชรายการ Defect ไม่สำเร็จ");
-        return res.json();
-      }), { revalidate: false }).catch(() => undefined);
+      void mutate(fetchDefects(apiPath), { revalidate: false }).catch(() => undefined);
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "บันทึกหลักฐานรับทราบไม่สำเร็จ");
     } finally {
@@ -440,10 +443,7 @@ export function DefectsWorkspace({
         const input = form.elements.namedItem("after_photos");
         if (input instanceof HTMLInputElement) input.value = "";
       }
-      void mutate(fetch(apiPath, { headers: { "X-PMC-No-Global-Loading": "1" } }).then((res) => {
-        if (!res.ok) throw new Error("รีเฟรชรายการ Defect ไม่สำเร็จ");
-        return res.json();
-      }), { revalidate: false }).catch(() => undefined);
+      void mutate(fetchDefects(apiPath), { revalidate: false }).catch(() => undefined);
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "บันทึกรูป Defect ไม่สำเร็จ");
     } finally {
@@ -471,6 +471,8 @@ export function DefectsWorkspace({
     });
   }
 
+  if (isLoading && !data) return <DefectLoading />;
+
   const messageIsError = Boolean(error || message.includes("ผิดพลาด") || message.includes("กรุณา") || message.includes("ไม่"));
 
   return (
@@ -493,6 +495,12 @@ export function DefectsWorkspace({
           <div className="mt-2 text-2xl font-bold text-emerald-700">{roundEvidence.length}</div>
         </div>
       </div>
+
+      {isPending && (
+        <div role="status" aria-label="กำลังดำเนินการ" className="rounded-lg border border-gray-200 bg-white px-4 py-3">
+          <div aria-hidden="true" className="h-4 w-48 max-w-full rounded bg-gray-200 motion-safe:animate-pulse" />
+        </div>
+      )}
 
       {(message || error) && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${messageIsError ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
@@ -651,7 +659,7 @@ export function DefectsWorkspace({
                 <EmptyState title="ยังไม่ได้เลือกรอบตรวจ" description="ไปที่แท็บรอบตรวจเพื่อสร้างหรือเลือกรอบก่อน" />
               )}
 
-              <DefectList items={roundItems} isLoading={isLoading} />
+              <DefectList items={roundItems} />
             </div>
           )}
 
@@ -683,7 +691,7 @@ export function DefectsWorkspace({
                   {!selectedRound || roundItems.length === 0 ? <p className="text-xs text-gray-500">ต้องเลือกรอบตรวจและมีรายการ defect อย่างน้อย 1 รายการก่อน</p> : null}
                 </div>
               </div>
-              <DefectList items={roundItems} isLoading={isLoading} compact />
+              <DefectList items={roundItems} compact />
             </div>
           )}
 
@@ -810,7 +818,7 @@ export function DefectsWorkspace({
                   </button>
                 </div>
               </div>
-              <TrackingList items={roundItems} isLoading={isLoading} isPending={isPending || photoSaving} photoTarget={photoTarget} photoProgress={photoProgress} onSubmit={(event) => void saveWithPhotos(event, "after")} onFilesChange={() => { pendingPhotos.current = null; }} />
+              <TrackingList items={roundItems} isPending={isPending || photoSaving} photoTarget={photoTarget} photoProgress={photoProgress} onSubmit={(event) => void saveWithPhotos(event, "after")} onFilesChange={() => { pendingPhotos.current = null; }} />
             </div>
           )}
         </div>
@@ -819,7 +827,7 @@ export function DefectsWorkspace({
   );
 }
 
-function DefectList({ items, isLoading, compact = false }: { items: DefectItem[]; isLoading: boolean; compact?: boolean }) {
+function DefectList({ items, compact = false }: { items: DefectItem[]; compact?: boolean }) {
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
       <div className="border-b border-gray-100 p-4">
@@ -861,16 +869,11 @@ function DefectList({ items, isLoading, compact = false }: { items: DefectItem[]
                 </td>
               </tr>
             ))}
-            {items.length === 0 && !isLoading ? (
+            {items.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-4 py-10">
                   <EmptyState title="ยังไม่มีรายการ defect" description="เพิ่มรายการจากฟอร์มในแท็บรายการ Defect" />
                 </td>
-              </tr>
-            ) : null}
-            {isLoading ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-gray-500">กำลังโหลดข้อมูล...</td>
               </tr>
             ) : null}
           </tbody>
@@ -900,7 +903,6 @@ function EvidenceList({ evidence }: { evidence: DefectEvidence[] }) {
 
 function TrackingList({
   items,
-  isLoading,
   isPending,
   onSubmit,
   onFilesChange,
@@ -908,7 +910,6 @@ function TrackingList({
   photoProgress,
 }: {
   items: DefectItem[];
-  isLoading: boolean;
   isPending: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onFilesChange: () => void;
@@ -967,16 +968,11 @@ function TrackingList({
                 </td>
               </tr>
             ))}
-            {items.length === 0 && !isLoading ? (
+            {items.length === 0 ? (
               <tr>
                 <td colSpan={3} className="px-4 py-10">
                   <EmptyState title="ยังไม่มีรายการให้ติดตาม" description="เพิ่ม defect ก่อน แล้วกลับมาปรับสถานะหลังเริ่มแก้ไข" />
                 </td>
-              </tr>
-            ) : null}
-            {isLoading ? (
-              <tr>
-                <td colSpan={3} className="px-4 py-10 text-center text-gray-500">กำลังโหลดข้อมูล...</td>
               </tr>
             ) : null}
           </tbody>
