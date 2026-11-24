@@ -20,7 +20,7 @@ export async function postDefectAction(endpoint: string, body: Record<string, un
 
 export async function uploadDefectPhotos(
   endpoint: string,
-  target: { round_id: string } | { item_id: string },
+  target: { round_id: string; evidence?: "acknowledgement" } | { item_id: string },
   files: File[],
   onProgress: (index: number, progress: DefectPhotoProgress) => void,
 ) {

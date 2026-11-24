@@ -74,12 +74,6 @@ type DefectEvidence = Record<string, string | number | undefined> & {
   acknowledged_date?: string;
 };
 
-type UploadPayload = {
-  name: string;
-  type: string;
-  dataUrl: string;
-};
-
 type TabKey = "rounds" | "items" | "document" | "acknowledgement" | "tracking";
 
 const ROUND_STATUS_LABELS: Record<string, string> = {
@@ -154,16 +148,6 @@ function parsePhotoCount(value?: string | number) {
   } catch {
     return 0;
   }
-}
-
-async function filesToUploads(files: FileList | null, maxFiles = 4): Promise<UploadPayload[]> {
-  const selected = Array.from(files || []).filter((file) => file.size > 0).slice(0, maxFiles);
-  return await Promise.all(selected.map((file) => new Promise<UploadPayload>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
-    reader.readAsDataURL(file);
-  })));
 }
 
 function openPrintDialog(html: string) {
@@ -311,24 +295,54 @@ export function DefectsWorkspace({
     if (payload.document_html) openPrintDialog(payload.document_html);
   }
 
-  async function acknowledge(formData: FormData) {
-    if (!selectedRound) return;
+  async function acknowledge(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (savingPhotos.current || isPending || !selectedRound) return;
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const files = values.getAll("evidence").filter((file): file is File => file instanceof File && file.size > 0);
+    if (!files.length || files.length > 6) {
+      setMessage("กรุณาแนบรูปหลักฐาน 1–6 ไฟล์");
+      return;
+    }
+
+    const target = { round_id: selectedRound.round_id, evidence: "acknowledgement" as const };
+    const key = JSON.stringify([apiPath, target, files.map(file => [file.name, file.size, file.lastModified])]);
+    const previous = pendingPhotos.current?.key === key ? pendingPhotos.current : null;
+    savingPhotos.current = true;
+    setPhotoSaving(true);
+    setPhotoTarget("acknowledgement");
     setMessage("");
-    const fileInput = document.getElementById("defect-ack-evidence") as HTMLInputElement | null;
-    const uploads = await filesToUploads(fileInput?.files || null, 6);
-    await postAction({
-      action: "acknowledge",
-      round_id: selectedRound.round_id,
-      channel: formData.get("channel"),
-      acknowledged_by: formData.get("acknowledged_by"),
-      acknowledged_date: formData.get("acknowledged_date"),
-      notes: formData.get("notes"),
-      evidence_uploads: uploads,
-    });
-    if (fileInput) fileInput.value = "";
-    await mutate();
-    setActiveTab("tracking");
-    setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
+    setPhotoProgress(files.map(file => ({ name: file.name, stage: previous ? "confirm" : "prepare", percent: previous ? 100 : 0 })));
+
+    try {
+      const ids = previous?.ids ?? await uploadDefectPhotos(apiPath, target, files,
+        (index, progress) => setPhotoProgress(current => current.map((file, position) => position === index ? progress : file)));
+      pendingPhotos.current = { key, ids };
+      await postDefectAction(apiPath, {
+        action: "acknowledge",
+        round_id: selectedRound.round_id,
+        channel: values.get("channel"),
+        acknowledged_by: values.get("acknowledged_by"),
+        acknowledged_date: values.get("acknowledged_date"),
+        notes: values.get("notes"),
+        evidence_file_ids: ids,
+      }, true);
+      pendingPhotos.current = null;
+      form.reset();
+      setActiveTab("tracking");
+      setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
+      void mutate(fetch(apiPath, { headers: { "X-PMC-No-Global-Loading": "1" } }).then(res => {
+        if (!res.ok) throw new Error("รีเฟรชรายการ Defect ไม่สำเร็จ");
+        return res.json();
+      }), { revalidate: false }).catch(() => undefined);
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "บันทึกหลักฐานรับทราบไม่สำเร็จ");
+    } finally {
+      savingPhotos.current = false;
+      setPhotoSaving(false);
+      setPhotoProgress([]);
+    }
   }
 
   async function sendCustomerAcknowledgement() {
@@ -680,7 +694,7 @@ export function DefectsWorkspace({
                     {acknowledgementUrl ? <p className="mt-3 break-all text-xs font-semibold text-orange-800">{acknowledgementUrl}</p> : null}
                   </div>
 
-                  <form action={(formData) => run(acknowledge, formData)} className="rounded-lg border border-gray-200 p-4">
+                  <form onSubmit={(event) => void acknowledge(event)} className="rounded-lg border border-gray-200 p-4">
                     <SectionHeader icon={ShieldCheck} title="แนบหลักฐานแทนลิงก์" description="ใช้กรณีลูกค้าตอบในแชทอยู่แล้ว แนบรูปแล้วระบบจะล็อกรอบตรวจนี้เหมือนกัน" />
                     <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
                       <select name="channel" defaultValue="LINE" className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200">
@@ -694,11 +708,12 @@ export function DefectsWorkspace({
                       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
                         <Upload size={16} />
                         แคปหน้าจอแชท
-                        <input id="defect-ack-evidence" type="file" accept="image/*" multiple className="sr-only" />
+                        <input name="evidence" type="file" accept="image/*" multiple disabled={photoSaving} className="sr-only" onChange={() => { pendingPhotos.current = null; }} />
                       </label>
                       <textarea name="notes" rows={2} className="md:col-span-2 xl:col-span-1 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="หมายเหตุ เช่น ลูกค้าตอบว่า รับทราบตามเอกสาร" />
                     </div>
-                    <button disabled={isPending} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60">
+                    {photoTarget === "acknowledgement" && <div className="mt-3"><DefectPhotoProgress files={photoProgress} /></div>}
+                    <button disabled={isPending || photoSaving} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60">
                       <ShieldCheck size={16} />
                       บันทึกลูกค้ารับทราบและล็อกเอกสาร
                     </button>

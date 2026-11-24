@@ -194,6 +194,7 @@ function defectPhotoBinding(context: RouteContext, roundId: string, itemId: stri
 
 async function startPhotoUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const { rounds, items } = await getDefectData(context);
+  const acknowledgement = body.evidence === "acknowledgement";
   const itemId = text(body.item_id);
   const item = itemId ? items.find((row) => row.item_id === itemId) : undefined;
   if (itemId && !item) return NextResponse.json({ error: "ไม่พบรายการ defect" }, { status: 404 });
@@ -201,22 +202,26 @@ async function startPhotoUploads(req: Request, body: Record<string, unknown>, co
   const round = rounds.find((row) => row.round_id === roundId);
   if (!round) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
   if (!itemId && isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้ล็อกแล้ว" }, { status: 400 });
+  if (acknowledgement && (itemId || !round.pdf_url)) {
+    return NextResponse.json({ error: "กรุณาออก PDF ก่อนแนบหลักฐานรับทราบ" }, { status: 400 });
+  }
+  const limit = acknowledgement ? 6 : 4;
   if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
 
   const files = Array.isArray(body.files) ? body.files.map((file) => ({
     name: text(file?.name),
     size: Number(file?.size),
   })) : [];
-  if (!files.length || files.length > 4 || files.some(({ name, size }) => (
+  if (!files.length || files.length > limit || files.some(({ name, size }) => (
     !/\.webp$/i.test(name) || !Number.isSafeInteger(size) || size <= 0 || size > PROJECT_COVER_MAX_BYTES
-  ))) return NextResponse.json({ error: "กรุณาแนบรูป WebP ที่ใช้งานได้ ไม่เกิน 4 รูป" }, { status: 400 });
+  ))) return NextResponse.json({ error: `กรุณาแนบรูป WebP ที่ใช้งานได้ ไม่เกิน ${limit} รูป` }, { status: 400 });
 
   const [roundFolderId, reserved] = await Promise.all([
     getDefectRoundFolder(context, roundId),
     drive.files.generateIds({ count: files.length, space: "drive" }),
   ]);
   if (!roundFolderId) return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์" }, { status: 400 });
-  const folder = await findOrCreateFolder(itemId ? "After Photos" : "Before Photos", roundFolderId);
+  const folder = await findOrCreateFolder(acknowledgement ? "Customer Acknowledgement" : itemId ? "After Photos" : "Before Photos", roundFolderId);
   const data = await Promise.all(files.map(async ({ name, size }, index) => {
     const fileId = reserved.data.ids?.[index];
     if (!fileId) throw new Error("Google Drive ไม่สามารถจองรหัสรูปภาพได้");
@@ -227,16 +232,16 @@ async function startPhotoUploads(req: Request, body: Record<string, unknown>, co
       parentId: folder.id || roundFolderId,
       origin: new URL(req.url).origin,
       fileId,
-      appProperties: { pmcDefectPhoto: defectPhotoBinding(context, roundId, itemId, size) },
+      appProperties: { pmcDefectPhoto: defectPhotoBinding(context, roundId, acknowledgement ? "acknowledgement" : itemId, size) },
     });
     return { file_id: fileId, upload_url: session.uploadUrl };
   }));
   return NextResponse.json({ success: true, data }, { headers: { "Cache-Control": "no-store" } });
 }
 
-async function verifyDefectPhotos(context: RouteContext, roundId: string, itemId: string, value: unknown) {
+async function verifyDefectPhotos(context: RouteContext, roundId: string, itemId: string, value: unknown, limit = 4) {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 4 || !actor(context).email ||
+  if (!Array.isArray(value) || value.length > limit || !actor(context).email ||
     value.some((id) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{10,}$/.test(id))) return null;
 
   const photos = await Promise.all([...new Set<string>(value)].map(async (id) => {
@@ -595,7 +600,12 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้บันทึกการรับทราบแล้ว" }, { status: 400 });
   if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนแนบหลักฐานรับทราบ" }, { status: 400 });
 
-  const evidenceUploads = await uploadDefectFiles(context, roundId, "Customer Acknowledgement", parseUploads(body.evidence_uploads));
+  const evidenceUploads = body.evidence_file_ids === undefined
+    ? await uploadDefectFiles(context, roundId, "Customer Acknowledgement", parseUploads(body.evidence_uploads))
+    : await verifyDefectPhotos(context, roundId, "acknowledgement", body.evidence_file_ids, 6);
+  if (!evidenceUploads) {
+    return NextResponse.json({ error: "ยืนยันรูปหลักฐานจาก Google Drive ไม่สำเร็จ" }, { status: 400 });
+  }
   if (evidenceUploads.length === 0) {
     return NextResponse.json({ error: "กรุณาแนบรูปแชทหรือหลักฐานการรับทราบ" }, { status: 400 });
   }
@@ -604,7 +614,8 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   const acknowledgedBy = text(body.acknowledged_by) || String(context.project.client || "");
   const channel = text(body.channel) || "LINE";
   const notes = text(body.notes);
-  await Promise.all(evidenceUploads.map((file) => insert("Defect_Evidence", {
+  const recorded = new Set(data.evidence.filter(row => row.round_id === roundId && row.evidence_type === "customer_acknowledgement").map(row => row.file_id));
+  await Promise.all(evidenceUploads.filter(file => !recorded.has(file.file_id)).map((file) => insert("Defect_Evidence", {
     evidence_id: makeId("DFE"),
     round_id: roundId,
     project_id: context.project.project_id,
