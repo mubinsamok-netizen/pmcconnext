@@ -1,5 +1,7 @@
 "use client";
 
+import CoverUploadProgress from "../../CoverUploadProgress";
+import { submitProjectWithCover } from "@/lib/submitProjectWithCover";
 import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -195,6 +197,7 @@ export default function EditProjectPage() {
   const [coverPreview, setCoverPreview] = useState("");
   const [loadedProjectId, setLoadedProjectId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [coverPercent, setCoverPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isForeman = isForemanRole(session?.user?.role);
 
@@ -247,6 +250,7 @@ export default function EditProjectPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setCoverPercent(null);
     setLoading(true);
     setError(null);
 
@@ -254,10 +258,9 @@ export default function EditProjectPage() {
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
     try {
       if (coverFile) formData.append("cover", await prepareProjectCover(coverFile));
-      const res = await fetch("/api/projects", {
-        method: "PUT",
-        body: formData,
-      });
+      const res = coverFile
+        ? await submitProjectWithCover("PUT", formData, setCoverPercent)
+        : await fetch("/api/projects", { method: "PUT", body: formData });
       if (res.status === 413) throw new Error("ขนาดข้อมูลเกินกำหนด กรุณาเลือกรูปปกที่เล็กลง");
       const result = await res.json().catch(() => ({}));
 
@@ -318,7 +321,8 @@ export default function EditProjectPage() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <form data-no-global-loading={coverFile ? "true" : undefined} onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+          {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
         {error && (
           <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
             {error}
