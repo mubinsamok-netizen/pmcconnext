@@ -53,3 +53,6 @@ requested the increment to `UAT v1.0.013`.
 
 The user accepted the project cover upload workflow on page 23 and requested
 the increment to `UAT v1.0.014`.
+
+The user accepted the QC Checklist evidence upload workflow on page 16 and
+requested the increment to `UAT v1.0.015`.
