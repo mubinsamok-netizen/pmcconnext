@@ -19,7 +19,7 @@ import {
 import { useMemo, useRef, useState, useTransition, type ComponentType, type FormEvent } from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
-import { postDefectAction, uploadDefectPhotos, type DefectPhotoProgress as PhotoProgress } from "@/lib/directDriveDefectUpload";
+import { postDefectAction, prepareDefectPhotos, uploadDefectPhotos, type DefectPhotoProgress as PhotoProgress } from "@/lib/directDriveDefectUpload";
 import { DefectPhotoProgress } from "./DefectPhotoProgress";
 
 type DefectRound = Record<string, string | number | undefined> & {
@@ -295,12 +295,25 @@ export function DefectsWorkspace({
     if (payload.document_html) openPrintDialog(payload.document_html);
   }
 
+  const acknowledgementPreparation = useRef<{ input: HTMLInputElement; files: File[]; result: Promise<File[]> } | null>(null);
+
+  function prepareAcknowledgement(input: HTMLInputElement) {
+    pendingPhotos.current = null;
+    acknowledgementPreparation.current = null;
+    const files = Array.from(input.files ?? []).filter(file => file.size > 0);
+    if (!files.length || files.length > 6) return;
+    const result = prepareDefectPhotos(files);
+    void result.catch(() => undefined);
+    acknowledgementPreparation.current = { input, files, result };
+  }
+
   async function acknowledge(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (savingPhotos.current || isPending || !selectedRound) return;
     const form = event.currentTarget;
     const values = new FormData(form);
-    const files = values.getAll("evidence").filter((file): file is File => file instanceof File && file.size > 0);
+    const input = form.elements.namedItem("evidence");
+    const files = Array.from(input instanceof HTMLInputElement ? input.files ?? [] : []).filter(file => file.size > 0);
     if (!files.length || files.length > 6) {
       setMessage("กรุณาแนบรูปหลักฐาน 1–6 ไฟล์");
       return;
@@ -316,8 +329,13 @@ export function DefectsWorkspace({
     setPhotoProgress(files.map(file => ({ name: file.name, stage: previous ? "confirm" : "prepare", percent: previous ? 100 : 0 })));
 
     try {
+      const prepared = acknowledgementPreparation.current;
+      const preparation = prepared && prepared.input === input &&
+        files.length === prepared.files.length &&
+        files.every((file, index) => file === prepared.files[index]) ? prepared.result : undefined;
       const ids = previous?.ids ?? await uploadDefectPhotos(apiPath, target, files,
-        (index, progress) => setPhotoProgress(current => current.map((file, position) => position === index ? progress : file)));
+        (index, progress) => setPhotoProgress(current => current.map((file, position) => position === index ? progress : file)),
+        preparation);
       pendingPhotos.current = { key, ids };
       await postDefectAction(apiPath, {
         action: "acknowledge",
@@ -330,6 +348,7 @@ export function DefectsWorkspace({
       }, true);
       pendingPhotos.current = null;
       form.reset();
+      acknowledgementPreparation.current = null;
       setActiveTab("tracking");
       setMessage("บันทึกหลักฐานลูกค้ารับทราบและล็อกรอบตรวจแล้ว");
       void mutate(fetch(apiPath, { headers: { "X-PMC-No-Global-Loading": "1" } }).then(res => {
@@ -708,7 +727,7 @@ export function DefectsWorkspace({
                       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">
                         <Upload size={16} />
                         แคปหน้าจอแชท
-                        <input name="evidence" type="file" accept="image/*" multiple disabled={photoSaving} className="sr-only" onChange={() => { pendingPhotos.current = null; }} />
+                        <input name="evidence" type="file" accept="image/*" multiple disabled={photoSaving} className="sr-only" onChange={event => prepareAcknowledgement(event.currentTarget)} />
                       </label>
                       <textarea name="notes" rows={2} className="md:col-span-2 xl:col-span-1 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" placeholder="หมายเหตุ เช่น ลูกค้าตอบว่า รับทราบตามเอกสาร" />
                     </div>

@@ -18,19 +18,24 @@ export async function postDefectAction(endpoint: string, body: Record<string, un
   return payload;
 }
 
-export async function uploadDefectPhotos(
-  endpoint: string,
-  target: { round_id: string; evidence?: "acknowledgement" } | { item_id: string },
-  files: File[],
-  onProgress: (index: number, progress: DefectPhotoProgress) => void,
-) {
-  const prepared = await Promise.all(files.map(async (file) => {
+export async function prepareDefectPhotos(files: File[]) {
+  return Promise.all(files.map(async (file) => {
     try {
       return await prepareProjectCover(file);
     } catch {
       throw new Error(`เตรียมรูป ${file.name} ไม่สำเร็จ กรุณาเลือกไฟล์รูปที่เปิดได้`);
     }
   }));
+}
+
+export async function uploadDefectPhotos(
+  endpoint: string,
+  target: { round_id: string; evidence?: "acknowledgement" } | { item_id: string },
+  files: File[],
+  onProgress: (index: number, progress: DefectPhotoProgress) => void,
+  preparation?: Promise<File[]>,
+) {
+  const prepared = await (preparation ?? prepareDefectPhotos(files));
   const result = await postDefectAction(endpoint, {
     action: "start_photo_uploads",
     ...target,

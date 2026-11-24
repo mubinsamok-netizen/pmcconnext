@@ -193,8 +193,14 @@ function defectPhotoBinding(context: RouteContext, roundId: string, itemId: stri
 }
 
 async function startPhotoUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
-  const { rounds, items } = await getDefectData(context);
   const acknowledgement = body.evidence === "acknowledgement";
+  const { rounds, items } = acknowledgement
+    ? await findAllBatch(["Defect_Rounds"], context.siteSheetId, { projectId: context.project.project_id })
+        .then(rows => ({
+          rounds: (rows.Defect_Rounds as unknown as DefectRoundRecord[]).filter(row => row.project_id === context.project.project_id),
+          items: [],
+        }))
+    : await getDefectData(context);
   const itemId = text(body.item_id);
   const item = itemId ? items.find((row) => row.item_id === itemId) : undefined;
   if (itemId && !item) return NextResponse.json({ error: "ไม่พบรายการ defect" }, { status: 404 });
@@ -594,15 +600,23 @@ async function handleIssueTrackingPdf(_body: Record<string, unknown>, context: R
 }
 
 async function handleAcknowledge(body: Record<string, unknown>, context: RouteContext, roundId: string) {
-  const data = await getDefectData(context);
-  const round = data.rounds.find((item) => item.round_id === roundId);
+  const [data, verified] = await Promise.all([
+    findAllBatch(["Defect_Rounds", "Defect_Evidence"], context.siteSheetId, {
+      projectId: context.project.project_id,
+      fresh: true,
+    }),
+    verifyDefectPhotos(context, roundId, "acknowledgement", body.evidence_file_ids, 6),
+  ]);
+  const round = (data.Defect_Rounds as unknown as DefectRoundRecord[]).find(
+    row => row.project_id === context.project.project_id && row.round_id === roundId
+  );
   if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
   if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้บันทึกการรับทราบแล้ว" }, { status: 400 });
   if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนแนบหลักฐานรับทราบ" }, { status: 400 });
 
   const evidenceUploads = body.evidence_file_ids === undefined
     ? await uploadDefectFiles(context, roundId, "Customer Acknowledgement", parseUploads(body.evidence_uploads))
-    : await verifyDefectPhotos(context, roundId, "acknowledgement", body.evidence_file_ids, 6);
+    : verified;
   if (!evidenceUploads) {
     return NextResponse.json({ error: "ยืนยันรูปหลักฐานจาก Google Drive ไม่สำเร็จ" }, { status: 400 });
   }
@@ -614,7 +628,7 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   const acknowledgedBy = text(body.acknowledged_by) || String(context.project.client || "");
   const channel = text(body.channel) || "LINE";
   const notes = text(body.notes);
-  const recorded = new Set(data.evidence.filter(row => row.round_id === roundId && row.evidence_type === "customer_acknowledgement").map(row => row.file_id));
+  const recorded = new Set(data.Defect_Evidence.filter(row => row.project_id === context.project.project_id && row.round_id === roundId && row.evidence_type === "customer_acknowledgement").map(row => row.file_id));
   await Promise.all(evidenceUploads.filter(file => !recorded.has(file.file_id)).map((file) => insert("Defect_Evidence", {
     evidence_id: makeId("DFE"),
     round_id: roundId,
