@@ -56,3 +56,6 @@ the increment to `UAT v1.0.014`.
 
 The user accepted the QC Checklist evidence upload workflow on page 16 and
 requested the increment to `UAT v1.0.015`.
+
+The user accepted the Variation Orders Excel import workflow on page 25 and
+requested the increment to `UAT v1.0.016`.
