@@ -721,7 +721,7 @@ export function DefectsWorkspace({
                     {acknowledgementUrl ? <p className="mt-3 break-all text-xs font-semibold text-orange-800">{acknowledgementUrl}</p> : null}
                   </div>
 
-                  <form onSubmit={(event) => void acknowledge(event)} className="rounded-lg border border-gray-200 p-4">
+                  <form data-no-global-loading="true" onSubmit={(event) => void acknowledge(event)} className="rounded-lg border border-gray-200 p-4">
                     <SectionHeader icon={ShieldCheck} title="แนบหลักฐานแทนลิงก์" description="ใช้กรณีลูกค้าตอบในแชทอยู่แล้ว แนบรูปแล้วระบบจะล็อกรอบตรวจนี้เหมือนกัน" />
                     <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
                       <select name="channel" defaultValue="LINE" className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200">
