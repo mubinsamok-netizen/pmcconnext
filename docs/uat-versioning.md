@@ -50,3 +50,6 @@ increment to `UAT v1.0.012`.
 
 The user accepted the Schedule page 22 decision-evidence upload workflow and
 requested the increment to `UAT v1.0.013`.
+
+The user accepted the project cover upload workflow on page 23 and requested
+the increment to `UAT v1.0.014`.
