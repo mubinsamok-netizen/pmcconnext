@@ -8,3 +8,8 @@ The dashboard first submits the existing `save` action with checklist fields and
 The browser resizes photos proportionally and encodes them as WebP. PDFs retain their original bytes. Upload status is shown per file. Existing clients that pass `evidence_uploads` on save retain their existing behavior.
 
 The save action also returns the saved checklist in `data`. The dashboard applies both responses to its current list without waiting for a separate refresh.
+
+For the first selected file, the dashboard can convert the file and request its
+upload session while the checklist save is in flight. It sends file bytes only
+after the save succeeds. In Sheets mode, confirmation validates the QC table
+headers and repairs that table if needed before writing.

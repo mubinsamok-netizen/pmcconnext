@@ -27,7 +27,9 @@ import {
   type QcEvidenceFile,
   type QcUploadPayload,
 } from "@/lib/qcChecklists";
-import { findAll, findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllRaw, findRowWithValidHeaders, insert, update } from "@/lib/sheetsCrud";
+import { ensureSiteTableSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -337,6 +339,18 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
 async function handleEvidence(req: Request, body: Record<string, unknown>, context: RouteContext) {
   const qcId = text(body.qc_id);
   const getCurrent = async () => {
+    if (body.action === "confirm_evidence" && !isSupabaseBackend()) {
+      const read = () => findRowWithValidHeaders("QC_Checklists", context.siteSheetId, {
+        project_id: context.project.project_id, qc_id: qcId,
+      });
+      let row = await read();
+      if (row === null) {
+        const schema = await ensureSiteTableSchema(context.siteSheetId, "QC_Checklists");
+        if (schema.success) row = await read();
+      }
+      if (row === null) throw new Error("ตรวจสอบโครงสร้าง QC Checklist ใน Google Sheets ไม่สำเร็จ");
+      return row as unknown as QcChecklistRecord | undefined;
+    }
     const rows = await findAllBatch(["QC_Checklists"], context.siteSheetId, {
       projectId: context.project.project_id,
       fresh: body.action === "confirm_evidence",
@@ -350,8 +364,6 @@ async function handleEvidence(req: Request, body: Record<string, unknown>, conte
   const owner = createHash("sha256").update(JSON.stringify([context.project.project_id, qcId, email])).digest("hex");
 
   if (body.action === "prepare_evidence") {
-    const current = await getCurrent();
-    if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
     const name = text(body.file_name);
     const mime = text(body.mime_type);
     const size = Number(body.file_size);
@@ -359,12 +371,17 @@ async function handleEvidence(req: Request, body: Record<string, unknown>, conte
         (mime.startsWith("image/") && mime !== "image/webp") || !Number.isSafeInteger(size) || size <= 0) {
       return NextResponse.json({ error: "ชื่อ ชนิด หรือขนาดไฟล์ไม่ถูกต้อง" }, { status: 400 });
     }
-    const [folder, generated] = await Promise.all([
-      getQcFolder(context, qcId),
+    const [checked, generated] = await Promise.all([
+      getCurrent().then(async current => {
+        if (!current?._rowIndex) return { found: false, folder: null };
+        const folder = await getQcFolder(context, qcId);
+        return { found: true, folder: folder ? await findOrCreateFolder("Evidence", folder) : null };
+      }),
       drive.files.generateIds({ count: 1, space: "drive" }),
     ]);
-    if (!folder) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive ของไซต์");
-    const target = await findOrCreateFolder("Evidence", folder);
+    if (!checked.found) return NextResponse.json({ error: "ไม่พบ QC Checklist" }, { status: 404 });
+    const target = checked.folder;
+    if (!target) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive ของไซต์");
     const id = generated.data.ids?.[0];
     if (!target.id || !id) throw new Error("เปิดช่องทางอัปโหลดหลักฐานไม่สำเร็จ");
     const session = await createResumableUploadSession({
@@ -597,7 +614,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     const { projectId } = await params;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action);
-    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "prepare_evidence" });
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "prepare_evidence" || action === "confirm_evidence" });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
 

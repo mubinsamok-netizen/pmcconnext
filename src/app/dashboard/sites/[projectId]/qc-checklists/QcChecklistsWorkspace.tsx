@@ -1,6 +1,6 @@
 "use client";
 
-import { uploadQcEvidence, type QcEvidenceUpload } from "@/lib/directDriveQcEvidenceUpload";
+import { prepareQcEvidence, uploadQcEvidence, type QcEvidenceUpload } from "@/lib/directDriveQcEvidenceUpload";
 import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
   CheckCircle2,
@@ -247,6 +247,11 @@ export default function QcChecklistsWorkspace({
     setUploading(files.length > 0);
     setProgress({});
     try {
+      const first = files[0];
+      const preparation = first && !sessions.current.has(first)
+        ? prepareQcEvidence(endpoint, selected.qc_id, first)
+        : undefined;
+      void preparation?.catch(() => undefined);
       const json = await request({
         action: "save",
         qc_id: selected.qc_id,
@@ -266,7 +271,7 @@ export default function QcChecklistsWorkspace({
         const updateStatus = (status: string) => setProgress(current => ({ ...current, [index]: status }));
         try {
           const confirmed = await uploadQcEvidence(endpoint, selected.qc_id, file, sessions.current.get(file),
-            session => sessions.current.set(file, session), updateStatus);
+            session => sessions.current.set(file, session), updateStatus, index === 0 ? preparation : undefined);
           if (confirmed?.data) await applySavedChecklist(confirmed.data);
           updateStatus("เสร็จแล้ว");
         } catch {
