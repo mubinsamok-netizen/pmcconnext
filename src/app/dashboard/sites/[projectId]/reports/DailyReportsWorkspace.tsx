@@ -1,14 +1,37 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import DataSkeleton from "@/components/DataSkeleton";
+import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { BarChart3, CalendarDays, CheckCircle2, CloudSun, ExternalLink, FileText, Image as ImageIcon, Loader2, Plus, Printer, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
-import { MonthlyReportsPanel } from "./MonthlyReportsPanel";
-import { WeeklyReportsPanel } from "./WeeklyReportsPanel";
+import DailyReportsSkeleton from "./DailyReportsSkeleton";
+
+const WeeklyReportsPanel = dynamic(() => import("./WeeklyReportsPanel").then((module) => module.WeeklyReportsPanel), { loading: () => <DailyReportsSkeleton panel /> });
+const MonthlyReportsPanel = dynamic(() => import("./MonthlyReportsPanel").then((module) => module.MonthlyReportsPanel), { loading: () => <DailyReportsSkeleton panel /> });
+
+async function fetchReports(url: string): Promise<{ success?: boolean; data: ReportRecord[] }> {
+  const response = await fetch(url, { headers: { "X-PMC-No-Global-Loading": "1" } });
+  const result = await response.json();
+  if (!response.ok || result.error) throw new Error(result.error || "โหลดข้อมูลรายงานไม่สำเร็จ");
+  const cutoff = Date.now() - 90_000;
+  return {
+    ...result,
+    data: (result.data || []).map((report: ReportRecord) => ({
+      ...report,
+      pdf_pending: !report.pdf_url && Date.parse(String(report.prepared_at || "")) > cutoff ? "TRUE" : "",
+    })),
+  };
+}
 
 type ReportRecord = Record<string, string | number | undefined>;
+function ReportPdfStatus({ report, refresh }: { report: ReportRecord; refresh: () => void }) {
+  return report.pdf_pending === "TRUE"
+    ? <span role="status" className="text-xs font-semibold text-gray-600">กำลังเตรียม PDF</span>
+    : <button type="button" data-no-global-loading="true" onClick={refresh} className="text-xs font-semibold text-gray-600 underline">PDF ยังไม่พร้อม · ตรวจอีกครั้ง</button>;
+}
+
 type Row = Record<string, string>;
 type RowConfig = { key: string; label: string; type?: string; placeholder?: string };
 type NarrativeField = "work_done" | "issues" | "solutions";
@@ -137,9 +160,25 @@ export function DailyReportsWorkspace({
   const [success, setSuccess] = useState("");
   const [lineWarning, setLineWarning] = useState("");
 
-  const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}`;
-  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetcher);
+  const reportKey = `/api/reports?project_id=${encodeURIComponent(project.project_id)}&view=dashboard`;
+  const { data, error: loadError, isLoading, mutate } = useSWR(reportKey, fetchReports);
   const reports = useMemo(() => (data?.data || []) as ReportRecord[], [data?.data]);
+  const pdfPending = reports.some(report => report.pdf_pending === "TRUE");
+  useEffect(() => {
+    if (!pdfPending) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refreshPdfStatus() {
+      await mutate().catch(() => undefined);
+      if (!stopped) timer = setTimeout(refreshPdfStatus, 2500);
+    }
+    timer = setTimeout(refreshPdfStatus, 2500);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [mutate, pdfPending]);
+
   const latestReport = reports[0];
   const sentCount = reports.filter((report) => report.line_status === "sent").length;
   const failedCount = reports.filter((report) => report.line_status === "failed").length;
@@ -232,17 +271,20 @@ export function DailyReportsWorkspace({
     setSuccess("");
     setLineWarning("");
 
-    const formData = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const formData = new FormData(form);
 
     formData.set("personnel_json", JSON.stringify(personnel));
     formData.set("machinery_json", JSON.stringify(machinery));
     formData.set("materials_json", JSON.stringify(materials));
     formData.set("workers", String(sumRows(personnel, "qty") || formData.get("workers") || ""));
     formData.set("uploaded_photos_json", "[]");
+    formData.set("defer_pdf", "true");
 
     try {
       const response = await fetch("/api/reports", {
         method: "POST",
+        headers: { "X-PMC-No-Global-Loading": "1" },
         body: formData,
       });
       const responseText = await response.text();
@@ -270,9 +312,14 @@ export function DailyReportsWorkspace({
       setMachinery([createEmptyRow(machineryColumns)]);
       setMaterials([createEmptyRow(materialColumns)]);
       setReportDate(todayValue());
-      event.currentTarget.reset();
-      await mutate();
+      form.reset();
       setActiveTab("dashboard");
+      const saved = { ...result.data, pdf_pending: result.data?.pdf_url ? "" : "TRUE" };
+      void mutate((current) => ({
+        ...current,
+        data: [saved, ...(current?.data || []).filter((report: ReportRecord) => report.report_id !== saved.report_id)]
+          .sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))),
+      }), { revalidate: false }).catch(() => undefined);
     } catch (submitError) {
       if (submitError instanceof SyntaxError) {
         setError("บันทึกรายงานไม่สำเร็จ: server ตอบกลับไม่ใช่ JSON อาจเกิดจาก function timeout หรือ deploy ยังไม่อัปเดต");
@@ -310,6 +357,12 @@ export function DailyReportsWorkspace({
         <WeeklyReportsPanel project={project} />
       ) : allowAdvancedReports && activeTab === "monthly" ? (
         <MonthlyReportsPanel project={project} />
+      ) : activeTab === "dashboard" && loadError && !data ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-6">
+          <button type="button" onClick={() => void mutate().catch(() => undefined)} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">ลองโหลดรายงานอีกครั้ง</button>
+        </div>
+      ) : activeTab === "dashboard" && isLoading ? (
+        <DailyReportsSkeleton />
       ) : activeTab === "dashboard" ? (
         <div className="space-y-6">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -349,6 +402,7 @@ export function DailyReportsWorkspace({
                         เปิด/พิมพ์ PDF
                       </a>
                     )}
+                    {!latestReport.pdf_url && <ReportPdfStatus report={latestReport} refresh={() => void mutate()} />}
                     {latestPhotosUrl && (
                       <a href={latestPhotosUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
                         <ImageIcon size={16} />
@@ -396,11 +450,10 @@ export function DailyReportsWorkspace({
                             <div className="flex justify-end gap-3">
                               {report.pdf_url ? (
                                 <a href={String(report.pdf_url)} target="_blank" rel="noreferrer" className="font-semibold text-orange-600 hover:underline">PDF</a>
-                              ) : null}
+                              ) : <ReportPdfStatus report={report} refresh={() => void mutate()} />}
                               {photosUrl ? (
                                 <a href={photosUrl} target="_blank" rel="noreferrer" className="font-semibold text-gray-600 hover:underline">รูป</a>
                               ) : null}
-                              {!report.pdf_url && !photosUrl ? "-" : null}
                             </div>
                           </td>
                         </tr>
@@ -413,7 +466,7 @@ export function DailyReportsWorkspace({
                     )}
                     {isLoading && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-10 text-center text-gray-500">กำลังโหลดข้อมูล...</td>
+                        <td colSpan={5}><DataSkeleton /></td>
                       </tr>
                     )}
                   </tbody>
@@ -423,7 +476,7 @@ export function DailyReportsWorkspace({
           </div>
         </div>
       ) : (
-        <form onSubmit={submitReport} className="space-y-5">
+        <form onSubmit={submitReport} data-no-global-loading="true" className="space-y-5">
           <input type="hidden" name="project_id" value={project.project_id} />
           <input type="hidden" name="project_drive_folder_id" value={project.drive_folder_id || ""} />
           <input type="hidden" name="project_name" value={project.name || project.project_id} />

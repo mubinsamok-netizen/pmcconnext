@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
@@ -80,15 +81,29 @@ async function requireAdmin() {
 }
 
 export async function GET() {
+  const started = performance.now();
+  const timings: string[] = [];
+  const record = (name: string, since: number) => {
+    timings.push(`${name};dur=${(performance.now() - since).toFixed(2)}`);
+  };
+  const timedResponse = (response: NextResponse) => {
+    record("total", started);
+    response.headers.set("Server-Timing", timings.join(", "));
+    return response;
+  };
+
   try {
     const forbidden = await requireAdmin();
-    if (forbidden) return forbidden;
+    record("auth", started);
+    if (forbidden) return timedResponse(forbidden);
 
-    await ensureMasterSchema();
-    const contractors = await findAllMaster("Contractors");
-    return NextResponse.json({ success: true, data: contractors.filter(isActive) });
+
+    const readStarted = performance.now();
+    const contractors = await readMasterMenuData("Contractors", () => findAllMaster("Contractors", undefined, { fresh: true }), 120);
+    record("contractor_read", readStarted);
+    return timedResponse(NextResponse.json({ success: true, data: contractors.filter(isActive) }));
   } catch (error) {
-    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
+    return timedResponse(NextResponse.json({ error: errorMessage(error) }, { status: 500 }));
   }
 }
 

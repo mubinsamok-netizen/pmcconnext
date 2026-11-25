@@ -1,6 +1,5 @@
-import { getServerSession } from "next-auth";
 import { FileText } from "lucide-react";
-import { authOptions } from "@/lib/authOptions";
+import { getCurrentSession } from "@/lib/currentSession";
 import { getMasterProject } from "@/lib/masterProjects";
 import { isForemanRole } from "@/lib/siteAccess";
 import { SiteShell } from "../SiteShell";
@@ -10,8 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SiteReportsPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = await getMasterProject(projectId);
-  const session = await getServerSession(authOptions);
+  const [project, session] = await Promise.all([getMasterProject(projectId), getCurrentSession()]);
   const allowAdvancedReports = !isForemanRole(session?.user?.role);
 
   return (

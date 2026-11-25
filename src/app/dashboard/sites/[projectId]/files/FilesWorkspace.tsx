@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import {
   AlertCircle,
   CheckCircle2,
@@ -17,9 +18,13 @@ import {
 import NextImage from "next/image";
 import { useMemo, useRef, useState, useTransition, type ComponentType } from "react";
 import useSWR from "swr";
+import PaginationControls from "@/components/PaginationControls";
+import FileSourceStatus from "@/components/FileSourceStatus";
 import { fetcher } from "@/lib/fetcher";
 import type { MasterProject } from "@/lib/masterProjects";
-import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
+import { prepareDocumentUpload, uploadProjectDocumentDirectly, type DirectDocumentUploadInput, type DirectDocumentUploadResult, type DocumentUploadProgress } from "@/lib/directDriveDocumentUpload";
+import { usePagination } from "@/lib/usePagination";
+import { useDriveFiles } from "@/lib/useDriveFiles";
 
 type ProjectDocument = Record<string, string | number | undefined> & {
   document_id: string;
@@ -543,18 +548,72 @@ function PhotoPreviewDialog({
 
 export function FilesWorkspace({ project }: { project: MasterProject }) {
   const projectId = encodeURIComponent(project.project_id);
+  const driveFilesKey = `/api/sites/${projectId}/drive-files`;
   const documents = useSWR<{ success?: boolean; data?: ProjectDocument[]; error?: string }>(`/api/sites/${projectId}/documents`, fetcher);
   const defects = useSWR<{ success?: boolean; rounds?: DefectRound[]; items?: DefectItem[]; evidence?: DefectEvidence[]; error?: string }>(`/api/sites/${projectId}/defects`, fetcher);
-  const driveFiles = useSWR<{ success?: boolean; data?: DriveFolderFile[]; error?: string }>(`/api/sites/${projectId}/drive-files`, fetcher);
+  const driveFiles = useDriveFiles(project.drive_folder_id ? driveFilesKey : null);
+  const [driveRefreshing, setDriveRefreshing] = useState(false);
+  const [driveRefreshError, setDriveRefreshError] = useState("");
+  const refreshDriveFiles = async () => {
+    setDriveRefreshing(true);
+    setDriveRefreshError("");
+    try {
+      await driveFiles.refresh();
+    } catch {
+      setDriveRefreshError("รีเฟรช Google Drive ไม่สำเร็จ รายการเดิมยังใช้งานได้ กรุณาลองอีกครั้ง");
+    } finally {
+      setDriveRefreshing(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<DocumentUploadProgress | null>(null);
+  const [uploadName, setUploadName] = useState("");
+  const [confirmUpload, setConfirmUpload] = useState<(() => Promise<DirectDocumentUploadResult>) | null>(null);
   const [openDrivePending, setOpenDrivePending] = useState(false);
   const [activePhotoFolder, setActivePhotoFolder] = useState("");
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
+
+  const preparation = useRef<{
+    key: string;
+    expires: number;
+    session: ReturnType<typeof prepareDocumentUpload>;
+  } | null>(null);
+  const prepareTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const getUploadInput = (formData: FormData, file: File): DirectDocumentUploadInput => ({
+    endpoint: `/api/sites/${projectId}/documents`,
+    category: String(formData.get("category") || "other"),
+    title: String(formData.get("title") || ""),
+    notes: String(formData.get("notes") || ""),
+    file,
+  });
+  const uploadKey = (input: DirectDocumentUploadInput) => JSON.stringify([
+    input.endpoint, input.category, input.title, input.notes,
+    input.file.name, input.file.size, input.file.type, input.file.lastModified,
+  ]);
+
+  const prepareFromForm = (form: HTMLFormElement) => {
+    clearTimeout(prepareTimer.current);
+    preparation.current = null;
+    if (isPending || confirmUpload || !project.drive_folder_id) return;
+    prepareTimer.current = setTimeout(() => {
+      if (!form.isConnected) return;
+      const data = new FormData(form);
+      const file = data.get("file");
+      if (!(file instanceof File) || !file.size || !String(data.get("title") || "").trim()) return;
+      const input = getUploadInput(data, file);
+      const session = prepareDocumentUpload(input, true);
+      preparation.current = { key: uploadKey(input), expires: Date.now() + 30_000, session };
+      void session.catch(() => {
+        if (preparation.current?.session === session) preparation.current = null;
+      });
+    }, 400);
+  };
 
   const files = useMemo(
     () => collectFiles(documents.data?.data || [], defects.data, driveFiles.data?.data || []),
@@ -572,6 +631,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
         .includes(normalized);
     });
   }, [activePhotoFolder, activeTab, files, query]);
+  const pagination = usePagination(filteredFiles, 20, JSON.stringify([projectId, activeTab, query, activePhotoFolder]));
   const photoFolders = useMemo(() => {
     const folderCounts = new Map<string, number>();
     files.filter(isPhotoFile).forEach((file) => {
@@ -591,38 +651,53 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
       }));
   }, [files]);
 
-  const uploadPdf = (formData: FormData) => {
+  const finishUpload = async (uploadedDocument: DirectDocumentUploadResult) => {
+    setConfirmUpload(null);
+    setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
+    pagination.setPage(1);
+    formRef.current?.reset();
+    await documents.mutate((current) => ({
+      success: true,
+      data: [uploadedDocument, ...(current?.data || []).filter((doc) => doc.document_id !== uploadedDocument.document_id)],
+    }), { revalidate: false });
+    void documents.mutate().catch(() => undefined);
+    void refreshDriveFiles();
+  };
+
+  const runUpload = (perform: () => Promise<DirectDocumentUploadResult>) => {
     setUploadError("");
-    setUploadMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
+    setUploadMessage("");
     startTransition(async () => {
       try {
-        const file = formData.get("file");
-        if (!(file instanceof File)) {
-          setUploadError("กรุณาเลือกไฟล์ PDF");
-          setUploadMessage("");
-          return;
-        }
-
-        const uploadedDocument = await uploadProjectDocumentDirectly({
-          endpoint: `/api/sites/${projectId}/documents`,
-          category: String(formData.get("category") || "other"),
-          title: String(formData.get("title") || file.name),
-          notes: String(formData.get("notes") || ""),
-          file,
-        });
-
-        setUploadMessage("อัปโหลดเข้า Drive และบันทึก Version History แล้ว");
-        formRef.current?.reset();
-        await documents.mutate((current) => ({
-          success: true,
-          data: [uploadedDocument, ...(current?.data || [])],
-        }), { revalidate: true });
-        await driveFiles.mutate();
+        await finishUpload(await perform());
       } catch (error: unknown) {
         setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
-        setUploadMessage("");
+      } finally {
+        setUploadProgress(null);
       }
     });
+  };
+
+  const uploadPdf = (formData: FormData) => {
+    if (isPending || confirmUpload) return;
+    const file = formData.get("file");
+    if (!(file instanceof File)) {
+      setUploadError("กรุณาเลือกไฟล์ PDF");
+      return;
+    }
+    clearTimeout(prepareTimer.current);
+    const input = getUploadInput(formData, file);
+    const candidate = preparation.current;
+    preparation.current = null;
+    setUploadName(file.name);
+    runUpload(() => uploadProjectDocumentDirectly({
+      ...input,
+      preparedSession: candidate && candidate.expires > Date.now() && candidate.key === uploadKey(input)
+        ? candidate.session.catch(() => prepareDocumentUpload(input, true))
+        : undefined,
+      onProgress: setUploadProgress,
+      onConfirmReady: (confirm) => setConfirmUpload(() => confirm),
+    }));
   };
 
   const openSelectedCategoryFolder = async () => {
@@ -667,8 +742,16 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
   const totalEvidence = files.filter((file) => file.kind === "acknowledgement").length;
   const totalPhotos = files.filter((file) => file.kind === "defect_photo" || file.kind === "drive_image").length;
   const driveUrl = buildDriveFolderUrl(project.drive_folder_id);
-  const isLoading = documents.isLoading || defects.isLoading || driveFiles.isLoading;
-  const loadError = documents.data?.error || defects.data?.error || driveFiles.data?.error;
+  // Uploaded documents and defect files render as soon as they arrive; Drive fills in afterwards.
+  const isLoading = filteredFiles.length === 0 && (
+    ((activeTab === "all" || activeTab === "documents") && documents.isLoading) ||
+    (["all", "defects", "acknowledgement", "photos"].includes(activeTab) && defects.isLoading) ||
+    (["drive", "photos"].includes(activeTab) && Boolean(project.drive_folder_id) && driveFiles.isLoading)
+  );
+  const driveLoading = driveFiles.isLoading || driveRefreshing;
+  const driveError = driveRefreshError || (driveFiles.error ? "ลองโหลดไฟล์จาก Google Drive ต่ออัตโนมัติแล้วแต่ยังไม่สำเร็จ รายการที่โหลดแล้วใช้งานได้ กรุณาลองอีกครั้ง" : "");
+  const documentsError = documents.data?.error || (documents.error ? "โหลดเอกสารอัปโหลดไม่สำเร็จ" : "");
+  const defectsError = defects.data?.error || (defects.error ? "โหลดไฟล์ Defect ไม่สำเร็จ" : "");
 
   return (
     <div className="space-y-5">
@@ -681,10 +764,12 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <aside className="space-y-4">
+        <aside className="min-w-0 space-y-4">
           <form
             ref={formRef}
             className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+            data-no-global-loading="true"
+            onChange={(event) => prepareFromForm(event.currentTarget)}
             action={uploadPdf}
           >
             <div className="mb-4 flex items-center gap-2">
@@ -700,10 +785,26 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
               <input name="title" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="ชื่อเอกสาร" required />
               <input name="file" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" type="file" accept="application/pdf,.pdf" required />
               <textarea name="notes" className="min-h-20 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="หมายเหตุ" />
+              {uploadProgress && (
+                <div role="status" className="space-y-1 rounded-lg border border-orange-100 bg-orange-50 p-3 text-sm text-orange-900">
+                  <p className="break-all font-semibold">{uploadName}</p>
+                  {uploadProgress.stage === "upload" ? (
+                    <>
+                      <p>ส่งไป Google Drive {uploadProgress.percent}%</p>
+                      <progress className="w-full" aria-label="เปอร์เซ็นต์อัปโหลด PDF" value={uploadProgress.percent} max={100} />
+                    </>
+                  ) : <p>{uploadProgress.stage === "prepare" ? "กำลังเตรียมช่องทางอัปโหลด" : "กำลังตรวจไฟล์ใน Drive และบันทึกรายการ"}</p>}
+                </div>
+              )}
+              {confirmUpload && uploadError && (
+                <button type="button" disabled={isPending} onClick={() => runUpload(confirmUpload)} className="text-sm font-bold text-orange-800 underline">
+                  ลองยืนยันไฟล์เดิมอีกครั้ง
+                </button>
+              )}
               {uploadError ? <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{uploadError}</p> : null}
               {uploadMessage ? <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">{uploadMessage}</p> : null}
-              <button disabled={isPending || !driveUrl} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
-                {isPending ? <RefreshCw className="animate-spin" size={16} /> : <Upload size={16} />}
+              <button disabled={isPending || Boolean(confirmUpload) || !driveUrl} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                <Upload size={16} />
                 {driveUrl ? "อัปโหลดตรงไป Drive" : "ต้องตั้งค่า Drive Folder ก่อน"}
               </button>
               <button
@@ -741,7 +842,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
           </div>
         </aside>
 
-        <section className="space-y-4">
+        <section className="min-w-0 space-y-4">
           <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap gap-2">
@@ -794,21 +895,42 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
             </div>
           </div>
 
-          {loadError ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700">
-              {loadError}
+          <FileSourceStatus label="เอกสารอัปโหลด" loading={documents.isLoading} error={documentsError} onRetry={() => { void documents.mutate().catch(() => undefined); }} />
+          <FileSourceStatus label="ไฟล์ Defect" loading={defects.isLoading} error={defectsError} onRetry={() => { void defects.mutate().catch(() => undefined); }} />
+
+          {project.drive_folder_id ? (
+            <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600">
+              {driveLoading ? <div className="min-w-0 flex-1"><DataSkeleton rows={1} label="กำลังเตรียมไฟล์จาก Google Drive" /><p className="text-xs">พบแล้ว {totalDriveFiles} ไฟล์ เปิดรายการที่พร้อมได้ก่อน</p></div> : <span className={driveError ? "font-semibold text-red-700" : ""}>{driveError || `โหลดไฟล์จาก Google Drive ครบแล้ว ${totalDriveFiles} ไฟล์ (กดรีเฟรชเพื่ออ่านข้อมูลล่าสุด)`}</span>}
+              <button
+                type="button"
+                onClick={() => { if (driveFiles.error && !driveRefreshError) driveFiles.retry(); else void refreshDriveFiles(); }}
+                disabled={driveLoading}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw size={14} />
+                {driveFiles.error && !driveRefreshError ? "ลองโหลดต่อ" : "รีเฟรชจาก Drive"}
+              </button>
             </div>
           ) : null}
 
+          {!driveFiles.data.complete && project.drive_folder_id && <p role="status" className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">กำลังรวบรวมไฟล์ทั้งหมดของไซต์ รวมถึง Daily Report ยอดรวมและผลค้นหาจะเพิ่มขึ้นจนกว่าจะโหลดครบ</p>}
+
+          {!isLoading && (
+            <PaginationControls
+              page={pagination.page}
+              pageSize={pagination.pageSize}
+              total={pagination.total}
+              onPageChange={pagination.setPage}
+              label="แบ่งหน้าไฟล์"
+            />
+          )}
+
           {isLoading ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm font-semibold text-gray-500">
-              <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
-              กำลังโหลดไฟล์
-            </div>
+            <DataSkeleton />
           ) : activeTab === "photos" ? (
-            <PhotoGallery files={filteredFiles.filter(isPhotoFile)} onPreview={setPreviewFile} />
+            <PhotoGallery files={pagination.items.filter(isPhotoFile)} onPreview={setPreviewFile} />
           ) : (
-            <FilesTable files={filteredFiles} />
+            <FilesTable files={pagination.items} />
           )}
 
           <div className="grid gap-3 md:grid-cols-3">

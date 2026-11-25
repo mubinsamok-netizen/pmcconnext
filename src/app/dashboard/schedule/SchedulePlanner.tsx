@@ -1,9 +1,11 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { preconnect } from "react-dom";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
-import useSWR from "swr";
+import useSWR, { mutate as mutateScheduleCache } from "swr";
 import {
   ArrowDown,
   ArrowUp,
@@ -40,7 +42,10 @@ import {
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { CUSTOMER_DECISION_PHASES, CUSTOMER_DECISION_STATUSES } from "@/lib/customerDecisions";
-import { fetcher } from "@/lib/fetcher";
+import { DECISION_EVIDENCE_MAX_FILES, DECISION_EVIDENCE_MAX_FILE_SIZE, DECISION_EVIDENCE_MAX_TOTAL_SIZE } from "@/lib/decisionEvidenceUpload";
+import { prepareDecisionEvidence, uploadDecisionEvidence, type EvidenceUploadSession } from "@/lib/directDriveDecisionEvidenceUpload";
+import { DecisionEvidenceUploadProgress, type EvidenceUpload } from "./DecisionEvidenceProgress";
+import ScheduleSkeleton from "./ScheduleSkeleton";
 import { downloadScheduleWorkbook } from "@/lib/scheduleExcel";
 import ScheduleTemplateLibrary from "./ScheduleTemplateLibrary";
 
@@ -122,12 +127,6 @@ type DecisionEvidenceFile = {
   file_name?: string;
   file_url?: string;
   mime_type?: string;
-};
-
-type UploadPayload = {
-  name: string;
-  type: string;
-  dataUrl: string;
 };
 
 type TaskForm = {
@@ -304,8 +303,6 @@ const GANTT_PRINT_HEADER_HEIGHT = 86;
 const GANTT_PRINT_ROW_HEIGHT = 34;
 const DECISION_SAVE_TIMEOUT_MS = 25000;
 const DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS = 90000;
-const DECISION_EVIDENCE_MAX_FILE_SIZE = 10 * 1024 * 1024;
-const DECISION_EVIDENCE_MAX_TOTAL_SIZE = 25 * 1024 * 1024;
 
 const emptyTaskForm: TaskForm = {
   name: "",
@@ -957,16 +954,8 @@ function parseDecisionEvidence(value?: string | number) {
   }
 }
 
-async function fileToUploadPayload(file: File) {
-  return new Promise<UploadPayload>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: String(reader.result || "") });
-    reader.onerror = () => reject(new Error("อ่านไฟล์แนบไม่สำเร็จ"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function validateDecisionEvidenceFiles(files: File[]) {
+  if (files.length > DECISION_EVIDENCE_MAX_FILES) throw new Error("แนบหลักฐานได้ไม่เกิน 10 ไฟล์ต่อครั้ง");
   const oversized = files.find((file) => file.size > DECISION_EVIDENCE_MAX_FILE_SIZE);
   if (oversized) {
     throw new Error(`ไฟล์ "${oversized.name}" ใหญ่เกิน 10 MB กรุณาลดขนาดไฟล์ก่อนแนบ`);
@@ -983,9 +972,9 @@ async function postDecisionJson(projectId: string, body: Record<string, unknown>
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
+    const res = await fetchWithAttachmentLimit(`/api/sites/${encodeURIComponent(projectId)}/customer-decisions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-PMC-No-Global-Loading": "1" },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -1004,6 +993,9 @@ async function postDecisionJson(projectId: string, body: Record<string, unknown>
   }
 }
 
+const fetchScheduleData = (url: string) =>
+  fetch(url, { headers: { "X-PMC-No-Global-Loading": "1" } }).then((response) => response.json());
+
 export default function SchedulePlanner({ projects, showPageHeader = false }: { projects: Project[]; showPageHeader?: boolean }) {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => getInitialTab(searchParams.get("tab")));
@@ -1018,6 +1010,23 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const [milestoneForm, setMilestoneForm] = useState<MilestoneForm>(emptyMilestoneForm);
   const [decisionForm, setDecisionForm] = useState<CustomerDecisionForm>(emptyDecisionForm);
   const [decisionEvidenceFiles, setDecisionEvidenceFiles] = useState<File[]>([]);
+  const preparedEvidence = useRef<{ source: File[]; result: Promise<File[]> } | null>(null);
+  const warmedEvidenceProject = useRef("");
+  useEffect(() => {
+    if (!decisionEvidenceFiles.length) return;
+    const result = prepareDecisionEvidence(decisionEvidenceFiles);
+    preparedEvidence.current = { source: decisionEvidenceFiles, result };
+    void result.catch(() => undefined);
+  }, [decisionEvidenceFiles]);
+  useEffect(() => {
+    if (!showDecisionForm || !selectedProject || !decisionEvidenceFiles.length || warmedEvidenceProject.current === selectedProject) return;
+    warmedEvidenceProject.current = selectedProject;
+    preconnect("https://www.googleapis.com");
+    void postDecisionJson(selectedProject, { action: "prepare_evidence_context" }, DECISION_SAVE_TIMEOUT_MS, "")
+      .catch(() => { if (warmedEvidenceProject.current === selectedProject) warmedEvidenceProject.current = ""; });
+  }, [decisionEvidenceFiles.length, selectedProject, showDecisionForm]);
+  const [evidenceUploads, setEvidenceUploads] = useState<EvidenceUpload[]>([]);
+  const evidenceInFlight = useRef(new Set<string>());
   const [currentDecisionPhase, setCurrentDecisionPhase] = useState<string>("โครงสร้าง");
   const [saving, setSaving] = useState(false);
   const [importingScheduleTemplate, setImportingScheduleTemplate] = useState(false);
@@ -1050,9 +1059,9 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const milestoneKey = selectedProject ? `/api/milestones?project_id=${selectedProject}` : null;
   const decisionKey = selectedProject && activeTab === "decisions" ? `/api/sites/${encodeURIComponent(selectedProject)}/customer-decisions` : null;
 
-  const { data: taskRes, isLoading: tasksLoading, mutate: mutateTasks } = useSWR<ApiListResponse<Task>>(taskKey, fetcher);
-  const { data: milestoneRes, isLoading: milestonesLoading, mutate: mutateMilestones } = useSWR<ApiListResponse<Milestone>>(milestoneKey, fetcher);
-  const { data: decisionRes, isLoading: decisionsLoading, mutate: mutateDecisions } = useSWR<CustomerDecisionResponse>(decisionKey, fetcher);
+  const { data: taskRes, isLoading: tasksLoading, mutate: mutateTasks } = useSWR<ApiListResponse<Task>>(taskKey, fetchScheduleData);
+  const { data: milestoneRes, isLoading: milestonesLoading, mutate: mutateMilestones } = useSWR<ApiListResponse<Milestone>>(milestoneKey, fetchScheduleData);
+  const { data: decisionRes, isLoading: decisionsLoading, mutate: mutateDecisions } = useSWR<CustomerDecisionResponse>(decisionKey, fetchScheduleData);
 
   const tasks = useMemo(() => (taskRes?.data ?? []).map(normalizeTask), [taskRes?.data]);
   const milestones = useMemo(() => milestoneRes?.data ?? [], [milestoneRes?.data]);
@@ -1185,16 +1194,17 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
     }
   }
 
-  const isLoading = tasksLoading || milestonesLoading;
+  const printDataPending = tasksLoading || milestonesLoading;
   const showProjectSelector = projects.length > 1;
 
   const handlePrint = (target: Exclude<PrintTarget, null>) => {
+    if (printDataPending) return;
     setPrintTarget(target);
     window.setTimeout(() => window.print(), 80);
   };
 
   const handleExportExcel = async () => {
-    if (!selectedProjectData || exportingExcel) return;
+    if (!selectedProjectData || exportingExcel || printDataPending) return;
     setExportingExcel(true);
     setMessage("");
 
@@ -1804,6 +1814,9 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
 
     try {
       validateDecisionEvidenceFiles(decisionEvidenceFiles);
+      if (decisionEvidenceFiles.length && evidenceInFlight.current.has(JSON.stringify([selectedProject, decisionForm.decision_id]))) {
+        throw new Error("รายการนี้กำลังอัปโหลดหลักฐาน กรุณารอให้เสร็จก่อน");
+      }
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
       return;
@@ -1813,7 +1826,11 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
     setMessage(decisionEvidenceFiles.length > 0 ? "กำลังบันทึกรายการก่อน แล้วจะอัปโหลดหลักฐานต่อให้" : "");
 
     try {
-      const evidenceFilesToUpload = [...decisionEvidenceFiles];
+      const evidenceFilesToUpload = decisionEvidenceFiles.length
+        ? await (preparedEvidence.current?.source === decisionEvidenceFiles
+          ? preparedEvidence.current.result
+          : prepareDecisionEvidence(decisionEvidenceFiles))
+        : [];
       const decisionPayload = {
         action: "save",
         ...decisionForm,
@@ -1821,10 +1838,10 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
       };
       const json = await postDecisionJson(selectedProject, {
         ...decisionPayload,
-        evidence_uploads: [],
+        ...(evidenceFilesToUpload.length && { upload_files: evidenceFilesToUpload.map(({ name, size }) => ({ name, size })) }),
       }, DECISION_SAVE_TIMEOUT_MS, "บันทึกรายการนานเกินไป กรุณาลองใหม่อีกครั้ง");
 
-      await mutateDecisions();
+      void mutateDecisions().catch(() => undefined);
       setCurrentDecisionPhase(resolvedPhase);
       setShowDecisionForm(false);
       setDecisionEvidenceFiles([]);
@@ -1832,7 +1849,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
       if (evidenceFilesToUpload.length > 0 && savedDecisionId) {
         setSaving(false);
         setMessage("บันทึกรายการแล้ว กำลังอัปโหลดหลักฐานต่อเบื้องหลัง...");
-        void uploadDecisionEvidenceInBackground(selectedProject, savedDecisionId, evidenceFilesToUpload, decisionPayload);
+        void uploadDecisionEvidenceInBackground(selectedProject, savedDecisionId, decisionForm.title, evidenceFilesToUpload, json.upload_sessions);
         return;
       }
 
@@ -1847,20 +1864,50 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
   const uploadDecisionEvidenceInBackground = async (
     projectId: string,
     decisionId: string,
+    title: string,
     files: File[],
-    decisionPayload: Record<string, unknown>
+    sessions?: EvidenceUploadSession[],
   ) => {
-    try {
-      const evidenceUploads = await Promise.all(files.map(fileToUploadPayload));
-      await postDecisionJson(projectId, {
-        ...decisionPayload,
-        decision_id: decisionId,
-        evidence_uploads: evidenceUploads,
-      }, DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS, "อัปโหลดหลักฐานนานเกินไป รายการถูกบันทึกแล้ว แต่ไฟล์ยังไม่สำเร็จ กรุณาแนบใหม่ภายหลัง");
-      await mutateDecisions();
+    const key = JSON.stringify([projectId, decisionId]);
+    if (evidenceInFlight.current.has(key)) return;
+    const job: EvidenceUpload = { id: key, title, files: files.map((file) => ({ name: file.name, stage: "prepare", percent: 0 })) };
+    const post = (body: Record<string, unknown>) =>
+      postDecisionJson(projectId, body, DECISION_EVIDENCE_UPLOAD_TIMEOUT_MS, "จัดการไฟล์หลักฐานนานเกินไป กรุณาลองอีกครั้ง");
+    const updateJob = (update: (current: EvidenceUpload) => EvidenceUpload) =>
+      setEvidenceUploads((current) => current.map((item) => item.id === key ? update(item) : item));
+    const refresh = () => {
+      const endpoint = `/api/sites/${encodeURIComponent(projectId)}/customer-decisions`;
+      void mutateScheduleCache(endpoint, fetchScheduleData(endpoint), { revalidate: false }).catch(() => undefined);
+    };
+    const confirm = async (ids: string[]) => {
+      await post({ action: "attach_evidence", decision_id: decisionId, file_ids: ids });
+      setEvidenceUploads((current) => current.filter((item) => item.id !== key));
+      refresh();
       setMessage("บันทึกรายการและอัปโหลดหลักฐานเรียบร้อยแล้ว");
+    };
+    const confirmOrOfferRetry = async (ids: string[]) => {
+      try {
+        await confirm(ids);
+      } catch (error: unknown) {
+        updateJob((current) => ({ ...current, error: getErrorMessage(error), retry: () => {
+          if (evidenceInFlight.current.has(key)) return;
+          evidenceInFlight.current.add(key);
+          updateJob((item) => ({ ...item, error: undefined, retry: undefined }));
+          void confirmOrOfferRetry(ids).finally(() => evidenceInFlight.current.delete(key));
+        } }));
+      }
+    };
+    evidenceInFlight.current.add(key);
+    setEvidenceUploads((current) => [...current.filter((item) => item.id !== key), job]);
+    try {
+      const ids = await uploadDecisionEvidence(decisionId, files, post, (index, file) => {
+        updateJob((current) => ({ ...current, files: current.files.map((entry, position) => position === index ? file : entry) }));
+      }, sessions);
+      await confirmOrOfferRetry(ids);
     } catch (error: unknown) {
-      setMessage(`${getErrorMessage(error)} (รายการถูกบันทึกแล้ว สามารถแก้ไขรายการเพื่อแนบหลักฐานใหม่ได้)`);
+      updateJob((current) => ({ ...current, error: `${getErrorMessage(error)} สามารถแก้ไขรายการเพื่อแนบหลักฐานใหม่ได้` }));
+    } finally {
+      evidenceInFlight.current.delete(key);
     }
   };
 
@@ -2051,6 +2098,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
           {message}
         </div>
       )}
+      <DecisionEvidenceUploadProgress uploads={evidenceUploads} />
 
       {shareUrl && (
         <div className="schedule-screen-only flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:flex-row sm:items-center">
@@ -2077,7 +2125,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
         <TaskTrackerPanel
           tasks={leafTasks}
           allTasks={sortedTasks}
-          loading={isLoading}
+          loading={tasksLoading}
           saving={saving}
           projectName={selectedProjectData?.name || "-"}
           onCreateTask={() => openNewTask("subtask")}
@@ -2094,11 +2142,13 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
           fullTimeline={timeline}
           focusRange={ganttFocusRange}
           todayLeft={todayLeft}
-          loading={isLoading}
+          loading={tasksLoading}
           showDatedOnly={ganttDatedOnly}
           expanded={ganttExpanded}
           importingTemplate={importingScheduleTemplate}
           exportingExcel={exportingExcel}
+          printDataPending={printDataPending}
+          milestonesLoading={milestonesLoading}
           onCreateTask={() => openNewTask("subtask")}
           onCreateHeading={() => openNewTask("heading")}
           onCreateSubtask={(parentTaskId) => openNewTask("subtask", parentTaskId)}
@@ -2138,6 +2188,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
               <button
                 type="button"
                 onClick={() => handlePrint("plan")}
+                disabled={printDataPending}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-semibold"
               >
                 <Printer size={16} />
@@ -2246,12 +2297,9 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
                 </tr>
               </thead>
               <tbody>
-                {isLoading ? (
+                {tasksLoading ? (
                   <tr>
-                    <td colSpan={11} className="px-4 py-16 text-center text-gray-400">
-                      <Loader2 className="inline animate-spin mr-2" size={18} />
-                      กำลังโหลดแผนงาน...
-                    </td>
+                    <td colSpan={11}><ScheduleSkeleton label="กำลังเตรียมแผนงาน" /></td>
                   </tr>
                 ) : filteredTasks.length === 0 ? (
                   <tr>
@@ -2470,7 +2518,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
                 milestones={sortedMilestones}
                 timeline={timeline}
                 todayLeft={todayLeft}
-                loading={isLoading}
+                loading={tasksLoading}
                 onEditMilestone={openEditMilestone}
                 onEditTaskDate={openDateEditTask}
                 onToggleHeading={toggleHeading}
@@ -2486,7 +2534,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
           </div>
 
           <aside className="grid grid-cols-1 gap-5 p-5 pt-0 lg:grid-cols-2">
-            <MilestonePanel milestones={sortedMilestones} onEdit={openEditMilestone} />
+            <MilestonePanel loading={milestonesLoading} milestones={sortedMilestones} onEdit={openEditMilestone} />
             <OverallStatus stats={stats} totalTasks={stats.total} />
           </aside>
         </div>
@@ -2503,6 +2551,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
               <button
                 type="button"
                 onClick={() => handlePrint("gantt")}
+                disabled={printDataPending}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-semibold"
               >
                 <Printer size={16} />
@@ -2533,7 +2582,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
               milestones={sortedMilestones}
               timeline={timeline}
               todayLeft={todayLeft}
-              loading={isLoading}
+              loading={tasksLoading}
               onEditMilestone={openEditMilestone}
               onEditTaskDate={openDateEditTask}
               onToggleHeading={toggleHeading}
@@ -2547,7 +2596,7 @@ export default function SchedulePlanner({ projects, showPageHeader = false }: { 
             />
 
             <aside className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              <MilestonePanel milestones={sortedMilestones} onEdit={openEditMilestone} />
+              <MilestonePanel loading={milestonesLoading} milestones={sortedMilestones} onEdit={openEditMilestone} />
               <OverallStatus stats={stats} totalTasks={stats.total} />
             </aside>
           </div>
@@ -2809,6 +2858,8 @@ function UnifiedScheduleWorkspace({
   expanded,
   importingTemplate,
   exportingExcel,
+  printDataPending,
+  milestonesLoading,
   onCreateTask,
   onCreateHeading,
   onCreateSubtask,
@@ -2840,6 +2891,8 @@ function UnifiedScheduleWorkspace({
   expanded: boolean;
   importingTemplate: boolean;
   exportingExcel: boolean;
+  printDataPending: boolean;
+  milestonesLoading: boolean;
   onCreateTask: () => void;
   onCreateHeading: () => void;
   onCreateSubtask: (parentTaskId: string) => void;
@@ -3044,11 +3097,11 @@ function UnifiedScheduleWorkspace({
           <button type="button" onClick={onOpenTemplate} disabled={importingTemplate}>
             <FileSpreadsheet size={17} /> แม่แบบแผนงาน
           </button>
-          <button type="button" onClick={onExportExcel} disabled={exportingExcel} title="ดาวน์โหลดแผนงานและ Gantt เป็นไฟล์ Excel">
+          <button type="button" onClick={onExportExcel} disabled={exportingExcel || printDataPending} title="ดาวน์โหลดแผนงานและ Gantt เป็นไฟล์ Excel">
             {exportingExcel ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
             {exportingExcel ? "กำลังสร้าง..." : "Excel"}
           </button>
-          <button type="button" onClick={onPrint} title="พิมพ์แผนงานตามช่วงเวลาที่กำลังแสดง">
+          <button type="button" onClick={onPrint} disabled={printDataPending} title="พิมพ์แผนงานตามช่วงเวลาที่กำลังแสดง">
             <Printer size={17} /> พิมพ์ที่แสดง
           </button>
         </div>
@@ -3151,6 +3204,9 @@ function UnifiedScheduleWorkspace({
                 ))}
               </div>
               {todayLeft !== null && <span className="unified-schedule-today-head" style={{ left: `${todayLeft}%` }}>วันนี้</span>}
+              {milestonesLoading && (
+                <div role="status" aria-label="กำลังเตรียม Milestones" className="pointer-events-none absolute right-2 top-1 h-2 w-16 rounded bg-gray-200 motion-safe:animate-pulse" />
+              )}
               {milestonePositions.map(({ milestone, left }) => (
                 <button
                   key={milestone.milestone_id}
@@ -3166,7 +3222,7 @@ function UnifiedScheduleWorkspace({
           </div>
 
           {loading ? (
-            <div className="unified-schedule-loading"><Loader2 size={20} className="animate-spin" /> กำลังโหลดแผนงาน...</div>
+            <ScheduleSkeleton label="กำลังเตรียมแผนงาน" />
           ) : displayTasks.length === 0 ? (
             <div className="unified-schedule-loading">ยังไม่มีงานที่แสดงในแผนงาน</div>
           ) : displayTasks.map((task) => {
@@ -3412,10 +3468,7 @@ function GanttPanel({
             <GanttOverlay timeline={timeline} milestones={milestones} todayLeft={todayLeft} onEditMilestone={onEditMilestone} />
 
             {loading ? (
-              <div className="h-80 flex items-center justify-center text-gray-400">
-                <Loader2 className="animate-spin mr-2" size={20} />
-                กำลังโหลด Gantt Chart...
-              </div>
+              <ScheduleSkeleton label="กำลังเตรียม Gantt Chart" />
             ) : tasks.length === 0 ? (
               <div className="h-80 grid place-items-center text-gray-400">
                 {showDatedOnly ? "ยังไม่มีงานที่ใส่วันที่สำหรับ Gantt Chart" : "ยังไม่มี task สำหรับโครงการนี้"}
@@ -3610,10 +3663,7 @@ function CustomerDecisionPanel({
 
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               {loading ? (
-                <div className="col-span-full rounded-xl border border-dashed border-orange-200 bg-white p-6 text-center text-sm text-orange-700">
-                  <Loader2 className="mr-2 inline animate-spin" size={16} />
-                  กำลังโหลดรายการ...
-                </div>
+                <div className="col-span-full"><ScheduleSkeleton label="กำลังเตรียมรายการตัดสินใจ" rows={2} /></div>
               ) : highlightedDecisions.length === 0 ? (
                 <div className="col-span-full rounded-xl border border-dashed border-orange-200 bg-white p-6 text-center text-sm text-orange-700">
                   ไม่มีรายการที่ผูกกับช่วงงานนี้
@@ -3778,10 +3828,7 @@ function DecisionTable({
         <tbody className="divide-y divide-gray-100">
           {loading ? (
             <tr>
-              <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
-                <Loader2 className="mr-2 inline animate-spin" size={16} />
-                กำลังโหลดรายการ...
-              </td>
+              <td colSpan={6}><ScheduleSkeleton label="กำลังเตรียมรายการตัดสินใจ" /></td>
             </tr>
           ) : decisions.length === 0 ? (
             <tr>
@@ -4015,10 +4062,7 @@ function TaskTrackerPanel({
 
       <div className="p-5 bg-gray-50">
         {loading ? (
-          <div className="h-[420px] flex items-center justify-center text-gray-400">
-            <Loader2 className="animate-spin mr-2" size={20} />
-            กำลังโหลด Task Tracker...
-          </div>
+          <ScheduleSkeleton label="กำลังเตรียม Task Tracker" />
         ) : (
           <div className="flex gap-5 overflow-x-auto pb-3 custom-scrollbar">
             {TASK_STATUSES.map((status) => {
@@ -4126,7 +4170,7 @@ function TaskTrackerPanel({
   );
 }
 
-function MilestonePanel({ milestones, onEdit }: { milestones: Milestone[]; onEdit: (milestone: Milestone) => void }) {
+function MilestonePanel({ loading, milestones, onEdit }: { loading: boolean; milestones: Milestone[]; onEdit: (milestone: Milestone) => void }) {
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
       <div className="flex items-center gap-2 mb-4">
@@ -4134,7 +4178,7 @@ function MilestonePanel({ milestones, onEdit }: { milestones: Milestone[]; onEdi
         <h3 className="font-bold text-gray-900">Milestones</h3>
       </div>
 
-      {milestones.length === 0 ? (
+      {loading ? <ScheduleSkeleton label="กำลังเตรียม Milestones" rows={2} /> : milestones.length === 0 ? (
         <div className="text-sm text-gray-400 border border-dashed border-gray-200 rounded-xl p-4 text-center">
           ยังไม่มี Milestone
         </div>
@@ -4590,7 +4634,7 @@ function CustomerDecisionModal({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
+        <form onSubmit={onSubmit} data-no-global-loading="true" className="max-h-[calc(92vh-84px)] space-y-4 overflow-y-auto p-5">
           <div className="grid gap-4 md:grid-cols-3">
             <Field label="ช่วงงาน / สถานะงาน">
               <select

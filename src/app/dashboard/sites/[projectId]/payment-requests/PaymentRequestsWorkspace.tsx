@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useId, useMemo, useState } from "react";
 import useSWR from "swr";
 import Image from "next/image";
@@ -28,7 +29,8 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { fetcher } from "@/lib/fetcher";
+import { fetchPaymentRequests } from "./paymentRequestsFetch";
+import PaymentRequestsSkeleton from "./PaymentRequestsSkeleton";
 import {
   buildPaymentEmail,
   calculatePaymentTotals,
@@ -219,9 +221,13 @@ function buildContractorLedger(requests: PaymentRequestRecord[]) {
 
 export default function PaymentRequestsWorkspace({ project, preparedBy }: { project: SitePageProject; preparedBy: string }) {
   const endpoint = `/api/sites/${encodeURIComponent(project.project_id)}/payment-requests`;
-  const { data, error, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
+  const { data, error, isLoading, mutate } = useSWR<ApiResponse>(`${endpoint}?view=list`, fetchPaymentRequests);
   const requests = useMemo(() => data?.data || [], [data?.data]);
   const [tab, setTab] = useState<Tab>("overview");
+  const { data: references, error: referencesError, isLoading: referencesLoading, mutate: mutateReferences } = useSWR<Pick<ApiResponse, "payees" | "contractors" | "labor_rates">>(
+    tab !== "overview" ? `${endpoint}?view=references` : null,
+    fetchPaymentRequests,
+  );
   const [forms, setForms] = useState<Record<PaymentRequestType, FormState>>({ voucher: blankForm("voucher"), contractor_claim: blankForm("contractor_claim") });
   const [items, setItems] = useState<Record<PaymentRequestType, PaymentItem[]>>({ voucher: padPaymentItems([]), contractor_claim: padPaymentItems([]) });
   const [existingAttachments, setExistingAttachments] = useState<Record<PaymentRequestType, PaymentAttachment[]>>({ voucher: [], contractor_claim: [] });
@@ -415,7 +421,7 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
         formData.append("attachment_categories", attachment.category);
         formData.append("attachment_captions", attachment.caption);
       });
-      const response = await fetch(endpoint, { method: "POST", body: formData });
+      const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", body: formData });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "บันทึกรายการไม่สำเร็จ");
       const saved = result.data as PaymentRequestRecord & { attachments?: PaymentAttachment[]; items?: PaymentItem[] };
@@ -424,6 +430,7 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
       pendingAttachments[type].forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
       setPendingAttachments((current) => ({ ...current, [type]: [] }));
       await mutate();
+      void mutateReferences().catch(() => undefined);
       if (generatePdf) await downloadPdf(saved.request_id, saved.pdf_file_name || "payment-request.pdf", type);
       else showMessage("success", "บันทึกแบบร่างเรียบร้อยแล้ว");
     } catch (saveError) {
@@ -580,7 +587,11 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
             }}
           />}
           <div id={tab === "contractor_claim" ? "contractor-claim-form" : undefined} className="scroll-mt-24">
-            <PaymentForm
+            {referencesLoading ? <PaymentRequestsSkeleton variant="form" /> : referencesError ? (
+              <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
+                โหลดข้อมูลสำหรับกรอกเอกสารไม่สำเร็จ <button type="button" onClick={() => void mutateReferences().catch(() => undefined)} className="font-bold underline">ลองใหม่</button>
+              </div>
+            ) : <PaymentForm
               type={tab}
               projectName={project.name}
               preparedBy={preparedBy}
@@ -588,9 +599,9 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
               items={items[tab]}
               totals={totalsFor(tab)}
               claimHistory={tab === "contractor_claim" ? currentClaimHistory : []}
-              payees={data?.payees || []}
-              contractors={data?.contractors || []}
-              laborRates={data?.labor_rates || []}
+              payees={references?.payees || []}
+              contractors={references?.contractors || []}
+              laborRates={references?.labor_rates || []}
               existingAttachments={existingAttachments[tab]}
               pendingAttachments={pendingAttachments[tab]}
               busy={busy}
@@ -607,7 +618,7 @@ export default function PaymentRequestsWorkspace({ project, preparedBy }: { proj
               onPdf={() => save(tab, true)}
               onCopy={(value, label) => copyText(value, label)}
               onReset={() => reset(tab)}
-            />
+            />}
           </div>
         </>
       )}
@@ -661,14 +672,14 @@ function ContractorClaimLedger({ requests, loading, error, onNew, onEdit, onNext
       <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setExpanded((current) => !current)} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-black text-white hover:bg-white/20">{expanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}{expanded ? "ย่อหน้าจอ" : "ขยายเต็มจอ"}</button><button type="button" onClick={onNew} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-black text-white shadow-sm hover:bg-orange-400"><Plus size={17} />เริ่มหมวดงานใหม่</button></div>
     </div>
 
-    <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50 sm:grid-cols-4">
+    {loading ? <PaymentRequestsSkeleton variant="metrics" /> : <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50 sm:grid-cols-4">
       <LedgerMetric label="หมวดงาน" value={String(rows.length)} suffix="รายการ" />
       <LedgerMetric label="มูลค่าสัญญารวม" value={formatPaymentMoney(totals.contracts)} suffix="บาท" />
       <LedgerMetric label="เบิกสะสมก่อนหัก" value={formatPaymentMoney(totals.claimed)} suffix="บาท" tone="blue" />
       <LedgerMetric label="คงเหลือที่เบิกได้" value={formatPaymentMoney(totals.remaining)} suffix="บาท" tone="green" />
-    </div>
+    </div>}
 
-    {loading ? <PanelState icon={<Loader2 className="animate-spin" />} text="กำลังโหลดสมุดคุมงวดงาน..." /> : error ? <PanelState icon={<RefreshCw />} text="โหลดสมุดคุมงวดงานไม่สำเร็จ" tone="error" /> : rows.length === 0 ? <div className="flex min-h-44 flex-col items-center justify-center gap-3 p-8 text-center"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-red-50 text-[#a9141d]"><BriefcaseBusiness size={22} /></span><div><p className="font-black text-slate-800">ยังไม่มีหมวดงานที่บันทึก</p><p className="mt-1 text-sm font-semibold text-slate-400">เริ่มกรอกใบเบิกงวดแรก แล้วระบบจะสร้างแถวติดตามให้อัตโนมัติ</p></div><button type="button" onClick={onNew} className="rounded-xl bg-[#a9141d] px-4 py-2.5 text-sm font-black text-white hover:bg-[#851018]">กรอกงวดแรก</button></div> : <>
+    {loading ? <PaymentRequestsSkeleton variant="table" /> : error ? <PanelState icon={<RefreshCw />} text="โหลดสมุดคุมงวดงานไม่สำเร็จ" tone="error" /> : rows.length === 0 ? <div className="flex min-h-44 flex-col items-center justify-center gap-3 p-8 text-center"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-red-50 text-[#a9141d]"><BriefcaseBusiness size={22} /></span><div><p className="font-black text-slate-800">ยังไม่มีหมวดงานที่บันทึก</p><p className="mt-1 text-sm font-semibold text-slate-400">เริ่มกรอกใบเบิกงวดแรก แล้วระบบจะสร้างแถวติดตามให้อัตโนมัติ</p></div><button type="button" onClick={onNew} className="rounded-xl bg-[#a9141d] px-4 py-2.5 text-sm font-black text-white hover:bg-[#851018]">กรอกงวดแรก</button></div> : <>
       <div className={`${expanded ? "min-h-0 flex-1 overflow-auto" : "overflow-x-auto"}`}>
         <table className="min-w-max border-collapse text-sm">
           <thead className={expanded ? "sticky top-0 z-30" : ""}>
@@ -730,19 +741,19 @@ function Overview({ requests, stats, loading, error, busy, onNew, onEdit, onDupl
 }) {
   const [selected, setSelected] = useState<PaymentRequestRecord | null>(null);
   return <><div className="space-y-5">
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    {loading ? <PaymentRequestsSkeleton variant="metrics" /> : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <Metric icon={<FileText size={23} />} label="เอกสารทั้งหมด" value={String(stats.all)} detail="ภายในโครงการนี้" tone="gray" />
       <Metric icon={<Download size={23} />} label="สร้าง PDF แล้ว" value={String(stats.pdf)} detail="พร้อมนำไปส่งอีเมล" tone="blue" />
       <Metric icon={<BadgeCheck size={23} />} label="จ่าย/ปิดแล้ว" value={String(stats.paid)} detail="ติ๊กติดตามภายใน" tone="green" />
       <Metric icon={<Banknote size={23} />} label="ยอดสุทธิสะสม" value={formatPaymentMoney(stats.amount)} detail="บาท" tone="orange" />
-    </div>
+    </div>}
     <div className="flex flex-col gap-3 rounded-3xl bg-gradient-to-r from-slate-950 to-slate-800 p-5 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between">
       <div><div className="text-lg font-black">สร้างชุดเอกสารใหม่</div><p className="mt-1 text-sm font-semibold text-slate-300">กรอกครั้งเดียว ได้ PDF พร้อมเอกสารแนบและข้อความอีเมล</p></div>
       <div className="flex flex-wrap gap-2"><button type="button" onClick={() => onNew("voucher")} className="rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-extrabold hover:bg-orange-400">ใบสำคัญจ่าย</button><button type="button" onClick={() => onNew("contractor_claim")} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm font-extrabold ring-1 ring-white/20 hover:bg-white/20">ใบเบิกงวดผู้รับเหมา</button></div>
     </div>
     <section className="overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-100 px-5 py-4"><h3 className="font-black text-gray-950">ประวัติเอกสารของโครงการ</h3><p className="text-xs font-semibold text-gray-400">ดาวน์โหลดซ้ำ คัดลอกข้อความ หรือสร้างรายการใหม่จากข้อมูลเดิมได้</p></div>
-      {loading ? <PanelState icon={<Loader2 className="animate-spin" />} text="กำลังโหลดประวัติเอกสาร..." /> : error ? <PanelState icon={<RefreshCw />} text="โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่" tone="error" /> : requests.length === 0 ? <PanelState icon={<FileText />} text="ยังไม่มีเอกสารเบิกเงินในโครงการนี้" /> : <div className="overflow-x-auto"><table className="min-w-[1050px] w-full"><thead className="bg-gray-50 text-left text-[11px] font-extrabold uppercase tracking-wide text-gray-400"><tr><th className="px-5 py-3">เลขที่/วันที่</th><th className="px-4 py-3">รายการ</th><th className="px-4 py-3">ผู้รับเงิน</th><th className="px-4 py-3 text-right">ยอดสุทธิ</th><th className="px-4 py-3">สถานะ</th><th className="px-5 py-3 text-right">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100">{requests.map((record) => <tr key={record.request_id} tabIndex={0} onClick={() => setSelected(record)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(record); } }} className="cursor-pointer outline-none transition hover:bg-orange-50/60 focus:bg-orange-50 focus:ring-2 focus:ring-inset focus:ring-orange-300"><td className="px-5 py-4"><div className="font-extrabold text-gray-900">{record.document_no || "แบบร่าง"}</div><div className="text-xs text-gray-400">{record.request_date}</div></td><td className="px-4 py-4"><div className="font-bold text-gray-900">{record.title}</div><div className="text-xs text-gray-400">{record.request_type === "contractor_claim" ? `เบิกงวดผู้รับเหมา ${record.claim_period || ""}` : "ใบสำคัญจ่าย"}</div></td><td className="px-4 py-4"><div className="font-semibold text-gray-700">{record.payee_name}</div><div className="text-xs text-gray-400">{record.bank_name || "-"}</div></td><td className="px-4 py-4 text-right font-black text-orange-700">{formatPaymentMoney(record.net_amount)}</td><td className="px-4 py-4"><span className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${statusTone(record.status)}`}>{statusText(record.status)}</span></td><td className="px-5 py-4" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><div className="flex justify-end gap-1.5"><IconAction label="แก้ไข" icon={<FileText size={15} />} onClick={() => onEdit(record)} />{record.request_type === "contractor_claim" && nextClaimPeriod(record.claim_period || "") !== null && <IconAction label="สร้างงวดถัดไป" icon={<ArrowRight size={15} />} onClick={() => onNextClaim(record)} />}<IconAction label="ทำสำเนา" icon={<Copy size={15} />} onClick={() => onDuplicate(record)} /><IconAction label="คัดลอกอีเมล" icon={<ClipboardCopy size={15} />} onClick={() => onCopy(`หัวข้อ: ${record.email_subject}\n\n${record.email_body}`, "คัดลอกข้อความอีเมลแล้ว")} /><IconAction label="ดาวน์โหลด PDF" loading={busy === `download-${record.request_id}`} icon={<Download size={15} />} onClick={() => onDownload(record.request_id, record.pdf_file_name || `${record.document_no}.pdf`)} />{!["paid", "closed"].includes(record.status) && <IconAction label="จ่ายครบ/ปิด" icon={<Check size={15} />} onClick={() => onStatus(record.request_id, "closed", num(record.net_amount))} />}</div></td></tr>)}</tbody></table></div>}
+      {loading ? <PaymentRequestsSkeleton variant="table" /> : error ? <PanelState icon={<RefreshCw />} text="โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่" tone="error" /> : requests.length === 0 ? <PanelState icon={<FileText />} text="ยังไม่มีเอกสารเบิกเงินในโครงการนี้" /> : <div className="overflow-x-auto"><table className="min-w-[1050px] w-full"><thead className="bg-gray-50 text-left text-[11px] font-extrabold uppercase tracking-wide text-gray-400"><tr><th className="px-5 py-3">เลขที่/วันที่</th><th className="px-4 py-3">รายการ</th><th className="px-4 py-3">ผู้รับเงิน</th><th className="px-4 py-3 text-right">ยอดสุทธิ</th><th className="px-4 py-3">สถานะ</th><th className="px-5 py-3 text-right">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100">{requests.map((record) => <tr key={record.request_id} tabIndex={0} onClick={() => setSelected(record)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(record); } }} className="cursor-pointer outline-none transition hover:bg-orange-50/60 focus:bg-orange-50 focus:ring-2 focus:ring-inset focus:ring-orange-300"><td className="px-5 py-4"><div className="font-extrabold text-gray-900">{record.document_no || "แบบร่าง"}</div><div className="text-xs text-gray-400">{record.request_date}</div></td><td className="px-4 py-4"><div className="font-bold text-gray-900">{record.title}</div><div className="text-xs text-gray-400">{record.request_type === "contractor_claim" ? `เบิกงวดผู้รับเหมา ${record.claim_period || ""}` : "ใบสำคัญจ่าย"}</div></td><td className="px-4 py-4"><div className="font-semibold text-gray-700">{record.payee_name}</div><div className="text-xs text-gray-400">{record.bank_name || "-"}</div></td><td className="px-4 py-4 text-right font-black text-orange-700">{formatPaymentMoney(record.net_amount)}</td><td className="px-4 py-4"><span className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${statusTone(record.status)}`}>{statusText(record.status)}</span></td><td className="px-5 py-4" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><div className="flex justify-end gap-1.5"><IconAction label="แก้ไข" icon={<FileText size={15} />} onClick={() => onEdit(record)} />{record.request_type === "contractor_claim" && nextClaimPeriod(record.claim_period || "") !== null && <IconAction label="สร้างงวดถัดไป" icon={<ArrowRight size={15} />} onClick={() => onNextClaim(record)} />}<IconAction label="ทำสำเนา" icon={<Copy size={15} />} onClick={() => onDuplicate(record)} /><IconAction label="คัดลอกอีเมล" icon={<ClipboardCopy size={15} />} onClick={() => onCopy(`หัวข้อ: ${record.email_subject}\n\n${record.email_body}`, "คัดลอกข้อความอีเมลแล้ว")} /><IconAction label="ดาวน์โหลด PDF" loading={busy === `download-${record.request_id}`} icon={<Download size={15} />} onClick={() => onDownload(record.request_id, record.pdf_file_name || `${record.document_no}.pdf`)} />{!["paid", "closed"].includes(record.status) && <IconAction label="จ่ายครบ/ปิด" icon={<Check size={15} />} onClick={() => onStatus(record.request_id, "closed", num(record.net_amount))} />}</div></td></tr>)}</tbody></table></div>}
     </section>
   </div>{selected && <PaymentRequestDetailModal record={selected} busy={busy} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); onEdit(selected); }} onNextClaim={selected.request_type === "contractor_claim" && nextClaimPeriod(selected.claim_period || "") !== null ? () => { setSelected(null); onNextClaim(selected); } : undefined} onDownload={() => onDownload(selected.request_id, selected.pdf_file_name || `${selected.document_no}.pdf`)} onCopy={() => onCopy(`หัวข้อ: ${selected.email_subject}\n\n${selected.email_body}`, "คัดลอกข้อความอีเมลแล้ว")} onCloseRequest={() => onStatus(selected.request_id, "closed", num(selected.net_amount))} />}</>;
 }

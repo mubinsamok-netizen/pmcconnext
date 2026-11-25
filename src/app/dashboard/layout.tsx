@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/authOptions";
+import { getCurrentSession } from "@/lib/currentSession";
 import DashboardChrome from "./DashboardChrome";
 
 type SessionUserWithRole = {
@@ -17,7 +16,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getServerSession(authOptions);
+  const session = await getCurrentSession();
 
   if (!session) {
     redirect("/");
@@ -25,7 +24,7 @@ export default async function DashboardLayout({
 
   return (
     <div className="dashboard-shell flex h-screen min-w-0 overflow-hidden bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100">
-      <DashboardChrome user={session.user as SessionUserWithRole}>
+      <DashboardChrome session={session} user={session.user as SessionUserWithRole}>
         {children}
       </DashboardChrome>
     </div>

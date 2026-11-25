@@ -7,7 +7,7 @@ const { test } = require("node:test");
 const ts = require("typescript");
 
 // Expose private read helpers only inside the test VM; production route exports stay unchanged.
-function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
+function loadTs(relativePath, dependencies = {}, expose = [], env = {}, globals = {}) {
   const filename = path.resolve(__dirname, "..", relativePath);
   const input = fs.readFileSync(filename, "utf8");
   const parsed = ts.createSourceFile(filename, input, ts.ScriptTarget.Latest, true);
@@ -18,10 +18,12 @@ function loadTs(relativePath, dependencies = {}, expose = [], env = {}) {
   }).outputText;
   const loaded = { exports: {} };
   vm.runInNewContext(source, {
-    exports: loaded.exports, module: loaded, Error, URL,
+    exports: loaded.exports, module: loaded, Error, URL, performance,
     process: { env },
+    ...globals,
     console: { ...console, warn() {} },
     require(name) {
+      if ((name === "./projectListCache" || name === "@/lib/projectListCache") && !Object.hasOwn(dependencies, name)) return { invalidateProjectListForWrite() {}, readCachedProjectList: (load) => load(), readCachedProjectHealth: (_, load) => load() };
       if (Object.hasOwn(dependencies, name)) return dependencies[name];
       assert.ok(imports.has(name) || name === "react/jsx-runtime", `Unexpected dependency: ${name}`);
       // Unused UI, upload and notification imports are inert during read tests.
@@ -94,6 +96,36 @@ for (const mode of ["success", "empty", "fallback", "sheets", "disabled"]) {
   });
 }
 
+test("VO reopen reads the same primary backend as create and edit with experimental reads off", async () => {
+  const rows = [
+    { item_id: "GROUP-TestbyZoneIdea", vo_id: "VO-TestbyZoneIdea", project_id: "P-1", row_type: "group_add", item_no: 1, sort_order: 1 },
+    { item_id: "DETAIL-TestbyZoneIdea", vo_id: "VO-TestbyZoneIdea", project_id: "P-1", row_type: "detail", item_no: 2, parent_item_no: 1, sort_order: 2, description: "Before TestbyZoneIdea" },
+  ];
+  const api = loadTs("src/app/api/sites/[projectId]/variation-orders/route.ts", {
+    "@/lib/supabaseRest": loadTs("src/lib/supabaseRest.ts", {}, [], {
+      DATA_BACKEND: "supabase", SUPABASE_EXPERIMENTAL_SITE_READS: "false",
+    }),
+    "@/lib/sheetsCrud": { findAllRaw: async () => { throw new Error("Stale Sheets source must not be read"); } },
+    "@/lib/supabaseCrud": {
+      getSupabaseSiteConfig: (table) => ({ table }),
+      findAllSupabase: async (config, projectId) => {
+        assert.equal(projectId, "P-1");
+        return config.table === "VO_Items" ? rows : [{ vo_id: "VO-TestbyZoneIdea", project_id: "P-1" }];
+      },
+    },
+    "@/lib/variationOrders": { numberValue: Number },
+  }, ["getVoRows"]);
+  assert.equal((await api.getVoRows(context, "Variation_Orders"))[0].vo_id, "VO-TestbyZoneIdea");
+  for (const description of ["Before TestbyZoneIdea", "After TestbyZoneIdea"]) {
+    rows[1].description = description;
+    const items = await api.getVoRows(context, "VO_Items");
+    assert.equal(items.length, 2);
+    assert.equal(items[1].row_type, "detail");
+    assert.equal(items[1].parent_item_no, items[0].item_no);
+    assert.equal(items[1].description, description);
+  }
+});
+
 test("site overview and project progress retain Supabase task counts when Sheets is unavailable", async () => {
   let batches = 0;
   let sheetReads = 0;
@@ -111,7 +143,7 @@ test("site overview and project progress retain Supabase task counts when Sheets
       findAllRaw: async () => { sheetReads++; throw new Error("Requested entity was not found."); },
     },
   };
-  const overview = loadTs("src/app/dashboard/sites/[projectId]/page.tsx", deps, ["getDashboardData"]);
+  const overview = loadTs("src/app/dashboard/sites/[projectId]/overviewData.ts", deps, ["getDashboardData"]);
   const projects = loadTs("src/app/api/projects/route.ts", deps, ["enrichProjectWithHealth"]);
   const dashboard = await overview.getDashboardData(project);
   assert.equal(dashboard.error, "");
@@ -170,3 +202,411 @@ for (const backend of ["supabase", "sheets"]) {
     }
   });
 }
+
+test("VO list skips Tasks and the protected plan view returns only selector fields", async () => {
+  const reads = [];
+  let canPlan = true;
+  const api = loadTs("src/app/api/sites/[projectId]/variation-orders/route.ts", {
+    "next/server": { NextResponse: { json: (body, options) => ({ body, headers: new Headers(), status: options?.status || 200 }) } },
+    "@/lib/siteApi": { getSiteApiContext: async () => context, getErrorMessage: (error) => error.message },
+    "@/lib/permissions": { hasPermission: () => canPlan, permissionDeniedMessage: () => "Denied" },
+    "@/lib/supabaseRest": rest("sheets"),
+    "@/lib/sheetsCrud": {
+      findAllMaster: async (_table, reportSource) => { reportSource("sheets"); return []; },
+      findAllRaw: async (table) => {
+        reads.push(table);
+        return table === "Tasks" ? [
+          { project_id: "P-1", task_id: "T1", name: "Heading", task_type: "heading", parent_task_id: "", order_index: "1", notes: "unused" },
+          { project_id: "OTHER", task_id: "T2" },
+        ] : [];
+      },
+    },
+  });
+  const request = (suffix = "") => api.GET({ url: `http://localhost/api/vo${suffix}` }, { params: Promise.resolve({ projectId: "P-1" }) });
+  const list = await request();
+  assert.equal(list.status, 200);
+  assert.equal(Object.hasOwn(list.body, "tasks"), false);
+  assert.equal(reads.includes("Tasks"), false);
+  assert.match(list.headers.get("Server-Timing"), /audit_logs;dur=.*desc="sheets"/);
+  canPlan = false;
+  assert.equal((await request("?view=plan-tasks")).status, 403);
+  assert.equal(reads.includes("Tasks"), false);
+  canPlan = true;
+  const options = await request("?view=plan-tasks");
+  assert.equal(options.status, 200);
+  assert.deepEqual(JSON.parse(JSON.stringify(options.body.data)), [
+    { task_id: "T1", name: "Heading", task_type: "heading", parent_task_id: "", order_index: "1" },
+  ]);
+  assert.match(options.headers.get("Server-Timing"), /tasks;dur=.*desc="sheets"/);
+});
+
+test("Defect reads only authorized site data and does not read master Audit Logs", async () => {
+  let allowed = false;
+  const reads = [];
+  const route = loadTs("src/app/api/sites/[projectId]/defects/route.ts", {
+    "next/server": { NextResponse: { json: (body, options) => ({ body, headers: new Headers(), status: options?.status || 200 }) } },
+    "@/lib/siteApi": { getSiteApiContext: async () => allowed ? context : { error: "Forbidden", status: 403 } },
+    "@/lib/sheetsCrud": {
+      findAllBatch: async (tables, sheet, options) => {
+        assert.equal(sheet, project.site_sheet_id);
+        assert.equal(options.projectId, project.project_id);
+        reads.push(...tables);
+        for (const table of tables) options.onSource(table, "sheets");
+        return { Defect_Rounds: [{ project_id: "P-1" }, { project_id: "OTHER" }] };
+      },
+      findAllMaster: () => { throw new Error("Unexpected Audit Logs read"); },
+    },
+  });
+
+  const get = () => route.GET({}, { params: Promise.resolve({ projectId: "P-1" }) });
+  assert.equal((await get()).status, 403);
+  assert.equal(reads.length, 0);
+
+  allowed = true;
+  const result = await get();
+  assert.equal(result.status, 200);
+  assert.equal(result.body.rounds.length, 1);
+  assert.equal(Object.hasOwn(result.body, "audit_logs"), false);
+  assert.deepEqual(reads, ["Defect_Rounds", "Defect_Items", "Defect_Evidence"]);
+  assert.match(result.headers.get("Server-Timing"), /site_context;.*defect_read;.*Defect_Rounds=sheets.*prepare;.*total;/);
+});
+
+test("a blocked Drive response confirms the reserved document without sending the PDF again", async () => {
+  const calls = [];
+  const reserved = "DriveTestbyZoneIdea";
+  let completeAttempts = 0;
+  const client = loadTs("src/lib/directDriveDocumentUpload.ts", {
+    "@/lib/directDriveNoteUpload": {
+      uploadDriveFile: async () => {
+        calls.push("drive_put");
+        throw new Error("CORS");
+      },
+    },
+    "@/lib/attachmentUpload": { validateAttachmentRequest: () => assert.fail("Unexpected fallback upload") },
+  }, [], {}, {
+    fetch: async (_url, request) => {
+      const body = JSON.parse(request.body);
+      calls.push(body.action);
+      assert.equal(body.verify_upload, true);
+      if (body.action === "create_upload_session") return {
+        ok: true, json: async () => ({ data: { upload_url: "https://example.invalid/upload", drive_file_id: reserved } }),
+      };
+      assert.equal(body.drive_file_id, reserved);
+      assert.equal(body.drive_url, undefined);
+      completeAttempts++;
+      return completeAttempts === 1
+        ? { ok: false, json: async () => ({ error: "Not visible yet" }) }
+        : { ok: true, json: async () => ({ data: { document_id: "DOC-TestbyZoneIdea" } }) };
+    },
+  });
+  let retry;
+  const input = {
+    endpoint: "/test", category: "report", title: "TestbyZoneIdea", notes: "",
+    file: { name: "TestbyZoneIdea.pdf", type: "application/pdf", size: 5_100_000 },
+    onProgress() {}, onConfirmReady(confirm) { retry = confirm; },
+  };
+  const preparedSession = client.prepareDocumentUpload(input, true);
+  await preparedSession;
+  assert.deepEqual(calls, ["create_upload_session"]);
+  await assert.rejects(client.uploadProjectDocumentDirectly({ ...input, preparedSession }), /Not visible yet/);
+  assert.equal((await retry()).document_id, "DOC-TestbyZoneIdea");
+  assert.deepEqual(calls, ["create_upload_session", "drive_put", "complete_upload", "complete_upload"]);
+});
+
+test("verified PDF upload limits document reads and checks the saved row alongside Drive", async () => {
+  const driveFileId = "DriveTestbyZoneIdea";
+  const title = "รายงาน (ทดสอบ).pdf TestbyZoneIdea";
+  const fileSize = 5_100_425;
+  let savedDocument;
+  let driveProperties;
+  let readStarted = false;
+  let finishRead;
+  let inserts = 0;
+  const route = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/siteApi": {
+      getSiteApiContext: async () => ({
+        ...context,
+        project: { ...project, drive_folder_id: "root" },
+        session: { user: { email: "test@example.invalid" } },
+      }),
+      makeId: () => "DOC-TestbyZoneIdea",
+      getErrorMessage: (error) => error.message,
+    },
+    "@/lib/supabaseRest": rest("supabase", "none"),
+    "@/lib/permissions": { hasPermission: () => true },
+    "@/lib/drive": {
+      findOrCreateFolder: async () => ({ id: "folder" }),
+      createResumableUploadSession: async (input) => {
+        driveProperties = input.appProperties;
+        assert.equal(input.fileId, driveFileId);
+        return { uploadUrl: "https://example.invalid/upload" };
+      },
+    },
+    "@/lib/google": {
+      drive: { files: {
+        generateIds: async () => ({ data: { ids: [driveFileId] } }),
+        get: async () => {
+          assert.equal(readStarted, true);
+          finishRead(savedDocument ? [savedDocument] : []);
+          return { data: { size: String(fileSize), mimeType: "application/pdf", appProperties: driveProperties } };
+        },
+      } },
+    },
+    "@/lib/supabaseReadModel": {
+      getSupabaseDocumentVersions: async (...args) => {
+        assert.deepEqual(args, [project.project_id, "report", title]);
+        return [{ version_number: "2" }, { version_number: "10" }];
+      },
+      getSupabaseProjectDocuments: async (...args) => {
+        assert.deepEqual(args, [project.project_id, false, false, driveFileId]);
+        readStarted = true;
+        return new Promise((resolve) => { finishRead = resolve; });
+      },
+    },
+    "@/lib/sheetsCrud": {
+      findAllRaw: () => assert.fail("Unexpected full Sheets read"),
+      insert: async (_table, row) => {
+        inserts++;
+        savedDocument = row;
+        return { inserted: row };
+      },
+    },
+  });
+  const input = { verify_upload: true, category: "report", title, file_name: "TestbyZoneIdea.pdf", file_size: fileSize };
+  const post = ({ action, ...body }) => route.POST({
+    url: "https://example.invalid/api/documents",
+    headers: { get: () => "application/json" },
+    json: async () => ({ ...input, action, ...body }),
+  }, { params: Promise.resolve({ projectId: project.project_id }) });
+  const prepared = await post({ action: "create_upload_session" });
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.body.data.version_number, "11");
+  const complete = () => post({ action: "complete_upload", drive_file_id: driveFileId, version_number: "11" });
+  assert.equal((await complete()).status, 200);
+  readStarted = false;
+  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.equal(inserts, 1);
+});
+
+test("Sheets PDF preparation reuses a recent document list for the same site only", async () => {
+  const reads = [];
+  const sheetRoute = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "@/lib/sheetsCrud": {
+      findAllRaw: async (_table, sheet) => {
+        reads.push(sheet);
+        return [{ project_id: sheet, category: "report", title: "Report TestbyZoneIdea", version_number: "2" }];
+      },
+    },
+    "@/lib/supabaseRest": rest("sheets"),
+  }, ["getDocumentRows", "getNextDocumentVersion"]);
+  const version = (site) => sheetRoute.getNextDocumentVersion(site, site, "report", "Report TestbyZoneIdea", true);
+  await sheetRoute.getDocumentRows("P-1", "P-1", true);
+  assert.equal(await version("P-1"), 3);
+  assert.equal(await version("P-2"), 3);
+  await sheetRoute.getDocumentRows("P-1", "P-1", true);
+  assert.deepEqual(reads, ["P-1", "P-2", "P-1"]);
+});
+
+test("Sheets PDF confirmation checks just the document headers and repairs an invalid table before writing", async () => {
+  const headers = ["document_id", "project_id", "drive_file_id"];
+  const driveFileId = "DriveTestbyZoneIdea";
+  const title = "Report TestbyZoneIdea";
+  const email = "test@example.invalid";
+  const fileName = "TestbyZoneIdea.pdf";
+  const size = 5_100_425;
+  const { createHash } = require("node:crypto");
+  const binding = createHash("sha256").update(JSON.stringify([project.project_id, email, "report", title, fileName, size, "1", ""])).digest("hex");
+  const calls = [];
+  let allowed = false;
+  let invalidHeaders = false;
+  let repairSucceeds = true;
+  let driveFound = true;
+  let saved;
+  const crud = loadTs("src/lib/sheetsCrud.ts", {
+    "./sheetsSetup": { SITE_SCHEMA: { Project_Documents: headers } },
+    "./google": { sheets: { spreadsheets: { values: { get: async ({ spreadsheetId, range }) => {
+      assert.equal(spreadsheetId, project.site_sheet_id);
+      assert.equal(range, "Project_Documents");
+      calls.push("read");
+      const firstRow = invalidHeaders ? ["project_id", "document_id", "drive_file_id"] : headers;
+      const otherSite = ["OTHER-DOC", "OTHER-SITE", driveFileId];
+      return { data: { values: saved ? [firstRow, otherSite, saved] : [firstRow, otherSite] } };
+    } } } } },
+  });
+  const route = loadTs("src/app/api/sites/[projectId]/documents/route.ts", {
+    "node:crypto": { createHash },
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/siteApi": {
+      getSiteApiContext: async (_projectId, _requireAdmin, options) => {
+        assert.equal(options.readOnly, true);
+        return { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email } } };
+      },
+      makeId: () => "DOC-TestbyZoneIdea",
+      getErrorMessage: (error) => error.message,
+    },
+    "@/lib/supabaseRest": rest("sheets"),
+    "@/lib/permissions": { hasPermission: () => allowed, permissionDeniedMessage: () => "Forbidden" },
+    "@/lib/google": { drive: { files: { get: async () => {
+      calls.push("verify");
+      if (!driveFound) throw Object.assign(new Error("missing"), { code: 404 });
+      return { data: { size: String(size), mimeType: "application/pdf", appProperties: { pmcDocument: binding } } };
+    } } } },
+    "@/lib/sheetsSetup": { ensureSiteTableSchema: async (sheet, table) => {
+      assert.equal(sheet, project.site_sheet_id);
+      assert.equal(table, "Project_Documents");
+      calls.push("repair");
+      if (repairSucceeds) invalidHeaders = false;
+      return { success: repairSucceeds };
+    } },
+    "@/lib/sheetsCrud": {
+      findRowWithValidHeaders: crud.findRowWithValidHeaders,
+      insert: async (_table, row) => {
+        calls.push("write");
+        saved = [row.document_id, row.project_id, row.drive_file_id];
+        return { inserted: row };
+      },
+    },
+  });
+  const complete = () => route.POST({
+    headers: { get: () => "application/json" },
+    json: async () => ({ action: "complete_upload", verify_upload: true, category: "report", title,
+      file_name: fileName, file_size: size, drive_file_id: driveFileId }),
+  }, { params: Promise.resolve({ projectId: project.project_id }) });
+  assert.equal((await complete()).status, 403);
+  assert.deepEqual(calls.splice(0), []);
+  allowed = true;
+  assert.equal((await complete()).status, 200);
+  assert.deepEqual(calls.splice(0), ["read", "verify", "write"]);
+  const repeated = await complete();
+  assert.equal(repeated.body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.equal(repeated.body.data._rowIndex, 3);
+  assert.deepEqual(calls.splice(0), ["read", "verify"]);
+  invalidHeaders = true;
+  driveFound = false;
+  assert.equal((await complete()).status, 409);
+  assert.deepEqual(calls.splice(0), ["read", "verify"]);
+  driveFound = true;
+  repairSucceeds = false;
+  assert.equal((await complete()).status, 503);
+  assert.deepEqual(calls.splice(0), ["read", "verify", "repair"]);
+  repairSucceeds = true;
+  assert.equal((await complete()).body.data.document_id, "DOC-TestbyZoneIdea");
+  assert.deepEqual(calls.splice(0), ["read", "verify", "repair", "read"]);
+});
+
+test("Defect photo sessions bind WebP uploads to the site, round, item and uploader", async () => {
+  const photos = new Map();
+  const rounds = [{ round_id: "ROUND-TestbyZoneIdea", project_id: "P-1" }];
+  const items = [{ item_id: "ITEM-TestbyZoneIdea", round_id: rounds[0].round_id, project_id: "P-1" }];
+  const site = { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email: "user@example.invalid" } } };
+  const route = loadTs("src/app/api/sites/[projectId]/defects/route.ts", {
+    "node:crypto": require("node:crypto"),
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/prepareProjectCover": { PROJECT_COVER_MAX_BYTES: 4_000_000 },
+    "@/lib/sheetsCrud": { findAllBatch: async () => ({ Defect_Rounds: rounds, Defect_Items: items }) },
+    "@/lib/drive": {
+      findOrCreateFolder: async (name) => ({ id: name }),
+      createResumableUploadSession: async (input) => {
+        assert.equal(input.parentId, "After Photos");
+        assert.equal(input.origin, "https://example.invalid");
+        photos.set(input.fileId, { name: input.fileName, size: String(input.size), mimeType: input.mimeType, appProperties: input.appProperties });
+        return { uploadUrl: "https://example.invalid/upload" };
+      },
+    },
+    "@/lib/google": { drive: { files: {
+      generateIds: async ({ count }) => ({ data: { ids: Array.from({ length: count }, (_, index) => `Drive-TestbyZoneIdea-${index}`) } }),
+      get: async ({ fileId }) => ({ data: photos.get(fileId) }),
+    } } },
+  }, ["startPhotoUploads", "verifyDefectPhotos"]);
+  const req = { url: "https://example.invalid/api/defects" };
+  const files = [{ name: "One-TestbyZoneIdea.webp", size: 95 }, { name: "Two-TestbyZoneIdea.webp", size: 120 }];
+  const started = await route.startPhotoUploads(req, { item_id: items[0].item_id, files }, site);
+  assert.equal(started.status, 200);
+  const ids = started.body.data.map((file) => file.file_id);
+  const valid = await route.verifyDefectPhotos(site, rounds[0].round_id, items[0].item_id, ids);
+  assert.equal(valid.length, 2);
+  assert.ok(valid.every((photo) => photo.mime_type === "image/webp" && photo.file_name.endsWith(".webp")));
+  assert.equal(await route.verifyDefectPhotos(site, rounds[0].round_id, "", ids), null);
+  assert.equal(await route.verifyDefectPhotos({ ...site, session: { user: { email: "other@example.invalid" } } }, rounds[0].round_id, items[0].item_id, ids), null);
+  assert.equal((await route.startPhotoUploads(req, { item_id: "OTHER", files }, site)).status, 404);
+});
+
+test("decision evidence verifies Drive metadata, preserves prior evidence and confirms twice without a second write", async () => {
+  const limits = loadTs("src/lib/decisionEvidenceUpload.ts");
+  const decision = { _rowIndex: 2, decision_id: "DEC-TestbyZoneIdea", project_id: "P-1", title: "TestbyZoneIdea",
+    evidence_files_json: JSON.stringify([{ file_id: "ExistingFile" }]) };
+  const site = { ...context, project: { ...project, drive_folder_id: "root" }, session: { user: { email: "user@example.invalid" } } };
+  const driveFiles = new Map();
+  let newDecisionSaved = false;
+  let drivePreparationStarted = false;
+  let writes = 0;
+  const route = loadTs("src/app/api/sites/[projectId]/customer-decisions/route.ts", {
+    "node:crypto": require("node:crypto"),
+    path: { default: require("node:path") },
+    "next/server": { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
+    "@/lib/customerDecisions": {
+      parseDecisionEvidenceFiles: JSON.parse, safeJsonStringify: JSON.stringify,
+      createCustomerDecisionId: () => "NEW-DEC-TestbyZoneIdea",
+    },
+    "@/lib/decisionEvidenceUpload": limits,
+    "@/lib/auditLog": { writeAuditLog: async () => {} },
+    "@/lib/sheetsCrud": {
+      findAll: async () => [decision],
+      insert: async (_table, row) => {
+        assert.equal(row.decision_id, "NEW-DEC-TestbyZoneIdea");
+        newDecisionSaved = true;
+      },
+      findAllBatch: async () => ({ Customer_Decisions: [
+        decision, { decision_id: "OTHER", project_id: "P-2", _rowIndex: 3 },
+      ] }),
+      update: async (_table, id, patch) => {
+        assert.equal(id, decision.decision_id);
+        assert.deepEqual(Object.keys(patch), ["evidence_files_json"]);
+        Object.assign(decision, patch);
+        writes++;
+      },
+    },
+    "@/lib/drive": {
+      findOrCreateFolder: async (name) => {
+        drivePreparationStarted = true;
+        return { id: name };
+      },
+      createFolder: async (name) => ({ id: name }),
+      createResumableUploadSession: async (input) => {
+        assert.equal(input.parentId, "Evidence");
+        driveFiles.set(input.fileId, { name: input.fileName, size: String(input.size),
+          mimeType: input.mimeType, appProperties: input.appProperties });
+        return { uploadUrl: "https://example.invalid/upload" };
+      },
+    },
+    "@/lib/google": { drive: { files: {
+      generateIds: async () => ({ data: { ids: ["Drive-WebP-TestbyZoneIdea", "Drive-PDF-TestbyZoneIdea"] } }),
+      get: async ({ fileId }) => ({ data: driveFiles.get(fileId) }),
+    } } },
+  }, ["startEvidenceUploads", "attachEvidence", "handleSave"], {}, { process: { env: {}, cwd: () => "/tmp" } });
+  const files = [{ name: "Evidence-TestbyZoneIdea.webp", size: 800 }, { name: "Evidence-TestbyZoneIdea.pdf", size: 1000 }];
+  const request = { url: "https://example.invalid" };
+  assert.equal((await route.startEvidenceUploads(request, { decision_id: "OTHER", files }, site)).status, 404);
+  const started = await route.startEvidenceUploads(request, { decision_id: decision.decision_id, files }, site);
+  assert.equal(started.status, 200);
+  const body = { decision_id: decision.decision_id, file_ids: started.body.data.map((file) => file.file_id) };
+  assert.equal((await route.attachEvidence(body, { ...site, session: { user: { email: "other@example.invalid" } } })).status, 409);
+  assert.equal((await route.attachEvidence(body, site)).status, 200);
+  assert.equal((await route.attachEvidence(body, site)).status, 200);
+  assert.equal(writes, 1);
+  assert.deepEqual(JSON.parse(decision.evidence_files_json).map((file) => file.mime_type), [undefined, "image/webp", "application/pdf"]);
+  drivePreparationStarted = false;
+  const saved = await route.handleSave(request, {
+    title: "New TestbyZoneIdea", phase: "Structure", decision_before: "TestbyZoneIdea",
+    impact_if_changed: "TestbyZoneIdea", upload_files: files,
+  }, site, async () => {
+    assert.equal(drivePreparationStarted, true);
+    assert.equal(newDecisionSaved, false);
+    return [decision];
+  });
+  assert.equal(newDecisionSaved, true);
+  assert.equal(saved.body.data.decision_id, "NEW-DEC-TestbyZoneIdea");
+  assert.equal(saved.body.upload_sessions.length, 2);
+});

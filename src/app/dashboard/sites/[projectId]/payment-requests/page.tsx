@@ -1,6 +1,5 @@
-import { getServerSession } from "next-auth";
+import { getCurrentSession } from "@/lib/currentSession";
 import { Banknote } from "lucide-react";
-import { authOptions } from "@/lib/authOptions";
 import { getMasterProject } from "@/lib/masterProjects";
 import { SiteShell } from "../SiteShell";
 import PaymentRequestsWorkspace from "./PaymentRequestsWorkspace";
@@ -11,7 +10,7 @@ export default async function PaymentRequestsPage({ params }: { params: Promise<
   const { projectId } = await params;
   const [project, session] = await Promise.all([
     getMasterProject(projectId, { siteSegment: "payment-requests" }),
-    getServerSession(authOptions),
+    getCurrentSession(),
   ]);
   return (
     <SiteShell

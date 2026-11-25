@@ -1,13 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import DataSkeleton from "@/components/DataSkeleton";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import Link from "next/link";
 import { ArrowRight, Bell, ExternalLink, FileUp, FolderOpen, Loader2, Save } from "lucide-react";
 import useSWR from "swr";
 import { documentCategoryOptions, lifecycleStatusOptions } from "@/lib/projectLifecycle";
 import { fetcher } from "@/lib/fetcher";
-import { uploadProjectDocumentDirectly } from "@/lib/directDriveDocumentUpload";
+import {
+  prepareDocumentUpload,
+  uploadProjectDocumentDirectly,
+  type DirectDocumentUploadInput,
+  type DirectDocumentUploadResult,
+  type DocumentUploadProgress,
+} from "@/lib/directDriveDocumentUpload";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -43,7 +50,7 @@ type DocumentRecord = Record<string, string | number | undefined> & {
   document_id: string;
   category?: string;
   title?: string;
-  version_number?: string;
+  version_number?: string | number;
   file_name?: string;
   drive_url?: string;
   uploaded_by_name?: string;
@@ -393,6 +400,15 @@ export default function LifecycleWorkspace({
   const [warrantyForm, setWarrantyForm] = useState(emptyWarranty);
   const [documentForm, setDocumentForm] = useState({ category: "contract", title: "", notes: "" });
   const [file, setFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<DocumentUploadProgress | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const [confirmUpload, setConfirmUpload] = useState<(() => Promise<DirectDocumentUploadResult>) | null>(null);
+  const uploading = useRef(false);
+  const preparation = useRef<{
+    input: DirectDocumentUploadInput;
+    expires: number;
+    session: ReturnType<typeof prepareDocumentUpload>;
+  } | null>(null);
   const [loading, setLoading] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const {
@@ -417,7 +433,10 @@ export default function LifecycleWorkspace({
     data: driveFilesData,
     isLoading: driveFilesLoading,
     mutate: mutateDriveFiles,
-  } = useSWR<ApiResponse<DriveFolderFile[]>>(activeTab === "documents" ? driveFilesKey : null, fetcher);
+  } = useSWR<ApiResponse<DriveFolderFile[]>>(activeTab === "documents" ? driveFilesKey : null, fetcher, {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  });
 
   const documents = useMemo(() => documentsData?.data || [], [documentsData?.data]);
   const documentHistory = useMemo(
@@ -433,6 +452,28 @@ export default function LifecycleWorkspace({
   ];
   const currentStatusLabel = lifecycleStatusOptions.find((option) => option.value === lifecycleForm.current_status)?.label || lifecycleForm.current_status;
   const currentStatusDestination = getStatusDestination(lifecycleForm.current_status, projectId);
+  const uploadInput = useMemo<DirectDocumentUploadInput | null>(() => file && ({
+    endpoint: documentsKey,
+    category: documentForm.category,
+    title: documentForm.title.trim() || file.name,
+    notes: documentForm.notes.trim(),
+    file,
+  }), [documentsKey, documentForm, file]);
+
+  useEffect(() => {
+    if (activeTab !== "documents" || !isAdmin || !projectMeta.driveFolderId || !uploadInput || !documentForm.title.trim() || confirmUpload) return;
+    const timer = setTimeout(() => {
+      if (uploading.current) return;
+      const session = prepareDocumentUpload(uploadInput, true);
+      preparation.current = { input: uploadInput, expires: Date.now() + 30_000, session };
+      void session.catch(() => {
+        if (preparation.current?.session === session) preparation.current = null;
+      });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [activeTab, confirmUpload, documentForm.title, isAdmin, projectMeta.driveFolderId, uploadInput]);
+
+  const uploadFormLocked = Boolean(uploadProgress || confirmUpload);
 
   const saveJson = async (key: string, body: Record<string, string>, next: typeof mutateLifecycle, successMessage: string) => {
     if (!isAdmin) return;
@@ -489,39 +530,52 @@ export default function LifecycleWorkspace({
     }
   };
 
-  const uploadDocument = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!isAdmin || !file) return;
-    setLoading("document");
-    setMessage("กำลังส่งไฟล์ตรงไป Google Drive...");
+  const runDocumentUpload = async (perform: () => Promise<DirectDocumentUploadResult>) => {
+    if (!isAdmin || uploading.current) return;
+    uploading.current = true;
+    setUploadError("");
+    setMessage(null);
     try {
-      const uploadedDocument = await uploadProjectDocumentDirectly({
-        endpoint: documentsKey,
-        category: documentForm.category,
-        title: documentForm.title || file.name,
-        notes: documentForm.notes,
-        file,
-      }) as DocumentRecord | undefined;
+      const uploadedDocument = await perform();
+      setConfirmUpload(null);
       setDocumentForm({ category: "contract", title: "", notes: "" });
       setFile(null);
-      if (uploadedDocument) {
-        void mutateDocuments((current) => ({
-          success: true,
-          data: [uploadedDocument, ...(current?.data || [])],
-        }), { revalidate: false });
-      }
-      void mutateDocuments().catch((error: unknown) => {
-        console.warn("Document list refresh failed after upload:", error);
+      const fetchQuietly = (url: string) => fetch(url, {
+        headers: { "X-PMC-No-Global-Loading": "1" },
+      }).then((response) => {
+        if (!response.ok) throw new Error(`Refresh failed (${response.status})`);
+        return response.json();
       });
-      void mutateDriveFiles().catch((error: unknown) => {
+      void mutateDocuments((current) => ({
+        success: true,
+        data: [uploadedDocument, ...(current?.data || []).filter((doc) => doc.document_id !== uploadedDocument.document_id)],
+      }), { revalidate: false }).then(() => mutateDocuments(fetchQuietly(documentsKey), { revalidate: false }))
+        .catch((error: unknown) => console.warn("Document list refresh failed after upload:", error));
+      void mutateDriveFiles(fetchQuietly(`${driveFilesKey}?fresh=1`), { revalidate: false }).catch((error: unknown) => {
         console.warn("Drive file list refresh failed after upload:", error);
       });
       setMessage("อัปโหลดเข้า Drive และบันทึก version history แล้ว");
     } catch (error: unknown) {
-      setMessage(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
+      setUploadError(error instanceof Error ? error.message : "อัปโหลดไฟล์ไม่สำเร็จ");
     } finally {
-      setLoading("");
+      uploading.current = false;
+      setUploadProgress(null);
     }
+  };
+
+  const uploadDocument = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isAdmin || !projectMeta.driveFolderId || !uploadInput || uploading.current || confirmUpload) return;
+    const candidate = preparation.current;
+    preparation.current = null;
+    void runDocumentUpload(() => uploadProjectDocumentDirectly({
+      ...uploadInput,
+      preparedSession: candidate?.input === uploadInput && candidate.expires > Date.now()
+        ? candidate.session.catch(() => prepareDocumentUpload(uploadInput, true))
+        : undefined,
+      onProgress: setUploadProgress,
+      onConfirmReady: (confirm) => setConfirmUpload(() => confirm),
+    }));
   };
 
   return (
@@ -635,7 +689,7 @@ export default function LifecycleWorkspace({
 
       {activeTab === "documents" && (
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <form onSubmit={uploadDocument} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <form onSubmit={uploadDocument} data-no-global-loading="true" className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-5">
             <h3 className="text-xl font-extrabold text-gray-900">เอกสารโครงการ</h3>
             <p className="text-sm text-gray-500">อัปโหลด PDF หลายไฟล์ พร้อมเก็บ version history ตามหมวดและชื่อเอกสาร</p>
@@ -644,7 +698,7 @@ export default function LifecycleWorkspace({
             <Field label="หมวดเอกสาร">
               <select
                 value={documentForm.category}
-                disabled={!isAdmin}
+                disabled={!isAdmin || uploadFormLocked}
                 onChange={(event) => setDocumentForm((current) => ({ ...current, category: event.target.value }))}
                 className="form-input bg-white"
               >
@@ -656,7 +710,7 @@ export default function LifecycleWorkspace({
             <Field label="ชื่อเอกสาร">
               <input
                 value={documentForm.title}
-                disabled={!isAdmin}
+                disabled={!isAdmin || uploadFormLocked}
                 onChange={(event) => setDocumentForm((current) => ({ ...current, title: event.target.value }))}
                 className="form-input"
                 placeholder="เช่น สัญญาหลัก, แบบก่อสร้าง"
@@ -664,12 +718,12 @@ export default function LifecycleWorkspace({
             </Field>
             <Field label="ไฟล์ PDF">
               <div className="space-y-3 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4">
-                <label className={`attach-file-button ${!isAdmin ? "attach-file-button-disabled" : ""}`}>
+                <label className={`attach-file-button ${!isAdmin || uploadFormLocked ? "attach-file-button-disabled" : ""}`}>
                   <input
                     key={file ? "pdf-selected" : "pdf-empty"}
                     type="file"
                     accept="application/pdf,.pdf"
-                    disabled={!isAdmin}
+                    disabled={!isAdmin || uploadFormLocked}
                     onChange={(event) => setFile(event.target.files?.[0] || null)}
                     className="sr-only"
                   />
@@ -679,7 +733,7 @@ export default function LifecycleWorkspace({
                 {file && (
                   <div className="rounded-lg border border-orange-100 bg-white px-3 py-2">
                     <p className="truncate text-sm font-extrabold text-gray-800">{file.name}</p>
-                    <p className="mt-0.5 text-xs font-semibold text-orange-600">เลือกไฟล์แล้ว แต่ยังไม่ได้อัปโหลด กดปุ่มด้านล่างเพื่อส่งตรงเข้า Drive และบันทึก Version History</p>
+                    {!uploadFormLocked && <p className="mt-0.5 text-xs font-semibold text-orange-600">กดอัปโหลดเพื่อส่งไฟล์เข้า Drive และบันทึก Version History</p>}
                   </div>
                 )}
                 {!file && (
@@ -690,20 +744,36 @@ export default function LifecycleWorkspace({
             <Field label="หมายเหตุ version">
               <textarea
                 value={documentForm.notes}
-                disabled={!isAdmin}
+                disabled={!isAdmin || uploadFormLocked}
                 onChange={(event) => setDocumentForm((current) => ({ ...current, notes: event.target.value }))}
                 className="form-input min-h-20 resize-y"
               />
             </Field>
-            <button disabled={!isAdmin || !file || loading === "document" || !projectMeta.driveFolderId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
-              {loading === "document" ? <Loader2 size={17} className="animate-spin" /> : <FileUp size={17} />}
+            {uploadProgress && (
+              <div className="space-y-1 rounded-lg border border-orange-100 bg-orange-50 px-3 py-2 text-sm text-orange-800">
+                {uploadProgress.stage === "upload" ? (
+                  <>
+                    <p>ส่งไป Google Drive {uploadProgress.percent}%</p>
+                    <progress className="w-full" aria-label="เปอร์เซ็นต์อัปโหลด PDF" value={uploadProgress.percent} max={100} />
+                  </>
+                ) : <p role="status">{uploadProgress.stage === "prepare" ? "กำลังเตรียมช่องทางอัปโหลด" : "กำลังยืนยันไฟล์และบันทึก Version History"}</p>}
+              </div>
+            )}
+            {uploadError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{uploadError}</p>}
+            {confirmUpload && uploadError && (
+              <button type="button" disabled={!isAdmin || Boolean(uploadProgress)} onClick={() => void runDocumentUpload(confirmUpload)} className="rounded-lg border border-orange-200 px-3 py-2 text-sm font-bold text-orange-800">
+                ลองยืนยันไฟล์เดิมอีกครั้ง
+              </button>
+            )}
+            <button disabled={!isAdmin || !file || uploadFormLocked || !projectMeta.driveFolderId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-white transition hover:bg-orange-700 disabled:bg-gray-300">
+              <FileUp size={17} />
               {projectMeta.driveFolderId ? "อัปโหลดตรงไป Drive และบันทึก PDF" : "ต้องตั้งค่า Drive Folder ก่อน"}
             </button>
             {projectMeta.driveFolderId ? (
               <button
                 type="button"
                 onClick={openSelectedDocumentFolder}
-                disabled={loading === "document_folder"}
+                disabled={loading === "document_folder" || uploadFormLocked}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 transition hover:bg-gray-50 disabled:cursor-wait disabled:opacity-70"
               >
                 {loading === "document_folder" ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />}
@@ -728,7 +798,7 @@ export default function LifecycleWorkspace({
               </thead>
               <tbody>
                 {driveFilesLoading && documentHistory.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">กำลังโหลดเอกสาร...</td></tr>
+                  <tr><td colSpan={5}><DataSkeleton /></td></tr>
                 ) : documentHistory.length === 0 ? (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">ยังไม่มีเอกสาร</td></tr>
                 ) : (

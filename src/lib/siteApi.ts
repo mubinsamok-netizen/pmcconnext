@@ -1,7 +1,8 @@
+import type { Session } from "next-auth";
+import { readProjectCatalog } from "./projectCatalog";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
-import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
@@ -13,8 +14,17 @@ export type SiteApiProject = Record<string, string | number | undefined> & {
   drive_folder_id?: string;
 };
 
-export async function getSiteApiContext(projectId: string, requireAdmin = false) {
-  const session = await getServerSession(authOptions);
+export async function getSiteApiContext(projectId: string, requireAdmin = false, options: { readOnly?: boolean; driveOnly?: boolean; session?: Session | null; onTiming?: (phase: string, duration: number) => void } = {}) {
+  const measure = async <T,>(phase: string, work: () => Promise<T>) => {
+    if (!options.onTiming) return work();
+    const started = performance.now();
+    try {
+      return await work();
+    } finally {
+      options.onTiming(phase, performance.now() - started);
+    }
+  };
+  const session = await measure("session", () => options.session === undefined ? getServerSession(authOptions) : Promise.resolve(options.session));
   if (!session?.user) {
     return { error: "Unauthorized", status: 401 as const };
   }
@@ -23,9 +33,10 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Admin only", status: 403 as const };
   }
 
+  const projectSource = measure("site_read", () => readProjectCatalog()) as unknown as Promise<SiteApiProject[]>;
   const [canAccess, projects] = await Promise.all([
-    canAccessProject(projectId, session.user),
-    findAllMaster("Projects") as unknown as Promise<SiteApiProject[]>,
+    measure("site_access", () => canAccessProject(projectId, session.user, projectSource)),
+    projectSource,
   ]);
   if (!canAccess) return { error: "Forbidden", status: 403 as const };
 
@@ -35,6 +46,7 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
   }
 
   const siteSheetId = String(project.site_sheet_id || "").trim();
+  if (options.driveOnly) return { session, project, siteSheetId };
   if (!siteSheetId) {
     if (isSupabaseSiteSchemaMode()) {
       return { session, project, siteSheetId: getSupabaseSiteSchemaName(projectId) };
@@ -42,8 +54,8 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false)
     return { error: "Project has no site sheet", status: 400 as const };
   }
 
-  if (!isSupabaseBackend()) {
-    const schemaResult = await ensureSchema(siteSheetId);
+  if (!options.readOnly && !isSupabaseBackend()) {
+    const schemaResult = await measure("site_schema", () => ensureSchema(siteSheetId));
     if (!schemaResult.success) {
       return {
         error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้งเพื่อป้องกันข้อมูลคลาดเคลื่อน",

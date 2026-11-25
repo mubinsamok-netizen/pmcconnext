@@ -7,6 +7,11 @@ const INTERACTION_WINDOW_MS = 1400;
 const SHOW_DELAY_MS = 120;
 const MAX_VISIBLE_MS = 9000;
 
+function usesSkeleton(pathname: string) {
+  return /^\/dashboard\/(projects|site-map|sales-crm|contractors|schedule)(?:\/|$)/.test(pathname) ||
+    /^\/dashboard\/sites\/[^/]+(?:\/(details|reports|memos|notes|lifecycle|files|qc-checklists|variation-orders|schedule|defects|payment-requests))?\/?$/.test(pathname);
+}
+
 function isSameAppNavigation(anchor: HTMLAnchorElement) {
   if (anchor.target || anchor.hasAttribute("download")) return false;
 
@@ -89,12 +94,14 @@ export default function GlobalLoadingIndicator() {
       const anchor = target?.closest("a[href]");
       if (!(anchor instanceof HTMLAnchorElement) || !isSameAppNavigation(anchor)) return;
 
+      if (usesSkeleton(new URL(anchor.href).pathname)) return;
       navigationPendingRef.current = true;
       interactionAtRef.current = Date.now();
       queueLoader();
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = (event: SubmitEvent) => {
+      if (event.target instanceof Element && event.target.closest("[data-no-global-loading='true']")) return;
       interactionAtRef.current = Date.now();
       navigationPendingRef.current = true;
       queueLoader();
@@ -102,7 +109,10 @@ export default function GlobalLoadingIndicator() {
 
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
-      const isUserInitiated = Date.now() - interactionAtRef.current < INTERACTION_WINDOW_MS;
+      const [input, init] = args;
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      const isUserInitiated = !headers.has("X-PMC-No-Global-Loading") &&
+        Date.now() - interactionAtRef.current < INTERACTION_WINDOW_MS;
       if (isUserInitiated) {
         activeRequestsRef.current += 1;
         queueLoader();
@@ -141,7 +151,7 @@ export default function GlobalLoadingIndicator() {
     }
   }, [pathname]);
 
-  if (!visible) return null;
+  if (!visible || usesSkeleton(pathname)) return null;
 
   return (
     <div className="pmc-global-loading" role="status" aria-live="polite" aria-label="กำลังโหลด">

@@ -1,5 +1,10 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
+import { postNoteAttachmentAction, uploadNoteFile } from "@/lib/directDriveNoteUpload";
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
+import { NoteUploadProgress, type NoteUploadTask } from "./NoteUploadProgress";
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import {
   Archive,
   ExternalLink,
@@ -185,10 +190,12 @@ function NoteCard({
   note,
   onTogglePin,
   onArchive,
+  uploadProgress,
 }: {
   note: SiteNote;
   onTogglePin: (note: SiteNote) => void;
   onArchive: (note: SiteNote) => void;
+  uploadProgress: React.ReactNode;
 }) {
   const attachments = parseAttachments(note.attachments_json);
   const images = attachments.filter(isImage).slice(0, 3);
@@ -231,6 +238,8 @@ function NoteCard({
       </div>
 
       {note.body ? <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">{note.body}</p> : null}
+
+      {uploadProgress}
 
       {images.length > 0 ? (
         <div className="mt-4 grid gap-2 sm:grid-cols-3">
@@ -279,6 +288,19 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
   const [showArchived, setShowArchived] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploads, setUploads] = useState<NoteUploadTask[]>([]);
+  const uploadQueue = useRef(Promise.resolve());
+  const queuedIds = useRef(new Set<string>());
+  const hasActiveUploads = uploads.some(item => item.status !== "failed");
+  useEffect(() => {
+    if (!hasActiveUploads) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasActiveUploads]);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -319,17 +341,66 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
     }), { revalidate: false });
   }
 
+  function queueUpload(task: NoteUploadTask) {
+    if (queuedIds.current.has(task.id)) return;
+    queuedIds.current.add(task.id);
+    const change = (patch: Partial<NoteUploadTask>) => {
+      setUploads(current => current.map(item => item.id === task.id ? { ...item, ...patch } : item));
+    };
+    change({ status: "queued", error: undefined });
+    uploadQueue.current = uploadQueue.current.then(async () => {
+      let fileId = task.fileId;
+      try {
+        if (!fileId) {
+          let file = task.file;
+          if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(file.name)) {
+            change({ status: "preparing" });
+            file = await prepareProjectCover(file);
+          }
+          change({ status: "uploading", percent: 0 });
+          fileId = await uploadNoteFile(endpoint, task.noteId, file, percent => {
+            change({ percent, status: percent === 100 ? "verifying" : "uploading" });
+          });
+        }
+        change({ status: "verifying", fileId });
+        const response = await postNoteAttachmentAction(endpoint, {
+          action: "attach_uploaded_file", note_id: task.noteId, file_id: fileId,
+        });
+        await applySavedNote(response.data);
+        setUploads(current => current.filter(item => item.id !== task.id));
+      } catch (error) {
+        change({ status: "failed", fileId, error: error instanceof Error ? error.message : "อัปโหลดไม่สำเร็จ" });
+      } finally {
+        queuedIds.current.delete(task.id);
+      }
+    });
+  }
+
   function createNote(formData: FormData) {
     setMessage("");
     startTransition(async () => {
       try {
-        const response = await fetch(endpoint, { method: "POST", body: formData });
+        const files = formData.getAll("files").filter((item): item is File => item instanceof File && Boolean(item.name));
+        if (files.length > 8) throw new Error("แนบไฟล์ได้สูงสุด 8 ไฟล์");
+        if (files.some(file => file.size === 0)) throw new Error("มีไฟล์แนบว่างเปล่า กรุณาเลือกไฟล์ใหม่");
+        formData.delete("files");
+        const response = await fetchWithAttachmentLimit(endpoint, { method: "POST", headers: { "X-PMC-No-Global-Loading": "1" }, body: formData });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.error) throw new Error(payload.error || "บันทึกไม่สำเร็จ");
         formRef.current?.reset();
         setSelectedFiles([]);
         await applySavedNote(payload.data);
         setMessage("บันทึกหน้างานเรียบร้อยแล้ว");
+        if (files.length && payload.data?.note_id) {
+          setCategory("all");
+          setQuery("");
+          setShowArchived(false);
+          const tasks: NoteUploadTask[] = files.map(file => ({
+            id: crypto.randomUUID(), noteId: payload.data.note_id, file, status: "queued", percent: 0,
+          }));
+          setUploads(current => [...current, ...tasks]);
+          tasks.forEach(queueUpload);
+        }
       } catch (err) {
         setMessage(err instanceof Error ? err.message : "บันทึกไม่สำเร็จ");
       }
@@ -386,7 +457,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
-        <form ref={formRef} action={createNote} className="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <form ref={formRef} action={createNote} data-no-global-loading="true" className="h-fit rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <Plus className="text-orange-600" size={18} />
             <h3 className="font-bold text-gray-900">เพิ่มบันทึก</h3>
@@ -479,10 +550,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
           ) : null}
 
           {isLoading ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm font-bold text-gray-500">
-              <RefreshCw className="mx-auto mb-3 animate-spin text-gray-400" size={24} />
-              กำลังโหลดบันทึก
-            </div>
+            <DataSkeleton />
           ) : filtered.length === 0 ? (
             <EmptyState />
           ) : (
@@ -491,6 +559,7 @@ export function SiteNotesWorkspace({ projectId }: { projectId: string }) {
                 <NoteCard
                   key={note.note_id}
                   note={note}
+                  uploadProgress={<NoteUploadProgress tasks={uploads.filter(item => item.noteId === note.note_id)} retry={queueUpload} />}
                   onTogglePin={(item) => patchNote(item, { pinned: String(item.pinned || "") !== "TRUE" })}
                   onArchive={(item) => patchNote(item, { archived: showArchived ? false : true })}
                 />

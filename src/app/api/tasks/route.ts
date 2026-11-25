@@ -1,3 +1,6 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
+import { getSiteApiContext } from "@/lib/siteApi";
+import { createScheduleReadTiming } from "@/lib/scheduleReadTiming";
 import { NextResponse } from "next/server";
 import { deleteRow, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
@@ -52,27 +55,31 @@ function getTaskDeleteTargets<T extends Record<string, string | number | undefin
 }
 
 export async function GET(req: Request) {
+  const timing = createScheduleReadTiming();
+  let source: "none" | "supabase" | "sheets" | "sheets_fallback" | "cache" = "none";
+  const respond = (body: Record<string, unknown>, status = 200) => timing.finish(NextResponse.json(body, { status }), performance.now(), source);
   try {
-    const { searchParams } = new URL(req.url);
-    const projectId = searchParams.get("project_id");
-
-    const readSheetsTasks = async () => {
-      const { sheetId } = await getProjectContext(projectId);
-      if (!isSupabaseBackend()) await ensureSchema(sheetId);
-
-      return filterProjectTasks(await findAllRaw("Tasks", sheetId), projectId);
+    const projectId = new URL(req.url).searchParams.get("project_id");
+    const context = projectId ? await timing.measure("site_context", () => getSiteApiContext(projectId, false, { readOnly: true })) : null;
+    if (context && "error" in context) return respond({ error: context.error }, context.status);
+    const readSheets = async () => {
+      source = source === "supabase" ? "sheets_fallback" : "sheets";
+      const { sheetId } = context ? { sheetId: context.siteSheetId } : await getProjectContext(projectId);
+      const rows = await timing.measure("sheets_read", () => findAllRaw("Tasks", sheetId));
+      return projectId ? rows.filter((row) => String(row.project_id || "") === projectId) : rows;
     };
-
-    if (isSupabaseReadEnabled("site")) {
-      // Sheets is a fallback for failed reads, not a required second data source.
-      const tasks = await readWithSheetsFallback("tasks", () => getSupabaseTasks(projectId), readSheetsTasks);
-      return NextResponse.json({ success: true, data: tasks });
-    }
-
-    const tasks = await readSheetsTasks();
-    return NextResponse.json({ success: true, data: tasks });
+    const load = async () => {
+      if (!isSupabaseReadEnabled("site")) return readSheets();
+      source = "supabase";
+      return readWithSheetsFallback("tasks", () => timing.measure("supabase_read", () => getSupabaseTasks(projectId)), readSheets);
+    };
+    let loaded = false;
+    const loadMeasured = () => { loaded = true; return load(); };
+    const data = context ? await timing.measure("menu_read", () => readSiteMenuData(context, "tasks", loadMeasured)) : await load();
+    if (context && !loaded) source = "cache";
+    return respond({ success: true, data });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 

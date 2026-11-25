@@ -16,6 +16,7 @@ function loadTs(relativePath, dependencies) {
     exports: loaded.exports,
     module: loaded,
     require(name) {
+      if ((name === "./projectListCache" || name === "@/lib/projectListCache") && !Object.hasOwn(dependencies, name)) return { invalidateProjectListForWrite() {}, readCachedProjectList: (load) => load(), readCachedProjectHealth: (_, load) => load() };
       assert.ok(Object.hasOwn(dependencies, name), `Unexpected dependency: ${name}`);
       return dependencies[name];
     },
@@ -162,6 +163,7 @@ for (const databaseFails of [false, true]) {
         getErrorMessage: (error) => error.message,
       },
       "@/lib/supabaseRest": {
+        isSupabaseBackend: () => true,
         isSupabaseReadEnabled: () => true,
         readWithSheetsFallback: async (_label, primary, fallback) => {
           try { return await primary(); } catch { return fallback(); }

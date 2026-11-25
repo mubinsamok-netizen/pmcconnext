@@ -1,0 +1,44 @@
+# Project document upload from All Files and Lifecycle
+
+POST JSON to `/api/sites/{projectId}/documents` with
+`action: "create_upload_session"`, `verify_upload: true`, category, title,
+notes, file_name, mime_type, and file_size. The server returns the existing
+session metadata plus a reserved `drive_file_id`. The browser PUTs the
+original PDF to the session URL and reports byte progress.
+
+POST JSON to the same route with `action: "complete_upload"`,
+`verify_upload: true`, the original session's metadata (including
+version_number), and its reserved drive_file_id. The server verifies the
+Drive file, uploader and site binding before recording it. The response
+contains the saved document in `data`. If the browser cannot read Drive's
+response, confirmation still uses the reserved ID. Status 409 means the
+file was not found yet. Retrying confirmation only sends metadata.
+Both forms use the same verified upload flow. Lifecycle displays progress
+in the form and retries confirmation for the reserved file ID after an
+ambiguous transfer or confirmation error.
+
+Check `Server-Timing` for project context, version read, folder lookup,
+Drive ID reservation, session creation, Drive confirmation, and metadata
+write, depending on the request stage. Parallel durations overlap.
+
+Both forms prepare the session after a short pause once a PDF and
+title are present. It sends the PDF only on submit. A prepared session is
+reused for up to 30 seconds for the same file and form values. If it fails
+before transfer, the submit action opens a fresh session. The server times
+session lookup, project reads, site authorization and Sheets schema checks
+separately. Folder lookups reuse the same root/category result briefly and
+retry once on a missing Drive parent.
+
+For verified uploads, Supabase returns only version numbers matching the
+site, category and title during preparation. Confirmation reads the saved
+record by Drive file ID while verifying Drive metadata. For Google Sheets,
+preparation can reuse the same site's read for up to 10 seconds. Listing
+refreshes and confirmation still read fresh rows, and a successful write
+clears the preparation snapshot.
+
+In Google Sheets mode, verified confirmation validates the
+`Project_Documents` header order from the same fresh read used to check
+for the existing project and Drive file ID. Only a matching row is converted
+to a document record. An unreadable or invalid table falls back to repairing
+only that tab after Drive verification. The write is gated on a successful
+reread with valid headers.

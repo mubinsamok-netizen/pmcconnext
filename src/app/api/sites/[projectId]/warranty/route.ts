@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { addYears, isIsoDate } from "@/lib/projectLifecycle";
@@ -41,10 +42,10 @@ function withCalculatedExpiry(patch: Record<string, string>) {
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
-    const rows = await findAll("Project_Warranty", context.siteSheetId);
+    const rows = await readSiteMenuData(context, "warranty", () => findAll("Project_Warranty", context.siteSheetId, undefined, { fresh: true }), 60);
     const warranty = rows.find((row) => row.project_id === context.project.project_id) || null;
 
     return NextResponse.json({ success: true, data: warranty, project: context.project });

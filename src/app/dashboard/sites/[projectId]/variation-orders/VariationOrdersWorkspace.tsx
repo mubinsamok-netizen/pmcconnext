@@ -1,5 +1,7 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
+import { fetchWithAttachmentLimit } from "@/lib/attachmentUpload";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Image from "next/image";
@@ -68,7 +70,6 @@ type ApiResponse = {
   success: boolean;
   project: Project;
   data: Array<VoRecord & { items?: VoItemInput[] }>;
-  tasks: TaskRecord[];
   documents: Array<Record<string, string | number | undefined>>;
   payments: Array<Record<string, string | number | undefined>>;
   ledger: Array<Record<string, string | number | undefined>>;
@@ -245,13 +246,16 @@ type VoPermissions = {
   generateMonthlyReport: boolean;
 };
 
+async function fetchPlanTasks(url: string) {
+  const response = await fetch(url, { headers: { "X-PMC-No-Global-Loading": "1" } });
+  if (!response.ok) throw new Error("โหลดตัวเลือกงานไม่สำเร็จ");
+  return response.json();
+}
+
 export default function VariationOrdersWorkspace({ project, userRole }: { project: Project; userRole: string }) {
   const endpoint = `/api/sites/${encodeURIComponent(project.project_id)}/variation-orders`;
   const { data, isLoading, mutate } = useSWR<ApiResponse>(endpoint, fetcher);
   const vos = useMemo(() => data?.data || [], [data?.data]);
-  const tasks = useMemo(() => data?.tasks || [], [data?.tasks]);
-  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading").sort((a, b) => taskOrder(a) - taskOrder(b)), [tasks]);
-  const workTasks = useMemo(() => tasks.filter((task) => task.task_type !== "heading"), [tasks]);
   const normalizedRole = String(userRole || "").toLowerCase();
   const isClient = normalizedRole === "client";
   const permissions = useMemo(() => ({
@@ -275,6 +279,13 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     });
   }, [isClient, permissions]);
   const [activeTab, setActiveTab] = useState("history");
+  const { data: taskOptions, isLoading: planTasksLoading, error: planTasksError, mutate: reloadPlanTasks } = useSWR<{ data: TaskRecord[] }>(
+    activeTab === "plan" && !isClient && permissions.addToPlan ? `${endpoint}?view=plan-tasks` : null,
+    fetchPlanTasks,
+  );
+  const tasks = useMemo(() => taskOptions?.data || [], [taskOptions?.data]);
+  const headings = useMemo(() => tasks.filter((task) => task.task_type === "heading").sort((a, b) => taskOrder(a) - taskOrder(b)), [tasks]);
+  const workTasks = useMemo(() => tasks.filter((task) => task.task_type !== "heading"), [tasks]);
   const [selectedVoId, setSelectedVoId] = useState("");
   const [editingVoId, setEditingVoId] = useState("");
   const [createForm, setCreateForm] = useState<CreateForm>({
@@ -337,7 +348,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     setError("");
     setDocumentHtml("");
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchWithAttachmentLimit(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, ...payload }),
@@ -394,34 +405,23 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     }
   };
 
-  const startEditVo = (vo: VoRecord & { items?: VoItemInput[] }) => {
-    const existingItems = Array.isArray(vo.items) && vo.items.length > 0
-      ? normalizeEditorItems(vo.items.map((item, index) => ({
-          item_no: item.item_no || index + 1,
-          sort_order: item.sort_order || index + 1,
-          row_type: asVoItemRowType(String(item.row_type || "")),
-          change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(String(vo.vo_type || "VO+"))),
-          parent_item_no: item.parent_item_no,
-          description: String(item.description || ""),
-          unit: String(item.unit || "LS"),
-          quantity: String(item.quantity || "1"),
-          unit_price: String(item.unit_price || ""),
-          material_unit_price: String(item.material_unit_price || ""),
-          material_amount: String(item.material_amount || ""),
-          labor_unit_price: String(item.labor_unit_price || (!item.material_unit_price && !item.labor_unit_price ? item.unit_price || "" : "")),
-          labor_amount: String(item.labor_amount || ""),
-          amount: String(item.amount || ""),
-        })))
-      : [{
-          item_no: 1,
-          sort_order: 1,
-          row_type: "group",
-          change_type: asVoType(String(vo.vo_type || "VO+")) === "VO-" ? "deduct" : "add",
-          description: String(vo.title || vo.description || "งานเพิ่ม-ลด"),
-          unit: "LS",
-          quantity: "1",
-          unit_price: String(vo.grand_total || vo.subtotal || ""),
-        }];
+  const startEditVo = (vo: VoRecord, items: VoItemInput[]) => {
+    const existingItems = normalizeEditorItems(items.map((item, index) => ({
+      item_no: item.item_no || index + 1,
+      sort_order: item.sort_order || index + 1,
+      row_type: asVoItemRowType(String(item.row_type || "")),
+      change_type: asVoItemChangeType(String(item.change_type || item.row_type || ""), asVoType(String(vo.vo_type || "VO+"))),
+      parent_item_no: item.parent_item_no,
+      description: String(item.description || ""),
+      unit: String(item.unit || "LS"),
+      quantity: String(item.quantity || "1"),
+      unit_price: String(item.unit_price || ""),
+      material_unit_price: String(item.material_unit_price || ""),
+      material_amount: String(item.material_amount || ""),
+      labor_unit_price: String(item.labor_unit_price || (!item.material_unit_price && !item.labor_unit_price ? item.unit_price || "" : "")),
+      labor_amount: String(item.labor_amount || ""),
+      amount: String(item.amount || ""),
+    })));
     setSelectedVoId(vo.vo_id);
     setEditingVoId(vo.vo_id);
     setCreateForm({
@@ -464,6 +464,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
     };
     const result = await postAction("add_to_plan", { vo_id: selectedVo.vo_id, plan: planPayload });
     if (result?.success) {
+      void reloadPlanTasks().catch(() => undefined);
       setPlan(emptyPlan);
       setActiveTab("history");
     }
@@ -522,6 +523,10 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
   };
 
   const editVo = async (vo: VoRecord & { items?: VoItemInput[] }) => {
+    if (!Array.isArray(vo.items) || vo.items.length === 0) {
+      setError("ไม่พบรายการงานของ VO นี้ กรุณาโหลดข้อมูลใหม่ก่อนแก้ไข");
+      return;
+    }
     const status = asVoStatus(String(vo.status || ""));
     const requiresRecall = status === "pending_approval" && Boolean(vo.approval_token || vo.sent_to_customer_at);
 
@@ -533,16 +538,15 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
         ...vo,
         ...result.data,
         status: "draft",
-        items: vo.items,
-      } as VoRecord & { items?: VoItemInput[] };
+      };
       setDetailDialogOpen(false);
-      startEditVo(recalledVo);
+      startEditVo(recalledVo, vo.items);
       setMessage(`เรียกกลับ ${vo.vo_id} แล้ว ลิงก์เดิมถูกยกเลิก กรุณาบันทึกและส่ง LINE ฉบับใหม่`);
       return;
     }
 
     setDetailDialogOpen(false);
-    startEditVo(vo);
+    startEditVo(vo, vo.items);
   };
 
   const printVariationOrders = () => {
@@ -607,7 +611,23 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               onCancelEdit={cancelEdit}
             />
           )}
-          {activeTab === "plan" && (
+          {activeTab === "plan" && (planTasksLoading ? (
+            <div role="status" aria-label="กำลังเตรียมตัวเลือกแผนงาน" className="space-y-4 rounded-2xl border border-gray-200 bg-white p-5">
+              <div aria-hidden="true" className="space-y-4 motion-safe:animate-pulse">
+                <div className="h-4 w-36 rounded bg-gray-200" />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="h-10 rounded bg-gray-100" />
+                  <div className="h-10 rounded bg-gray-100" />
+                </div>
+              </div>
+            </div>
+          ) : planTasksError ? (
+            <div className="rounded-2xl border border-gray-200 bg-white p-5">
+              <button type="button" onClick={() => reloadPlanTasks()} className="font-semibold text-red-700">
+                โหลดตัวเลือกงานไม่สำเร็จ ลองอีกครั้ง
+              </button>
+            </div>
+          ) : (
             <PlanSection
               vo={selectedVo}
               plan={plan}
@@ -618,7 +638,7 @@ export default function VariationOrdersWorkspace({ project, userRole }: { projec
               loading={loadingAction === "add_to_plan"}
               canAddToPlan={permissions.addToPlan}
             />
-          )}
+          ))}
           {activeTab === "history" && (
             <HistoryPrintSection
               vos={vos}
@@ -820,7 +840,7 @@ function PipelineSection({
               <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">ยังไม่มีรายการงานเพิ่ม-ลด</td></tr>
             )}
             {isLoading && (
-              <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">กำลังโหลด...</td></tr>
+              <tr><td colSpan={9}><DataSkeleton /></td></tr>
             )}
           </tbody>
         </table>

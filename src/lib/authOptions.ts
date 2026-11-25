@@ -1,4 +1,5 @@
 import { AuthOptions } from "next-auth";
+import { after } from "next/server";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import { getAppRole } from "@/lib/roles";
@@ -33,7 +34,7 @@ function createMemberId() {
   return `M-G-${Date.now().toString().slice(-8)}`;
 }
 
-async function updateLoginStamp(user: TeamRecord, patch: Record<string, string>) {
+async function updateLoginStamp(user: TeamRecord, patch: Record<string, string>, loginAt = new Date().toISOString()) {
   if (!user._rowIndex) return;
   await updateMaster(
     "Team",
@@ -41,7 +42,7 @@ async function updateLoginStamp(user: TeamRecord, patch: Record<string, string>)
     {
       ...patch,
       ...(user.member_id ? { member_id: String(user.member_id) } : {}),
-      last_login_at: new Date().toISOString(),
+      last_login_at: loginAt,
     },
     user._rowIndex
   );
@@ -55,11 +56,11 @@ async function getTeamUserByEmail(email: string) {
 
 async function getCredentialsTeamUserByEmail(email: string) {
   if (isSupabaseBackend()) {
-    const users = await getSupabaseTeamMemberCredentials() as TeamRecord[];
+    const users = await getSupabaseTeamMemberCredentials(normalizeEmail(email)) as TeamRecord[];
     return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
   }
 
-  await ensureMasterSchema();
+  // Login reads existing Team headers directly; schema setup belongs to setup/write flows.
   const users = await findAllMasterRaw("Team") as TeamRecord[];
   return users.find((user) => normalizeEmail(String(user.email || "")) === normalizeEmail(email));
 }
@@ -180,7 +181,16 @@ export const authOptions: AuthOptions = {
             throw new Error("Invalid password");
           }
 
-          await updateLoginStamp(user, { auth_provider: String(user.auth_provider || "credentials") });
+          const loginAt = new Date().toISOString();
+          const stamp = async () => {
+            try {
+              await updateLoginStamp(user, { auth_provider: String(user.auth_provider || "credentials") }, loginAt);
+            } catch (error) {
+              console.error("Successful login history update failed", error);
+            }
+          };
+          // Next.js keeps this task alive after the response; credential checks stay awaited.
+          try { after(stamp); } catch { await stamp(); }
           return toSessionUser(user) as never;
         } catch (error: unknown) {
           console.error("Auth error:", error);
@@ -234,7 +244,11 @@ export const authOptions: AuthOptions = {
         token.authProvider = (user as { authProvider?: string }).authProvider || account?.provider || token.authProvider || "credentials";
       }
 
-      if (account?.provider === "google" && token.email) {
+      if (account?.provider === "google" && user) {
+        token.picture = user.image || token.picture;
+      }
+
+      if (account?.provider === "google" && !user && token.email) {
         const teamUser = await getTeamUserByEmail(String(token.email));
         if (teamUser) {
           token.userId = String(teamUser.member_id || token.userId || "");

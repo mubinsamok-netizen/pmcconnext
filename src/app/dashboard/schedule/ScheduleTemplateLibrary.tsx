@@ -1,5 +1,6 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { FileSpreadsheet, Loader2, Plus, Save, X } from "lucide-react";
@@ -112,7 +113,7 @@ export default function ScheduleTemplateLibrary({ projectName, projectTasks, imp
                   {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
                 </select>
               </label>
-              {isLoading && <p role="status" className="mt-2 text-sm text-gray-500">กำลังโหลดแม่แบบที่บันทึกไว้…</p>}
+              {isLoading && <DataSkeleton rows={2} />}
               {error && <div role="alert" className="mt-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
                 โหลดแม่แบบที่บันทึกไว้ไม่สำเร็จ <button type="button" className="underline" onClick={() => void mutate().catch(() => undefined)}>ลองใหม่</button>
               </div>}

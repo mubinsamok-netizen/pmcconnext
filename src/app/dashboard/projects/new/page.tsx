@@ -1,5 +1,8 @@
 "use client";
 
+import CoverUploadProgress from "../CoverUploadProgress";
+import { submitProjectWithCover } from "@/lib/submitProjectWithCover";
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -112,6 +115,7 @@ export default function CreateProjectPage() {
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState("");
   const [loading, setLoading] = useState(false);
+  const [coverPercent, setCoverPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isForeman = isForemanRole(session?.user?.role);
 
@@ -154,18 +158,19 @@ export default function CreateProjectPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (step !== 3 || loading) return;
+    setCoverPercent(null);
     setLoading(true);
     setError(null);
 
     const formData = new FormData();
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
-    if (coverFile) formData.append("cover", coverFile);
-
     try {
-      const res = await fetch("/api/projects", {
-        method: "POST",
-        body: formData,
-      });
+      if (coverFile) formData.append("cover", await prepareProjectCover(coverFile));
+      const res = coverFile
+        ? await submitProjectWithCover("POST", formData, setCoverPercent)
+        : await fetch("/api/projects", { method: "POST", body: formData });
+      if (res.status === 413) throw new Error("ขนาดข้อมูลเกินกำหนด กรุณาเลือกรูปปกที่เล็กลง");
       const result = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -231,7 +236,7 @@ export default function CreateProjectPage() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit}>
+        <form data-no-global-loading={coverFile ? "true" : undefined} onSubmit={handleSubmit}>
           <div className="p-6 space-y-6">
             {error && (
               <div className="p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
@@ -273,7 +278,7 @@ export default function CreateProjectPage() {
                           <ImagePlus />
                           แนบรูป
                         </span>
-                        <p className="text-sm text-gray-400">PNG/JPG ขนาดไม่เกิน 5MB</p>
+                        <p className="text-sm text-gray-400">รูปจะถูกย่อและแปลงเป็น WebP ก่อนบันทึก</p>
                       </div>
                     )}
                   </label>
@@ -397,6 +402,7 @@ export default function CreateProjectPage() {
             )}
           </div>
 
+          {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
           <div className="p-5 border-t border-gray-100 bg-gray-50 flex items-center gap-3">
             <button
               type="button"
@@ -412,9 +418,13 @@ export default function CreateProjectPage() {
             </Link>
             {step < 3 ? (
               <button
+                key="next"
                 type="button"
                 disabled={!canContinue}
-                onClick={() => setStep((value) => Math.min(3, value + 1))}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setStep((value) => Math.min(3, value + 1));
+                }}
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700 disabled:opacity-50"
               >
                 ถัดไป
@@ -422,6 +432,7 @@ export default function CreateProjectPage() {
               </button>
             ) : (
               <button
+                key="save"
                 disabled={loading}
                 type="submit"
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700 disabled:opacity-70 disabled:cursor-wait"

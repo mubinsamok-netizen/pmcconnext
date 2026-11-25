@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ACCOUNTING_UNKNOWN_FOLDER_ID, appendAccountingTransaction } from "@/lib/accountingSlips";
 import { uploadFile } from "@/lib/drive";
 import { replyLineMessages } from "@/lib/line";
+import { isLineDeliveryDisabled } from "@/lib/lineDeliveryPolicy";
 
 export const runtime = "nodejs";
 
@@ -162,6 +163,9 @@ async function handleEvent(event: LineEvent) {
 }
 
 export async function POST(request: NextRequest) {
+  if (isLineDeliveryDisabled()) {
+    return NextResponse.json({ ok: true, handled: false, reason: "LINE_DELIVERY_DISABLED_FOR_BRANCH" });
+  }
   const rawBody = await request.text();
 
   if (!verifyLineSignature(rawBody, request.headers.get("x-line-signature"))) {
@@ -195,6 +199,6 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     endpoint: "/api/accounting/line-webhook",
-    status: "ready",
+    status: isLineDeliveryDisabled() ? "disabled_for_branch" : "ready",
   });
 }

@@ -1,4 +1,6 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import fs from "fs";
 import path from "path";
 import { writeAuditLog } from "@/lib/auditLog";
@@ -15,12 +17,18 @@ import {
   type CustomerDecisionRecord,
   type CustomerDecisionUploadPayload,
 } from "@/lib/customerDecisions";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createFolder, createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { auth, drive } from "@/lib/google";
+import {
+  DECISION_EVIDENCE_MAX_FILES, DECISION_EVIDENCE_MAX_FILE_SIZE, DECISION_EVIDENCE_MAX_TOTAL_SIZE, decisionEvidenceMime,
+} from "@/lib/decisionEvidenceUpload";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAll, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAll, findAllBatch, findAllRaw, findAllWithValidHeaders, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext } from "@/lib/siteApi";
+import { ensureSiteTableSchema } from "@/lib/sheetsSetup";
+import { isSupabaseBackend } from "@/lib/supabaseRest";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
   session: {
@@ -146,6 +154,122 @@ async function getDecisionFolder(context: RouteContext, decisionId: string) {
   return decisionFolder.id || rootFolderId;
 }
 
+async function getEvidenceDecision(context: RouteContext, decisionId: string, checkedRows?: CustomerDecisionRecord[]) {
+  const projectId = context.project.project_id;
+  const rows = checkedRows ?? (
+    await findAllBatch(["Customer_Decisions"], context.siteSheetId, { projectId, fresh: true })
+  ).Customer_Decisions as unknown as CustomerDecisionRecord[];
+  return rows.find((row) =>
+    row.project_id === projectId && row.decision_id === decisionId && row.active !== "FALSE");
+}
+
+function evidenceBinding(context: RouteContext, decisionId: string, storedName: string, size: number, mimeType: string) {
+  return createHash("sha256").update(JSON.stringify([
+    context.project.project_id, decisionId, actor(context).email.toLowerCase(), storedName, size, mimeType,
+  ])).digest("hex");
+}
+
+function parseEvidenceUploadFiles(value: unknown) {
+  const files = Array.isArray(value) ? value.map((file) => ({
+    name: text(file?.name), size: Number(file?.size),
+  })) : [];
+  if (!files.length || files.length > DECISION_EVIDENCE_MAX_FILES ||
+    files.some(({ name, size }) => !decisionEvidenceMime(name) || !Number.isSafeInteger(size) || size <= 0 || size > DECISION_EVIDENCE_MAX_FILE_SIZE) ||
+    files.reduce((sum, file) => sum + file.size, 0) > DECISION_EVIDENCE_MAX_TOTAL_SIZE) {
+    return null;
+  }
+  return files;
+}
+
+async function startEvidenceUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const decisionId = text(body.decision_id);
+  const files = parseEvidenceUploadFiles(body.files);
+  if (!files) return NextResponse.json({ error: "ชนิด จำนวน หรือขนาดไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+  if (!decisionId || !await getEvidenceDecision(context, decisionId)) {
+    return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแนบหลักฐาน" }, { status: 404 });
+  }
+  if (!text(context.project.drive_folder_id)) {
+    return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์" }, { status: 400 });
+  }
+  const data = await openEvidenceSessions(req, context, decisionId, files, false);
+  return NextResponse.json({ success: true, data }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function openEvidenceSessions(req: Request, context: RouteContext, decisionId: string, files: { name: string; size: number }[], isNew: boolean) {
+  const findEvidenceFolder = async () => {
+    if (!isNew) {
+      const parent = await getDecisionFolder(context, decisionId);
+      if (!parent) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์");
+      return (await findOrCreateFolder("Evidence", parent)).id || parent;
+    }
+    const root = await getDecisionRootFolder(context);
+    if (!root) throw new Error("ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์");
+    const parent = await createFolder(safeFolderName(decisionId), root);
+    if (!parent.id) throw new Error("สร้างโฟลเดอร์หลักฐานไม่สำเร็จ");
+    return (await createFolder("Evidence", parent.id)).id || parent.id;
+  };
+  const [folderId, reserved] = await Promise.all([
+    findEvidenceFolder(),
+    drive.files.generateIds({ count: files.length, space: "drive" }),
+  ]);
+  return Promise.all(files.map(async ({ name, size }, index) => {
+    const fileId = reserved.data.ids?.[index];
+    const mimeType = decisionEvidenceMime(name);
+    if (!fileId || !mimeType) throw new Error("เปิดช่องทางอัปโหลดหลักฐานไม่ครบ");
+    const fileName = `${Date.now()}-${safeFolderName(name)}`;
+    const session = await createResumableUploadSession({
+      fileName, mimeType, size, parentId: folderId, origin: new URL(req.url).origin, fileId,
+      appProperties: { pmcDecisionEvidence: evidenceBinding(context, decisionId, fileName, size, mimeType) },
+    });
+    return { file_id: fileId, upload_url: session.uploadUrl };
+  }));
+}
+
+async function attachEvidence(body: Record<string, unknown>, context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
+  const decisionId = text(body.decision_id);
+  const ids = body.file_ids;
+  if (!Array.isArray(ids) || !ids.length || ids.length > DECISION_EVIDENCE_MAX_FILES ||
+    ids.some((id) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{10,}$/.test(id))) {
+    return NextResponse.json({ error: "รหัสไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+  const current = decisionId ? await getEvidenceDecision(context, decisionId, checkedRows) : undefined;
+  if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแนบหลักฐาน" }, { status: 404 });
+  const existing = parseDecisionEvidenceFiles(current.evidence_files_json);
+  const knownIds = new Set(existing.map((file) => file.file_id));
+  const pending = [...new Set<string>(ids)].filter((id) => !knownIds.has(id));
+  if (!pending.length) return NextResponse.json({ success: true, data: current });
+
+  const files = await Promise.all(pending.map(async (fileId) => {
+    try {
+      const { data: file } = await drive.files.get({
+        fileId, supportsAllDrives: true, fields: "name,size,mimeType,trashed,appProperties,webViewLink",
+      });
+      const name = file.name || "";
+      const mimeType = decisionEvidenceMime(name);
+      const size = Number(file.size);
+      if (file.trashed || !mimeType || file.mimeType !== mimeType || !Number.isSafeInteger(size) || size <= 0 ||
+        file.appProperties?.pmcDecisionEvidence !== evidenceBinding(context, decisionId, name, size, mimeType)) return null;
+      return { file_id: fileId, file_name: name.replace(/^\d+-/, ""), file_url: file.webViewLink || `https://drive.google.com/file/d/${fileId}/view`, mime_type: mimeType };
+    } catch (error) {
+      if ((error as { code?: number }).code === 404) return null;
+      throw error;
+    }
+  }));
+  if (files.some((file) => !file)) {
+    return NextResponse.json({ error: "ยังยืนยันไฟล์ใน Drive ไม่สำเร็จ กรุณาลองยืนยันอีกครั้ง" }, { status: 409 });
+  }
+  const patch = { evidence_files_json: safeJsonStringify([...existing, ...files]) };
+  await updateCustomerDecision(context, current, patch);
+  await writeAuditLog({
+    actor: actor(context), projectId: context.project.project_id, module: "customer_decisions",
+    action: "updated", targetId: decisionId, summary: `แนบหลักฐานการตัดสินใจ: ${current.title}`,
+    before: current, after: patch,
+  });
+  return NextResponse.json({ success: true, data: { ...current, ...patch } });
+}
+
 async function uploadDecisionFiles(context: RouteContext, decisionId: string, uploads: CustomerDecisionUploadPayload[]) {
   const files = uploads.filter((file) => file?.dataUrl && file.name).slice(0, 10);
   if (files.length === 0) return [];
@@ -203,8 +327,8 @@ async function attachEvidenceDataUrls(decision: CustomerDecisionRecord) {
   };
 }
 
-async function getRows(context: RouteContext) {
-  return await findAll("Customer_Decisions", context.siteSheetId) as unknown as CustomerDecisionRecord[];
+async function getRows(context: RouteContext, fresh = false) {
+  return await findAll("Customer_Decisions", context.siteSheetId, undefined, { fresh }) as unknown as CustomerDecisionRecord[];
 }
 
 async function getFallbackRowIndex(context: RouteContext, decision: CustomerDecisionRecord) {
@@ -258,8 +382,8 @@ async function seedDefaultRows(context: RouteContext) {
   }, context.siteSheetId)));
 }
 
-async function getDecisionData(context: RouteContext) {
-  let rows = await getRows(context);
+async function getDecisionData(context: RouteContext, checkedRows?: CustomerDecisionRecord[]) {
+  let rows = checkedRows ?? await getRows(context);
   const projectRows = rows.filter((row) => row.project_id === context.project.project_id);
 
   if (projectRows.length === 0) {
@@ -273,7 +397,26 @@ async function getDecisionData(context: RouteContext) {
     .sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0));
 }
 
-async function handleSave(body: Record<string, unknown>, context: RouteContext) {
+const invalidDecisionSchema = () => NextResponse.json({
+  error: "ตรวจสอบโครงสร้าง Google Sheets ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+}, { status: 503 });
+
+async function readCheckedDecisionRows(siteSheetId: string) {
+  const read = () => findAllWithValidHeaders("Customer_Decisions", siteSheetId);
+  let rows = await read().catch(() => null);
+  if (!rows) {
+    const schema = await ensureSiteTableSchema(siteSheetId, "Customer_Decisions");
+    if (schema.success) rows = await read().catch(() => null);
+  }
+  return rows as unknown as CustomerDecisionRecord[] | null;
+}
+
+async function handleSave(
+  req: Request,
+  body: Record<string, unknown>,
+  context: RouteContext,
+  checkRows?: () => Promise<CustomerDecisionRecord[] | null>,
+) {
   const decisionId = text(body.decision_id);
   const payload = {
     project_id: context.project.project_id,
@@ -293,11 +436,36 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
   if (!payload.phase || !payload.title || !payload.decision_before || !payload.impact_if_changed) {
     return NextResponse.json({ error: "กรุณากรอกข้อมูลรายการตัดสินใจให้ครบ" }, { status: 400 });
   }
+  const uploadFiles = parseEvidenceUploadFiles(body.upload_files);
+  if (body.upload_files !== undefined && !uploadFiles) {
+    return NextResponse.json({ error: "ชนิด จำนวน หรือขนาดไฟล์หลักฐานไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (uploadFiles && !actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+  const metrics: string[] = [];
+  const prepare = (id: string, isNew: boolean) => {
+    if (!uploadFiles) return undefined;
+    const started = performance.now();
+    return openEvidenceSessions(req, context, id, uploadFiles, isNew)
+      .catch(() => undefined)
+      .finally(() => metrics.push(`drive_sessions;dur=${(performance.now() - started).toFixed(2)}`));
+  };
+  const finish = async (data: Record<string, unknown>, prepared: ReturnType<typeof prepare>, started: number) => {
+    if (!prepared) return NextResponse.json({ success: true, ...data });
+    metrics.push(`decision_save;dur=${(performance.now() - started).toFixed(2)}`);
+    const upload_sessions = await prepared;
+    return NextResponse.json({ success: true, ...data, upload_sessions }, {
+      headers: { "Cache-Control": "no-store", "Server-Timing": metrics.join(", ") },
+    });
+  };
+  const started = performance.now();
 
   if (decisionId) {
-    const rows = await getRows(context);
+    const checkedRows = await checkRows?.();
+    if (checkedRows === null) return invalidDecisionSchema();
+    const rows = checkedRows ?? await getRows(context);
     const current = rows.find((row) => row.decision_id === decisionId && row.project_id === context.project.project_id);
-    if (!current?._rowIndex) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแก้ไข" }, { status: 404 });
+    if (!current?._rowIndex || (uploadFiles && current.active === "FALSE")) return NextResponse.json({ error: "ไม่พบรายการที่ต้องการแก้ไข" }, { status: 404 });
+    const prepared = prepare(decisionId, false);
     const uploadedEvidenceFiles = await uploadDecisionFiles(context, decisionId, parseUploads(body.evidence_uploads));
     const nextEvidenceFiles = [
       ...parseDecisionEvidenceFiles(current.evidence_files_json),
@@ -320,11 +488,14 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
       after: patch,
     });
 
-    return NextResponse.json({ success: true });
+    return finish({}, prepared, started);
   }
 
-  const nextRows = await getDecisionData(context);
   const createdId = createCustomerDecisionId();
+  const prepared = prepare(createdId, true);
+  const checkedRows = await checkRows?.();
+  if (checkedRows === null) return invalidDecisionSchema();
+  const nextRows = await getDecisionData(context, checkedRows);
   const nextEvidenceFiles = await uploadDecisionFiles(context, createdId, parseUploads(body.evidence_uploads));
   const createdPayload = applyConfirmationDefaults(payload, context);
   const created = {
@@ -352,7 +523,7 @@ async function handleSave(body: Record<string, unknown>, context: RouteContext) 
     after: created,
   });
 
-  return NextResponse.json({ success: true, data: created });
+  return finish({ data: created }, prepared, started);
 }
 
 async function handleDelete(body: Record<string, unknown>, context: RouteContext) {
@@ -512,7 +683,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
-    const data = await getDecisionData(routeContext);
+    const rows = await readSiteMenuData(routeContext, "customer-decision-rows", () => getRows(routeContext, true));
+    const data = await getDecisionData(routeContext, rows);
 
     return NextResponse.json({
       success: true,
@@ -532,13 +704,29 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-    const routeContext = context as RouteContext;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action) || "save";
-
-    if (action === "save") return handleSave(body, routeContext);
+    const evidenceWrite = action === "attach_evidence" || (action === "save" && body.upload_files !== undefined);
+    const prepareContext = action === "prepare_evidence_context";
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, {
+      readOnly: prepareContext || action === "start_evidence_uploads" || evidenceWrite,
+    });
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const routeContext = context as RouteContext;
+    if (prepareContext) {
+      if (!actor(routeContext).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+      const client = await auth.getClient();
+      await client.getAccessToken();
+      return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (action === "start_evidence_uploads") return startEvidenceUploads(req, body, routeContext);
+    const checkRows = evidenceWrite && !isSupabaseBackend() ? () => readCheckedDecisionRows(context.siteSheetId) : undefined;
+    if (action === "attach_evidence") {
+      const rows = await checkRows?.();
+      if (rows === null) return invalidDecisionSchema();
+      return attachEvidence(body, routeContext, rows);
+    }
+    if (action === "save") return handleSave(req, body, routeContext, checkRows);
     if (action === "delete") return handleDelete(body, routeContext);
     if (action === "notify_line") return handleNotify(req, body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(req, body, routeContext);

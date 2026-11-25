@@ -3,9 +3,9 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { clearProjectAccessCache, filterProjectsForUser } from "@/lib/authz";
 import { isForemanRole } from "@/lib/siteAccess";
-import { findOrCreateFolder, setupProjectFolders, uploadFile } from "@/lib/drive";
+import { findOrCreateFolder, setupProjectFolders } from "@/lib/drive";
+import { uploadProjectCoverFiles } from "@/lib/uploadProjectCover";
 import { DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
-import { getProjectContext } from "@/lib/siteContext";
 import {
   getAlertState,
   getLifecycleReminderTargets,
@@ -16,7 +16,9 @@ import {
 import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
-import { findAllBatch, findAllMaster, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
+import { readProjectCatalog } from "@/lib/projectCatalog";
+import { readCachedProjectHealth } from "@/lib/projectListCache";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -46,6 +48,11 @@ type ProjectLifecycleAlert = {
 };
 
 const DAILY_REPORT_STALE_DAYS = 7;
+const PROJECT_HEALTH_FIELDS: Array<keyof ProjectHealth> = [
+  "percent_done", "tasks_count", "completed_tasks", "overdue_tasks", "delay_days", "progress_source",
+  "daily_reports_count", "last_daily_report_date", "daily_report_missing_days", "daily_report_alert",
+  "lifecycle_alerts_count", "lifecycle_alerts_json",
+];
 
 function withSiteStorageMetadata(project: SheetRecord) {
   const projectId = String(project.project_id || "").trim();
@@ -115,13 +122,7 @@ async function uploadProjectCover(coverFile: File, projectId: string, driveFolde
     throw new Error("ไม่พบ Google Drive Folder ID สำหรับอัปโหลดรูปปก");
   }
 
-  const bytes = Buffer.from(await coverFile.arrayBuffer());
-  return uploadFile(
-    `cover-${projectId}-${Date.now()}-${coverFile.name}`,
-    coverFile.type || "application/octet-stream",
-    bytes,
-    uploadFolderId
-  );
+  return uploadProjectCoverFiles(coverFile, projectId, uploadFolderId);
 }
 
 async function readProjectPayload(req: Request) {
@@ -291,26 +292,36 @@ function calculateLifecycleAlerts(projectId: string, lifecycle?: SheetRecord, wa
   };
 }
 
-async function enrichProjectWithHealth(project: SheetRecord) {
+async function enrichProjectWithHealth(project: SheetRecord, cacheHealth = false): Promise<SheetRecord & ProjectHealth> {
   const projectId = String(project.project_id || "").trim();
   if (!projectId) {
     return { ...project, ...calculateProjectHealth(project, []) };
   }
 
   try {
-    const { sheetId } = await getProjectContext(projectId);
-    const rows = await findAllBatch(["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"], sheetId) as Record<string, SheetRecord[]>;
-    const tasks = rows.Tasks || [];
-    const dailyReports = rows.Daily_Reports || [];
-    const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
-    const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
-    const projectTasks = tasks.filter((task) => task.project_id === projectId);
-    return {
-      ...project,
-      ...calculateProjectHealth(project, projectTasks),
-      ...calculateDailyReportHealth(project, dailyReports),
-      ...calculateLifecycleAlerts(projectId, lifecycle, warranty),
+    const loadHealth = async (): Promise<ProjectHealth> => {
+      const sheetId = String(project.site_sheet_id || "").trim();
+      if (!sheetId && !isSupabaseBackend()) {
+        throw new Error(`Project ${projectId} has no site sheet`);
+      }
+      const rows = await findAllBatch(
+        ["Tasks", "Daily_Reports", "Project_Lifecycle", "Project_Warranty"],
+        sheetId || projectId,
+        { projectId, ...(cacheHealth ? { fresh: true, projectHealth: true } : {}) }
+      ) as Record<string, SheetRecord[]>;
+      const tasks = rows.Tasks || [];
+      const dailyReports = rows.Daily_Reports || [];
+      const lifecycle = (rows.Project_Lifecycle || []).find((row) => row.project_id === projectId);
+      const warranty = (rows.Project_Warranty || []).find((row) => row.project_id === projectId);
+      const projectTasks = tasks.filter((task) => task.project_id === projectId);
+      return {
+        ...calculateProjectHealth(project, projectTasks),
+        ...calculateDailyReportHealth(project, dailyReports),
+        ...calculateLifecycleAlerts(projectId, lifecycle, warranty),
+      };
     };
+    const health = cacheHealth ? await readCachedProjectHealth(project, loadHealth) : await loadHealth();
+    return { ...project, ...health };
   } catch (error: unknown) {
     console.warn(`Failed to calculate progress for ${project.project_id}:`, error);
     return { ...project, ...calculateProjectHealth(project, []) };
@@ -327,21 +338,40 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const readSheetsProjects = async () => {
-      if (!isSupabaseBackend()) await ensureMasterSchema();
-      return await findAllMaster("Projects");
-    };
+    const requestedProjectIds = new Set(searchParams.getAll("projectId"));
+    if (mode === "health" && requestedProjectIds.size > 10) {
+      return NextResponse.json({ error: "Request up to 10 projects at a time" }, { status: 400 });
+    }
+    if (mode === "health" && requestedProjectIds.size === 0) {
+      return NextResponse.json({ success: true, data: [] });
+    }
 
-    const projects = isSupabaseReadEnabled("projects")
+    const cachedMode = mode === "basic" || mode === "health";
+    const readSheetsProjects = () => cachedMode ? findAllMasterRaw("Projects") : findAllMaster("Projects");
+
+    const loadProjects = async () => isSupabaseReadEnabled("projects")
       ? await readWithSheetsFallback("projects", getSupabaseProjects, readSheetsProjects)
-      : await readSheetsProjects();
+      : readSheetsProjects();
+    const projects = cachedMode ? await readProjectCatalog() : await loadProjects();
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
     if (mode === "basic") {
       return NextResponse.json({ success: true, data: accessibleProjects.map(withSiteStorageMetadata) });
     }
 
-    const projectsWithHealth = await Promise.all(accessibleProjects.map(enrichProjectWithHealth));
+    const healthProjects = mode === "health"
+      ? accessibleProjects.filter((project) => requestedProjectIds.has(String(project.project_id)))
+      : accessibleProjects;
+    const projectsWithHealth = await Promise.all(healthProjects.map((project) => enrichProjectWithHealth(project, cachedMode)));
+    if (mode === "health") {
+      return NextResponse.json({
+        success: true,
+        data: projectsWithHealth.map((project) => ({
+          project_id: project.project_id,
+          ...Object.fromEntries(PROJECT_HEALTH_FIELDS.map((field) => [field, project[field]])),
+        })),
+      });
+    }
     return NextResponse.json({ success: true, data: projectsWithHealth.map(withSiteStorageMetadata) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

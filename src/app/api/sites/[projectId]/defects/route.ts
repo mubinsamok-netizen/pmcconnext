@@ -1,4 +1,6 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { writeAuditLog } from "@/lib/auditLog";
 import {
   buildDefectAcknowledgementLineFlex,
@@ -14,11 +16,13 @@ import {
   type DefectPhotoRef,
   type DefectRoundRecord,
 } from "@/lib/defects";
-import { downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { createResumableUploadSession, downloadFile, findOrCreateFolder, uploadFile } from "@/lib/drive";
+import { drive } from "@/lib/google";
+import { PROJECT_COVER_MAX_BYTES } from "@/lib/prepareProjectCover";
 import { sendLineMessages } from "@/lib/line";
 import { renderHtmlToPdfBuffer } from "@/lib/pdfRenderer";
 import { getPublicAppOrigin } from "@/lib/publicUrl";
-import { findAllBatch, findAllMaster, findAllRaw, insert, update } from "@/lib/sheetsCrud";
+import { findAllBatch, findAllRaw, insert, update } from "@/lib/sheetsCrud";
 import { getErrorMessage, getSiteApiContext, makeId } from "@/lib/siteApi";
 
 type RouteContext = Awaited<ReturnType<typeof getSiteApiContext>> & {
@@ -159,28 +163,22 @@ async function updateDefectItem(context: RouteContext, item: DefectItemRecord, p
   );
 }
 
-async function getDefectData(context: RouteContext) {
-  const [siteRows, auditLogs] = await Promise.all([
-    findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId) as unknown as Promise<Record<string, Record<string, string | number | undefined>[]>>,
-    findAllMaster("AuditLogs") as Promise<Record<string, string | number | undefined>[]>,
-  ]);
-  const roundRows = (siteRows.Defect_Rounds || []) as DefectRoundRecord[];
-  const itemRows = (siteRows.Defect_Items || []) as DefectItemRecord[];
-  const evidenceRows = siteRows.Defect_Evidence || [];
+async function getDefectData(
+  context: RouteContext,
+  onSource?: NonNullable<Parameters<typeof findAllBatch>[2]>["onSource"],
+  fresh = false,
+) {
   const projectId = context.project.project_id;
-  const rounds = roundRows.filter((row) => row.project_id === projectId);
-  const items = itemRows.filter((row) => row.project_id === projectId);
-  const evidence = evidenceRows.filter((row) => row.project_id === projectId);
+  const siteRows = await findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId, {
+    projectId,
+    onSource,
+    fresh,
+  });
+  const rounds = ((siteRows.Defect_Rounds || []) as unknown as DefectRoundRecord[]).filter((row) => row.project_id === projectId);
+  const items = ((siteRows.Defect_Items || []) as unknown as DefectItemRecord[]).filter((row) => row.project_id === projectId);
+  const evidence = (siteRows.Defect_Evidence || []).filter((row) => row.project_id === projectId);
 
-  return {
-    rounds,
-    items,
-    evidence,
-    auditLogs: auditLogs
-      .filter((log) => log.project_id === projectId && log.module === "defects")
-      .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
-      .slice(0, 120),
-  };
+  return { rounds, items, evidence };
 }
 
 async function getDefectRoundFolder(context: RouteContext, roundId: string) {
@@ -189,6 +187,93 @@ async function getDefectRoundFolder(context: RouteContext, roundId: string) {
   const defectRoot = await findOrCreateFolder("Defect Inspections", rootFolderId);
   const roundFolder = await findOrCreateFolder(safeFolderName(roundId), defectRoot.id || rootFolderId);
   return roundFolder.id || null;
+}
+
+function defectPhotoBinding(context: RouteContext, roundId: string, itemId: string, size: number) {
+  return createHash("sha256").update(JSON.stringify([
+    context.project.project_id, roundId, itemId, actor(context).email.toLowerCase(), size,
+  ])).digest("hex");
+}
+
+async function startPhotoUploads(req: Request, body: Record<string, unknown>, context: RouteContext) {
+  const acknowledgement = body.evidence === "acknowledgement";
+  const { rounds, items } = acknowledgement
+    ? await findAllBatch(["Defect_Rounds"], context.siteSheetId, { projectId: context.project.project_id })
+        .then(rows => ({
+          rounds: (rows.Defect_Rounds as unknown as DefectRoundRecord[]).filter(row => row.project_id === context.project.project_id),
+          items: [],
+        }))
+    : await getDefectData(context);
+  const itemId = text(body.item_id);
+  const item = itemId ? items.find((row) => row.item_id === itemId) : undefined;
+  if (itemId && !item) return NextResponse.json({ error: "ไม่พบรายการ defect" }, { status: 404 });
+  const roundId = item?.round_id || text(body.round_id);
+  const round = rounds.find((row) => row.round_id === roundId);
+  if (!round) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
+  if (!itemId && isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้ล็อกแล้ว" }, { status: 400 });
+  if (acknowledgement && (itemId || !round.pdf_url)) {
+    return NextResponse.json({ error: "กรุณาออก PDF ก่อนแนบหลักฐานรับทราบ" }, { status: 400 });
+  }
+  const limit = acknowledgement ? 6 : 4;
+  if (!actor(context).email) return NextResponse.json({ error: "ไม่พบผู้ใช้อัปโหลด" }, { status: 403 });
+
+  const files = Array.isArray(body.files) ? body.files.map((file) => ({
+    name: text(file?.name),
+    size: Number(file?.size),
+  })) : [];
+  if (!files.length || files.length > limit || files.some(({ name, size }) => (
+    !/\.webp$/i.test(name) || !Number.isSafeInteger(size) || size <= 0 || size > PROJECT_COVER_MAX_BYTES
+  ))) return NextResponse.json({ error: `กรุณาแนบรูป WebP ที่ใช้งานได้ ไม่เกิน ${limit} รูป` }, { status: 400 });
+
+  const [roundFolderId, reserved] = await Promise.all([
+    getDefectRoundFolder(context, roundId),
+    drive.files.generateIds({ count: files.length, space: "drive" }),
+  ]);
+  if (!roundFolderId) return NextResponse.json({ error: "ยังไม่ได้ตั้งค่าโฟลเดอร์ Drive ของไซต์" }, { status: 400 });
+  const folder = await findOrCreateFolder(acknowledgement ? "Customer Acknowledgement" : itemId ? "After Photos" : "Before Photos", roundFolderId);
+  const data = await Promise.all(files.map(async ({ name, size }, index) => {
+    const fileId = reserved.data.ids?.[index];
+    if (!fileId) throw new Error("Google Drive ไม่สามารถจองรหัสรูปภาพได้");
+    const session = await createResumableUploadSession({
+      fileName: `${Date.now()}-${safeFolderName(name)}`,
+      mimeType: "image/webp",
+      size,
+      parentId: folder.id || roundFolderId,
+      origin: new URL(req.url).origin,
+      fileId,
+      appProperties: { pmcDefectPhoto: defectPhotoBinding(context, roundId, acknowledgement ? "acknowledgement" : itemId, size) },
+    });
+    return { file_id: fileId, upload_url: session.uploadUrl };
+  }));
+  return NextResponse.json({ success: true, data }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function verifyDefectPhotos(context: RouteContext, roundId: string, itemId: string, value: unknown, limit = 4) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > limit || !actor(context).email ||
+    value.some((id) => typeof id !== "string" || !/^[a-zA-Z0-9_-]{10,}$/.test(id))) return null;
+
+  const photos = await Promise.all([...new Set<string>(value)].map(async (id) => {
+    try {
+      const { data: file } = await drive.files.get({
+        fileId: id,
+        supportsAllDrives: true,
+        fields: "name,size,mimeType,trashed,appProperties,webViewLink",
+      });
+      if (file.trashed || file.mimeType !== "image/webp" ||
+        file.appProperties?.pmcDefectPhoto !== defectPhotoBinding(context, roundId, itemId, Number(file.size))) return null;
+      return {
+        file_id: id,
+        file_name: file.name || "photo.webp",
+        file_url: file.webViewLink || `https://drive.google.com/file/d/${id}/view`,
+        mime_type: "image/webp",
+      } satisfies DefectPhotoRef;
+    } catch (error) {
+      if ((error as { code?: number }).code === 404) return null;
+      throw error;
+    }
+  }));
+  return photos.every((photo) => photo !== null) ? photos : null;
 }
 
 async function uploadDefectFiles(context: RouteContext, roundId: string, folderName: string, uploads: UploadPayload[]) {
@@ -306,7 +391,17 @@ async function handleAddItem(body: Record<string, unknown>, context: RouteContex
   if (!text(body.description)) return NextResponse.json({ error: "กรุณาระบุรายการที่ตรวจพบ" }, { status: 400 });
 
   const itemsInRound = data.items.filter((item) => item.round_id === roundId);
-  const beforePhotos = await uploadDefectFiles(context, roundId, "Before Photos", parseUploads(body.before_photo_uploads));
+  const beforePhotos = body.before_photo_ids === undefined
+    ? await uploadDefectFiles(context, roundId, "Before Photos", parseUploads(body.before_photo_uploads))
+    : await verifyDefectPhotos(context, roundId, "", body.before_photo_ids);
+  if (!beforePhotos) return NextResponse.json({ error: "ยังยืนยันรูปก่อนแก้ใน Drive ไม่สำเร็จ กรุณาลองบันทึกอีกครั้ง" }, { status: 409 });
+  if (body.before_photo_ids !== undefined && beforePhotos.length) {
+    const priorItem = itemsInRound.find((item) => {
+      const savedIds = new Set(parsePhotoRefs(item.before_photos_json).map((photo) => photo.file_id));
+      return beforePhotos.every((photo) => savedIds.has(photo.file_id));
+    });
+    if (priorItem) return NextResponse.json({ success: true, data: priorItem });
+  }
   const itemNo = itemsInRound.length + 1;
   const payload = {
     item_id: makeId("DFI"),
@@ -508,13 +603,26 @@ async function handleIssueTrackingPdf(_body: Record<string, unknown>, context: R
 }
 
 async function handleAcknowledge(body: Record<string, unknown>, context: RouteContext, roundId: string) {
-  const data = await getDefectData(context);
-  const round = data.rounds.find((item) => item.round_id === roundId);
+  const [data, verified] = await Promise.all([
+    findAllBatch(["Defect_Rounds", "Defect_Evidence"], context.siteSheetId, {
+      projectId: context.project.project_id,
+      fresh: true,
+    }),
+    verifyDefectPhotos(context, roundId, "acknowledgement", body.evidence_file_ids, 6),
+  ]);
+  const round = (data.Defect_Rounds as unknown as DefectRoundRecord[]).find(
+    row => row.project_id === context.project.project_id && row.round_id === roundId
+  );
   if (!round?._rowIndex) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
   if (isLocked(round)) return NextResponse.json({ error: "รอบตรวจนี้บันทึกการรับทราบแล้ว" }, { status: 400 });
   if (!round.pdf_url) return NextResponse.json({ error: "กรุณาออก PDF ก่อนแนบหลักฐานรับทราบ" }, { status: 400 });
 
-  const evidenceUploads = await uploadDefectFiles(context, roundId, "Customer Acknowledgement", parseUploads(body.evidence_uploads));
+  const evidenceUploads = body.evidence_file_ids === undefined
+    ? await uploadDefectFiles(context, roundId, "Customer Acknowledgement", parseUploads(body.evidence_uploads))
+    : verified;
+  if (!evidenceUploads) {
+    return NextResponse.json({ error: "ยืนยันรูปหลักฐานจาก Google Drive ไม่สำเร็จ" }, { status: 400 });
+  }
   if (evidenceUploads.length === 0) {
     return NextResponse.json({ error: "กรุณาแนบรูปแชทหรือหลักฐานการรับทราบ" }, { status: 400 });
   }
@@ -523,7 +631,8 @@ async function handleAcknowledge(body: Record<string, unknown>, context: RouteCo
   const acknowledgedBy = text(body.acknowledged_by) || String(context.project.client || "");
   const channel = text(body.channel) || "LINE";
   const notes = text(body.notes);
-  await Promise.all(evidenceUploads.map((file) => insert("Defect_Evidence", {
+  const recorded = new Set(data.Defect_Evidence.filter(row => row.project_id === context.project.project_id && row.round_id === roundId && row.evidence_type === "customer_acknowledgement").map(row => row.file_id));
+  await Promise.all(evidenceUploads.filter(file => !recorded.has(file.file_id)).map((file) => insert("Defect_Evidence", {
     evidence_id: makeId("DFE"),
     round_id: roundId,
     project_id: context.project.project_id,
@@ -690,13 +799,17 @@ async function handleUpdateItemStatus(body: Record<string, unknown>, context: Ro
   if (!round) return NextResponse.json({ error: "ไม่พบรอบตรวจ" }, { status: 404 });
 
   const currentAfterPhotos = parsePhotoRefs(item.after_photos_json);
-  const uploadedAfterPhotos = await uploadDefectFiles(context, item.round_id, "After Photos", parseUploads(body.after_photo_uploads));
+  const uploadedAfterPhotos = body.after_photo_ids === undefined
+    ? await uploadDefectFiles(context, item.round_id, "After Photos", parseUploads(body.after_photo_uploads))
+    : await verifyDefectPhotos(context, item.round_id, itemId, body.after_photo_ids);
+  if (!uploadedAfterPhotos) return NextResponse.json({ error: "ยังยืนยันรูปหลังแก้ใน Drive ไม่สำเร็จ กรุณาลองบันทึกอีกครั้ง" }, { status: 409 });
+  const existingPhotoIds = new Set(currentAfterPhotos.map((photo) => photo.file_id));
   const patch = {
     status: text(body.status) || item.status || "open",
     owner: text(body.owner) || item.owner || "",
     due_date: text(body.due_date) || item.due_date || "",
     repair_note: text(body.repair_note) || item.repair_note || "",
-    after_photos_json: safeJsonStringify([...currentAfterPhotos, ...uploadedAfterPhotos]),
+    after_photos_json: safeJsonStringify([...currentAfterPhotos, ...uploadedAfterPhotos.filter((photo) => !existingPhotoIds.has(photo.file_id))]),
   };
 
   await updateDefectItem(context, item, patch);
@@ -717,41 +830,59 @@ async function handleUpdateItemStatus(body: Record<string, unknown>, context: Ro
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const started = performance.now();
+  const metrics: string[] = [];
+  const record = (name: string, since: number, description?: string) => {
+    metrics.push(`${name};dur=${(performance.now() - since).toFixed(2)}${description ? `;desc="${description}"` : ""}`);
+  };
+  const finish = (response: NextResponse) => {
+    record("total", started);
+    response.headers.set("Server-Timing", metrics.join(", "));
+    return response;
+  };
+
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
+    record("site_context", started);
+    if ("error" in context) return finish(NextResponse.json({ error: context.error }, { status: context.status }));
     const routeContext = context as RouteContext;
-    const data = await getDefectData(routeContext);
+    const readStarted = performance.now();
+    const sources = new Set<string>();
+    const data = await readSiteMenuData(routeContext, "defects", () => getDefectData(routeContext, (table, source) => sources.add(`${table}=${source}`), true));
+    record("defect_read", readStarted, [...sources].sort().join(" "));
+    const prepareStarted = performance.now();
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       project: routeContext.project,
       rounds: data.rounds.sort((a, b) => new Date(String(b.created_at || b.inspection_date || 0)).getTime() - new Date(String(a.created_at || a.inspection_date || 0)).getTime()),
       items: data.items.sort((a, b) => Number(a.item_no || 0) - Number(b.item_no || 0)),
       evidence: data.evidence,
-      audit_logs: data.auditLogs,
       line: {
         test_mode: isDefectLineTestMode(),
         target_group_id: lineTargetFor(routeContext),
         target_group_name: isDefectLineTestMode() ? "Defect LINE Test Group" : text(routeContext.project.line_group_name),
       },
     });
+    record("prepare", prepareStarted);
+    return finish(response);
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return finish(NextResponse.json({ error: getErrorMessage(error) }, { status: 500 }));
   }
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-    const routeContext = context as RouteContext;
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const action = text(body.action);
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: action === "start_photo_uploads" });
+    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const routeContext = context as RouteContext;
     const roundId = text(body.round_id);
 
+    if (action === "start_photo_uploads") return startPhotoUploads(req, body, routeContext);
     if (action === "create_round") return handleCreateRound(body, routeContext);
     if (action === "add_item") return handleAddItem(body, routeContext);
     if (action === "issue_pdf") return handleIssuePdf(body, routeContext, roundId);

@@ -56,15 +56,15 @@ export async function createFolder(folderName: string, parentId: string = DRIVE_
   }
 }
 
-export async function findOrCreateFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID) {
+export async function findOrCreateFolder(folderName: string, parentId: string = DRIVE_ROOT_FOLDER_ID, refresh = false) {
   try {
     const cacheKey = getFolderCacheKey(folderName, parentId);
     const cached = folderLookupCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (!refresh && cached && cached.expiresAt > Date.now()) {
       return cached.folder;
     }
 
-    const query = `name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const query = `name = '${escapeDriveQueryValue(folderName)}' and '${escapeDriveQueryValue(parentId)}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     
     const response = await drive.files.list({
       q: query,
@@ -123,6 +123,9 @@ export async function uploadFile(
   }
 }
 
+const DRIVE_LIST_CONCURRENCY = 5;
+const driveNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 export async function listDriveFolderFiles(
   folderId: string,
   options: {
@@ -139,34 +142,38 @@ export async function listDriveFolderFiles(
   const maxDepth = options.maxDepth ?? 4;
   const pageSize = options.pageSize ?? 100;
   const maxFiles = options.maxFiles ?? 500;
-  const results: DriveFolderFile[] = [];
-  const visitedFolders = new Set<string>();
+  type RawFile = { id: string; name: string; mimeType: string; isFolder: boolean; parentId: string; item: Omit<DriveFolderFile, "folderPath"> };
+  const childrenByParent = new Map<string, RawFile[]>();
+  const visitedFolders = new Set<string>([rootFolderId]);
+  let collected = 0;
 
-  async function readFolder(currentFolderId: string, depth: number, folderPath: string) {
-    if (!currentFolderId || visitedFolders.has(currentFolderId) || results.length >= maxFiles) return;
-    visitedFolders.add(currentFolderId);
+  // One request reads one page from a parent group; the scheduler reserves its budget.
+  async function readParents(parentIds: string[], requestPageSize: number, pageToken?: string) {
+    const parentSet = new Set(parentIds);
+    const parentsQuery = parentIds.map((id) => `'${escapeDriveQueryValue(id)}' in parents`).join(" or ");
+    const response = await drive.files.list({
+      q: `(${parentsQuery}) and trashed = false`,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
+      spaces: "drive",
+      pageSize: requestPageSize,
+      pageToken,
+      orderBy: "folder,name_natural",
+    });
 
-    let pageToken: string | undefined;
-    do {
-      const response = await drive.files.list({
-        q: `'${escapeDriveQueryValue(currentFolderId)}' in parents and trashed = false`,
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true,
-        fields: "nextPageToken, files(id, name, mimeType, size, webViewLink, webContentLink, createdTime, modifiedTime, parents)",
-        spaces: "drive",
-        pageSize,
-        pageToken,
-        orderBy: "folder,name_natural",
-      });
-
-      for (const file of response.data.files || []) {
-        const id = file.id || "";
-        const name = file.name || id;
-        const mimeType = file.mimeType || "application/octet-stream";
-        const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
-        if (!id) continue;
-
-        const item: DriveFolderFile = {
+    for (const file of response.data.files || []) {
+      const id = file.id || "";
+      if (!id) continue;
+      const parentId = (file.parents || []).find((parent) => parentSet.has(parent)) || (parentIds.length === 1 ? parentIds[0] : "");
+      if (!parentId) continue;
+      const name = file.name || id;
+      const mimeType = file.mimeType || "application/octet-stream";
+      const isFolder = mimeType === GOOGLE_DRIVE_FOLDER_MIME;
+      const siblings = childrenByParent.get(parentId) || [];
+      siblings.push({
+        id, name, mimeType, isFolder, parentId,
+        item: {
           id,
           name,
           mimeType,
@@ -176,24 +183,64 @@ export async function listDriveFolderFiles(
           createdTime: file.createdTime || null,
           modifiedTime: file.modifiedTime || null,
           parents: file.parents || null,
-          folderPath,
           isFolder,
-        };
-        results.push(item);
-        if (results.length >= maxFiles) break;
+        },
+      });
+      childrenByParent.set(parentId, siblings);
+      collected += 1;
+    }
 
-        if (recursive && isFolder && depth < maxDepth) {
-          const nextPath = folderPath ? `${folderPath} / ${name}` : name;
-          await readFolder(id, depth + 1, nextPath);
-          if (results.length >= maxFiles) break;
-        }
-      }
-
-      pageToken = response.data.nextPageToken || undefined;
-    } while (pageToken && results.length < maxFiles);
+    return response.data.nextPageToken || undefined;
   }
 
-  await readFolder(rootFolderId, 0, "");
+  let level = [rootFolderId];
+  for (let depth = 0; level.length > 0 && collected < maxFiles; depth += 1) {
+    // Keep folder identity in the request, rather than depending on returned parents
+    // to associate results from a multi-folder query. Independent reads remain parallel.
+    const pending = level.map((id) => ({ parentIds: [id], pageToken: undefined as string | undefined }));
+    while (pending.length > 0 && collected < maxFiles) {
+      const remaining = maxFiles - collected;
+      // Reserve a page budget for every in-flight request. Their combined results
+      // cannot exceed the limit, even when all five requests return a full page.
+      const slots = Math.min(DRIVE_LIST_CONCURRENCY, pending.length, Math.max(1, Math.floor(remaining / 100)));
+      const wave = pending.splice(0, slots);
+      const requestPageSize = Math.min(pageSize, Math.floor(remaining / slots));
+      const nextTokens = await Promise.all(wave.map(({ parentIds, pageToken }) => (
+        readParents(parentIds, requestPageSize, pageToken)
+      )));
+      wave.forEach((request, index) => {
+        if (nextTokens[index]) pending.push({ ...request, pageToken: nextTokens[index] });
+      });
+    }
+
+    if (!recursive || depth >= maxDepth) break;
+    const nextLevel: string[] = [];
+    for (const parentId of level) {
+      for (const child of childrenByParent.get(parentId) || []) {
+        if (!child.isFolder || visitedFolders.has(child.id)) continue;
+        visitedFolders.add(child.id);
+        nextLevel.push(child.id);
+      }
+    }
+    level = nextLevel;
+  }
+
+  // Emit in the same order as a folder-by-folder walk: folders first, natural name order, children after their folder.
+  const results: DriveFolderFile[] = [];
+  const emitted = new Set<string>();
+  function emit(parentId: string, folderPath: string) {
+    if (emitted.has(parentId)) return;
+    emitted.add(parentId);
+    const children = [...(childrenByParent.get(parentId) || [])].sort((a, b) => (
+      Number(b.isFolder) - Number(a.isFolder) || driveNameCollator.compare(a.name, b.name)
+    ));
+    for (const child of children) {
+      if (results.length >= maxFiles) return;
+      results.push({ ...child.item, folderPath });
+      if (child.isFolder) emit(child.id, folderPath ? `${folderPath} / ${child.name}` : child.name);
+    }
+  }
+  emit(rootFolderId, "");
   return results;
 }
 
@@ -210,31 +257,40 @@ export async function createResumableUploadSession({
   mimeType,
   size,
   parentId,
+  appProperties,
+  fileId,
+  origin,
 }: {
   fileName: string;
   mimeType: string;
   size: number;
   parentId: string;
+  appProperties?: Record<string, string>;
+  fileId?: string;
+  origin?: string;
 }) {
   const token = await getDriveAccessToken();
   const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,mimeType,size,webViewLink,webContentLink", {
     method: "POST",
     headers: {
+      ...(origin ? { Origin: origin } : {}),
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=UTF-8",
       "X-Upload-Content-Type": mimeType || "application/octet-stream",
       "X-Upload-Content-Length": String(size || 0),
     },
     body: JSON.stringify({
+      ...(fileId ? { id: fileId } : {}),
       name: fileName,
       mimeType: mimeType || "application/octet-stream",
       parents: [parentId],
+      appProperties,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Google Drive upload session failed: ${errorText || response.statusText}`);
+    throw Object.assign(new Error(`Google Drive upload session failed: ${errorText || response.statusText}`), { status: response.status });
   }
 
   const uploadUrl = response.headers.get("location");

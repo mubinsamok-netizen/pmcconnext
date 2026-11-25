@@ -10,6 +10,8 @@ import {
 } from "./supabaseCrud";
 import { isSupabaseBackend, shouldFallbackToSheets } from "./supabaseRest";
 import { isSupabaseSiteSchemaMode, resolveSupabaseProjectId } from "./supabaseSchema";
+import { invalidateMenuDataForWrite } from "./menuDataCache";
+import { invalidateProjectListForWrite } from "./projectListCache";
 
 // Convert A1 notation column index (0-based) to Letter
 const colToLetter = (col: number) => {
@@ -59,7 +61,11 @@ function isQuotaExceeded(error: unknown) {
   return message.includes("Quota exceeded");
 }
 
-function clearMasterReadCache(tableName?: MasterTable) {
+function clearMasterReadCache(tableName?: MasterTable, updatedFields?: string[]) {
+  if (tableName) {
+    invalidateProjectListForWrite(String(tableName));
+    invalidateMenuDataForWrite(String(tableName), [], updatedFields);
+  }
   if (!tableName) {
     masterReadCache.clear();
     return;
@@ -72,6 +78,10 @@ function getReadCacheKey(spreadsheetId: string, tableName: string) {
 }
 
 function clearSiteReadCache(spreadsheetId: string, tableName?: string) {
+  if (tableName) {
+    invalidateProjectListForWrite(tableName, [spreadsheetId]);
+    invalidateMenuDataForWrite(tableName, [spreadsheetId]);
+  }
   if (!tableName) {
     Array.from(siteReadCache.keys())
       .filter((key) => key.startsWith(`${spreadsheetId}:`))
@@ -104,14 +114,14 @@ function rowsToRecords(rows: unknown[][], tableName: string, schema: SheetSchema
   });
 }
 
-async function findAllFromSheet(spreadsheetId: string, tableName: string, schema: SheetSchema) {
+async function readSheetValues(spreadsheetId: string, tableName: string) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${tableName}`,
     });
 
-    return rowsToRecords(res.data.values || [], tableName, schema);
+    return res.data.values || [];
   } catch (error) {
     if (isQuotaExceeded(error)) {
       console.warn(`Read quota exceeded in findAll(${tableName}).`);
@@ -122,8 +132,42 @@ async function findAllFromSheet(spreadsheetId: string, tableName: string, schema
   }
 }
 
+async function findAllFromSheet(spreadsheetId: string, tableName: string, schema: SheetSchema) {
+  return rowsToRecords(await readSheetValues(spreadsheetId, tableName), tableName, schema);
+}
+
 export async function findAllRaw(tableName: string, spreadsheetId: string = SHEET_ID) {
   return findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA);
+}
+
+function hasValidHeaders(tableName: SiteTable, headers: unknown[] | undefined): headers is unknown[] {
+  return Boolean(headers && SITE_SCHEMA[tableName].every((header, index) => headers[index] === header));
+}
+
+export async function findAllWithValidHeaders(tableName: SiteTable, spreadsheetId: string) {
+  const rows = await readSheetValues(spreadsheetId, tableName);
+  return hasValidHeaders(tableName, rows[0]) ? rowsToRecords(rows, tableName, SITE_SCHEMA) : null;
+}
+
+export async function findRowWithValidHeaders(
+  tableName: SiteTable,
+  spreadsheetId: string,
+  match: Record<string, string>,
+) {
+  const rows = await readSheetValues(spreadsheetId, tableName);
+  const headers = rows[0];
+  if (!hasValidHeaders(tableName, headers)) {
+    return null;
+  }
+  const columns = Object.entries(match).map(([header, value]) => [headers.lastIndexOf(header), value] as const);
+  for (let index = 1; index < rows.length; index++) {
+    const row = rows[index];
+    if (columns.every(([column, value]) => column >= 0 && String(row[column] ?? "") === value)) {
+      const [record] = rowsToRecords([headers, row], tableName, SITE_SCHEMA);
+      return { ...record, _rowIndex: index + 1 };
+    }
+  }
+  return undefined;
 }
 
 export async function findAllMasterRaw(tableName: MasterTable) {
@@ -340,49 +384,67 @@ function textValue(value: unknown) {
   return String(value ?? "").trim();
 }
 
-export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID) {
+export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void, options: { fresh?: boolean } = {}) {
+  let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
-      return await findAllSupabase(supabaseConfig, await resolveSiteProjectId(spreadsheetId));
+      const rows = await findAllSupabase(supabaseConfig, await resolveSiteProjectId(spreadsheetId));
+      onSource?.("supabase");
+      return rows;
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
+      source = "sheets_fallback";
       warnSupabaseFallback(`read ${String(tableName)}`, error);
     }
   }
 
-  return findAllFromSiteCache(spreadsheetId, String(tableName));
+  onSource?.(source);
+  return options.fresh ? findAllFromSheet(spreadsheetId, String(tableName), SITE_SCHEMA) : findAllFromSiteCache(spreadsheetId, String(tableName));
 }
 
-export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: string = SHEET_ID) {
+export async function findAllBatch(
+  tableNames: SiteTable[],
+  spreadsheetId: string = SHEET_ID,
+  options: { projectId?: string; fresh?: boolean; projectHealth?: boolean; overviewOnly?: boolean; onTableRead?: (table: string, durationMs: number) => void; onSource?: (table: string, source: "supabase" | "sheets" | "sheets_fallback") => void } = {}
+) {
   const uniqueTableNames = Array.from(new Set(tableNames.map(String)));
   const result = {} as Record<SiteTable, SheetRow[]>;
   const pendingTables: string[] = [];
   const pendingPromises: Promise<void>[] = [];
   const now = Date.now();
-  const supabaseProjectId = shouldUseSupabase() ? await resolveSiteProjectId(spreadsheetId) : "";
+  const supabaseProjectId = shouldUseSupabase()
+    ? textValue(options.projectId) || await resolveSiteProjectId(spreadsheetId)
+    : "";
 
   uniqueTableNames.forEach((tableName) => {
     const supabaseConfig = getSupabaseSiteConfig(tableName);
     if (shouldUseSupabase() && supabaseConfig) {
+      const started = performance.now();
       pendingPromises.push(
-        findAllSupabase(supabaseConfig, supabaseProjectId)
+        findAllSupabase(supabaseConfig, supabaseProjectId, options.projectHealth, options.overviewOnly)
           .then((rows) => {
+            options.onSource?.(tableName, "supabase");
             result[tableName as SiteTable] = rows;
           })
           .catch((error) => {
             if (!shouldFallbackToSheets()) throw error;
             warnSupabaseFallback(`batch read ${tableName}`, error);
-            return findAllFromSiteCache(spreadsheetId, tableName).then((rows) => {
+            return (options.fresh
+              ? findAllFromSheet(spreadsheetId, tableName, SITE_SCHEMA)
+              : findAllFromSiteCache(spreadsheetId, tableName)).then((rows) => {
+              options.onSource?.(tableName, "sheets_fallback");
               result[tableName as SiteTable] = rows;
             });
           })
+          .finally(() => options.onTableRead?.(tableName, performance.now() - started))
       );
       return;
     }
 
+    options.onSource?.(tableName, "sheets");
     const cacheKey = getReadCacheKey(spreadsheetId, tableName);
-    const cached = siteReadCache.get(cacheKey);
+    const cached = options.fresh ? undefined : siteReadCache.get(cacheKey);
 
     if (cached?.rows && cached.expiresAt > now) {
       result[tableName as SiteTable] = cached.rows;
@@ -416,7 +478,7 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
         });
       })
       .catch((error) => {
-        if (isQuotaExceeded(error)) {
+        if (!options.fresh && isQuotaExceeded(error)) {
           const recoverableTables = pendingTables.filter((tableName) => {
             const cached = siteReadCache.get(getReadCacheKey(spreadsheetId, tableName));
             return Boolean(cached?.rows && cached.staleUntil > Date.now());
@@ -456,17 +518,22 @@ export async function findAllBatch(tableNames: SiteTable[], spreadsheetId: strin
   return result;
 }
 
-export async function findAllMaster(tableName: MasterTable) {
+export async function findAllMaster(tableName: MasterTable, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void, options: { fresh?: boolean } = {}) {
+  let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseMasterConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
     try {
+      onSource?.("supabase");
       return await findAllSupabase(supabaseConfig);
     } catch (error) {
       if (!shouldFallbackToSheets()) throw error;
+      source = "sheets_fallback";
       warnSupabaseFallback(`read ${String(tableName)}`, error);
     }
   }
 
+  onSource?.(source);
+  if (options.fresh) return findAllFromSheet(MASTER_SHEET_ID, String(tableName), MASTER_SCHEMA);
   const cacheKey = `${MASTER_SHEET_ID}:${String(tableName)}`;
   const cached = masterReadCache.get(cacheKey);
   const now = Date.now();
@@ -618,7 +685,7 @@ export async function updateMaster(
   }
 
   const result = await updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), numericRowIndex, patch);
-  clearMasterReadCache(tableName);
+  clearMasterReadCache(tableName, Object.keys(patch));
   return result;
 }
 

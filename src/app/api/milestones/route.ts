@@ -1,3 +1,6 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
+import { getSiteApiContext } from "@/lib/siteApi";
+import { createScheduleReadTiming } from "@/lib/scheduleReadTiming";
 import { NextResponse } from "next/server";
 import { deleteRow, findAll, insert, update } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
@@ -19,31 +22,31 @@ async function findMilestoneRowIndex(sheetId: string, projectId: string | null, 
 }
 
 export async function GET(req: Request) {
+  const timing = createScheduleReadTiming();
+  let source: "none" | "supabase" | "sheets" | "sheets_fallback" | "cache" = "none";
+  const respond = (body: Record<string, unknown>, status = 200) => timing.finish(NextResponse.json(body, { status }), performance.now(), source);
   try {
-    const { searchParams } = new URL(req.url);
-    const projectId = searchParams.get("project_id");
-
-    const readSheetsMilestones = async () => {
-      const { sheetId } = await getProjectContext(projectId);
-      await ensureSchema(sheetId);
-
-      let milestones = await findAll("Milestones", sheetId);
-      if (projectId) {
-        milestones = milestones.filter((milestone) => milestone.project_id === projectId);
-      }
-
-      return milestones;
+    const projectId = new URL(req.url).searchParams.get("project_id");
+    const context = projectId ? await timing.measure("site_context", () => getSiteApiContext(projectId, false, { readOnly: true })) : null;
+    if (context && "error" in context) return respond({ error: context.error }, context.status);
+    const readSheets = async () => {
+      source = source === "supabase" ? "sheets_fallback" : "sheets";
+      const { sheetId } = context ? { sheetId: context.siteSheetId } : await getProjectContext(projectId);
+      const rows = await timing.measure("sheets_read", () => findAll("Milestones", sheetId, undefined, { fresh: true }));
+      return projectId ? rows.filter((row) => String(row.project_id || "") === projectId) : rows;
     };
-
-    if (isSupabaseReadEnabled("site")) {
-      const milestones = await readWithSheetsFallback("milestones", () => getSupabaseMilestones(projectId), readSheetsMilestones);
-      return NextResponse.json({ success: true, data: milestones });
-    }
-
-    const milestones = await readSheetsMilestones();
-    return NextResponse.json({ success: true, data: milestones });
+    const load = async () => {
+      if (!isSupabaseReadEnabled("site")) return readSheets();
+      source = "supabase";
+      return readWithSheetsFallback("milestones", () => timing.measure("supabase_read", () => getSupabaseMilestones(projectId)), readSheets);
+    };
+    let loaded = false;
+    const loadMeasured = () => { loaded = true; return load(); };
+    const data = context ? await timing.measure("menu_read", () => readSiteMenuData(context, "milestones", loadMeasured)) : await load();
+    if (context && !loaded) source = "cache";
+    return respond({ success: true, data });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 

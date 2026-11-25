@@ -1,9 +1,8 @@
 import { notFound, redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/authOptions";
+import { getCurrentSession } from "@/lib/currentSession";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
 import { canAccessSiteSegment } from "@/lib/siteAccess";
-import { findAllMaster } from "./sheetsCrud";
+import { readProjectCatalog } from "./projectCatalog";
 
 export type MasterProject = {
   project_id: string;
@@ -35,8 +34,6 @@ export type MasterProject = {
   line_notify_enabled?: string;
 };
 
-const MASTER_PROJECTS_CACHE_TTL_MS = 60 * 1000;
-let masterProjectsCache: { expiresAt: number; promise: Promise<MasterProject[]> } | null = null;
 
 function isQuotaExceeded(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -52,28 +49,11 @@ function fallbackMasterProject(projectId: string): MasterProject {
 }
 
 export async function getMasterProjects() {
-  const now = Date.now();
-
-  if (masterProjectsCache && masterProjectsCache.expiresAt > now) {
-    return masterProjectsCache.promise;
-  }
-
-  const promise = findAllMaster("Projects") as unknown as Promise<MasterProject[]>;
-  masterProjectsCache = {
-    expiresAt: now + MASTER_PROJECTS_CACHE_TTL_MS,
-    promise,
-  };
-
-  try {
-    return await promise;
-  } catch (error) {
-    masterProjectsCache = null;
-    throw error;
-  }
+  return await readProjectCatalog() as unknown as MasterProject[];
 }
 
 export async function getMasterProject(projectId: string, options: { siteSegment?: string } = {}) {
-  const session = await getServerSession(authOptions);
+  const session = await getCurrentSession();
   if (!session?.user) {
     redirect("/");
   }
@@ -95,7 +75,7 @@ export async function getMasterProject(projectId: string, options: { siteSegment
 
   if (
     !project ||
-    !(await canAccessProject(decodedProjectId, session.user)) ||
+    !(await canAccessProject(decodedProjectId, session.user, projects)) ||
     !canAccessSiteSegment(session.user.role, options.siteSegment || "")
   ) {
     notFound();

@@ -1,5 +1,9 @@
 "use client";
 
+import DataSkeleton from "@/components/DataSkeleton";
+import CoverUploadProgress from "../../CoverUploadProgress";
+import { submitProjectWithCover } from "@/lib/submitProjectWithCover";
+import { prepareProjectCover } from "@/lib/prepareProjectCover";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -8,6 +12,7 @@ import Image from "next/image";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
+import { getProjectCoverSources } from "@/lib/projectCover";
 import { isForemanRole } from "@/lib/siteAccess";
 
 type Project = {
@@ -132,23 +137,8 @@ function normalizeDate(date?: string) {
   return toIsoDate(date);
 }
 
-function extractDriveFileId(url?: string) {
-  if (!url) return "";
-  return url.match(/\/d\/([^/?#]+)/)?.[1] || url.match(/[?&]id=([^&#]+)/)?.[1] || "";
-}
-
-function looksLikeDriveFileId(value?: string) {
-  return /^[a-zA-Z0-9_-]{20,}$/.test(String(value || "").trim());
-}
-
 function getCoverSrc(project: Pick<Project, "cover_file_id" | "cover_url">) {
-  const coverFileId = String(project.cover_file_id || "").trim();
-  const coverUrl = String(project.cover_url || "").trim();
-  const fileId = looksLikeDriveFileId(coverFileId)
-    ? coverFileId
-    : extractDriveFileId(coverFileId) || extractDriveFileId(coverUrl);
-  if (fileId) return `/api/drive/files/${encodeURIComponent(fileId)}`;
-  return coverUrl;
+  return getProjectCoverSources(project)[0] || "";
 }
 
 function toForm(project: Project): ProjectForm {
@@ -208,6 +198,7 @@ export default function EditProjectPage() {
   const [coverPreview, setCoverPreview] = useState("");
   const [loadedProjectId, setLoadedProjectId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [coverPercent, setCoverPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isForeman = isForemanRole(session?.user?.role);
 
@@ -260,18 +251,18 @@ export default function EditProjectPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setCoverPercent(null);
     setLoading(true);
     setError(null);
 
     const formData = new FormData();
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
-    if (coverFile) formData.append("cover", coverFile);
-
     try {
-      const res = await fetch("/api/projects", {
-        method: "PUT",
-        body: formData,
-      });
+      if (coverFile) formData.append("cover", await prepareProjectCover(coverFile));
+      const res = coverFile
+        ? await submitProjectWithCover("PUT", formData, setCoverPercent)
+        : await fetch("/api/projects", { method: "PUT", body: formData });
+      if (res.status === 413) throw new Error("ขนาดข้อมูลเกินกำหนด กรุณาเลือกรูปปกที่เล็กลง");
       const result = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -294,10 +285,7 @@ export default function EditProjectPage() {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-3xl rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-500">
-        <span className="inline-block animate-spin text-xl">↻</span>
-        <span className="ml-2">กำลังโหลดข้อมูลไซต์งาน...</span>
-      </div>
+      <DataSkeleton rows={6} />
     );
   }
 
@@ -331,7 +319,7 @@ export default function EditProjectPage() {
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <form data-no-global-loading={coverFile ? "true" : undefined} onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
         {error && (
           <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">
             {error}
@@ -343,7 +331,14 @@ export default function EditProjectPage() {
             <input type="file" accept="image/*" className="sr-only" onChange={handleCoverChange} />
             {coverPreview ? (
               <>
-                <Image src={coverPreview} alt="Project cover preview" fill unoptimized className="absolute inset-0 object-cover" />
+                <Image
+                  src={coverPreview} alt="Project cover preview" fill unoptimized className="absolute inset-0 object-cover"
+                  onError={() => {
+                    const sources = getProjectCoverSources(form);
+                    const current = sources.indexOf(coverPreview);
+                    setCoverPreview(current >= 0 ? sources[current + 1] || "" : "");
+                  }}
+                />
                 <button
                   type="button"
                   onClick={(event) => {
@@ -504,6 +499,7 @@ export default function EditProjectPage() {
           </div>
         </div>
 
+        {loading && coverFile && <CoverUploadProgress percent={coverPercent} />}
         <div className="flex justify-end gap-3 border-t border-gray-100 pt-6">
           <Link href="/dashboard/projects" className="rounded-xl border border-gray-200 bg-white px-5 py-2 font-semibold text-gray-700 hover:bg-gray-50">
             ยกเลิก
