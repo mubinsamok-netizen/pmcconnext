@@ -1,7 +1,8 @@
+import type { Session } from "next-auth";
+import { readProjectCatalog } from "./projectCatalog";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { canAccessProject, isAdminRole } from "@/lib/authz";
-import { findAllMaster } from "@/lib/sheetsCrud";
 import { ensureSchema } from "@/lib/sheetsSetup";
 import { isSupabaseBackend } from "@/lib/supabaseRest";
 import { getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
@@ -13,7 +14,7 @@ export type SiteApiProject = Record<string, string | number | undefined> & {
   drive_folder_id?: string;
 };
 
-export async function getSiteApiContext(projectId: string, requireAdmin = false, options: { readOnly?: boolean; driveOnly?: boolean; onTiming?: (phase: string, duration: number) => void } = {}) {
+export async function getSiteApiContext(projectId: string, requireAdmin = false, options: { readOnly?: boolean; driveOnly?: boolean; session?: Session | null; onTiming?: (phase: string, duration: number) => void } = {}) {
   const measure = async <T,>(phase: string, work: () => Promise<T>) => {
     if (!options.onTiming) return work();
     const started = performance.now();
@@ -23,7 +24,7 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false,
       options.onTiming(phase, performance.now() - started);
     }
   };
-  const session = await measure("session", () => getServerSession(authOptions));
+  const session = await measure("session", () => options.session === undefined ? getServerSession(authOptions) : Promise.resolve(options.session));
   if (!session?.user) {
     return { error: "Unauthorized", status: 401 as const };
   }
@@ -32,7 +33,7 @@ export async function getSiteApiContext(projectId: string, requireAdmin = false,
     return { error: "Admin only", status: 403 as const };
   }
 
-  const projectSource = measure("site_read", () => findAllMaster("Projects")) as unknown as Promise<SiteApiProject[]>;
+  const projectSource = measure("site_read", () => readProjectCatalog()) as unknown as Promise<SiteApiProject[]>;
   const [canAccess, projects] = await Promise.all([
     measure("site_access", () => canAccessProject(projectId, session.user, projectSource)),
     projectSource,

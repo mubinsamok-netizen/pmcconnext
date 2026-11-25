@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
@@ -96,12 +97,9 @@ export async function GET() {
     record("auth", started);
     if (forbidden) return timedResponse(forbidden);
 
-    const schemaStarted = performance.now();
-    await ensureMasterSchema();
-    record("sheets_schema", schemaStarted);
 
     const readStarted = performance.now();
-    const contractors = await findAllMaster("Contractors");
+    const contractors = await readMasterMenuData("Contractors", () => findAllMaster("Contractors", undefined, { fresh: true }), 120);
     record("contractor_read", readStarted);
     return timedResponse(NextResponse.json({ success: true, data: contractors.filter(isActive) }));
   } catch (error) {

@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
 import { sendLineMessages } from "@/lib/line";
@@ -1913,19 +1914,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
   const timing = createVoReadTiming();
   try {
     const { projectId } = await params;
-    const context = await timing.measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId)));
+    const context = await timing.measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true }));
     if ("error" in context) return timing.finish(NextResponse.json({ error: context.error }, { status: context.status }));
 
     const routeContext = context as RouteContext;
     if (new URL(req.url).searchParams.get("view") === "plan-tasks") {
       const forbidden = requirePermission(routeContext, "vo.addToPlan");
       if (forbidden) return timing.finish(forbidden);
-      const tasks = await getPlanTaskOptions(routeContext, timing);
+      const tasks = await readSiteMenuData(routeContext, "vo-plan-options", () => getPlanTaskOptions(routeContext, timing));
       return timing.finish(NextResponse.json({ success: true, data: tasks }));
     }
 
     const [data, auditLogs] = await Promise.all([
-      timing.measure("vo_data", () => getVoData(routeContext, { timing, includeTasks: false })),
+      timing.measure("vo_data", () => readSiteMenuData(routeContext, "vo-list", () => getVoData(routeContext, { timing, includeTasks: false }))),
       timing.measure("audit_logs", (source) => findAllMaster("AuditLogs", source)) as Promise<SheetRecord[]>,
     ]);
     const itemsByVo = new Map<string, VoItemRecord[]>();

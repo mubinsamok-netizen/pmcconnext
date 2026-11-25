@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { writeAuditLog } from "@/lib/auditLog";
@@ -165,11 +166,13 @@ async function updateDefectItem(context: RouteContext, item: DefectItemRecord, p
 async function getDefectData(
   context: RouteContext,
   onSource?: NonNullable<Parameters<typeof findAllBatch>[2]>["onSource"],
+  fresh = false,
 ) {
   const projectId = context.project.project_id;
   const siteRows = await findAllBatch(["Defect_Rounds", "Defect_Items", "Defect_Evidence"], context.siteSheetId, {
     projectId,
     onSource,
+    fresh,
   });
   const rounds = ((siteRows.Defect_Rounds || []) as unknown as DefectRoundRecord[]).filter((row) => row.project_id === projectId);
   const items = ((siteRows.Defect_Items || []) as unknown as DefectItemRecord[]).filter((row) => row.project_id === projectId);
@@ -846,7 +849,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const routeContext = context as RouteContext;
     const readStarted = performance.now();
     const sources = new Set<string>();
-    const data = await getDefectData(routeContext, (table, source) => sources.add(`${table}=${source}`));
+    const data = await readSiteMenuData(routeContext, "defects", () => getDefectData(routeContext, (table, source) => sources.add(`${table}=${source}`), true));
     record("defect_read", readStarted, [...sources].sort().join(" "));
     const prepareStarted = performance.now();
 

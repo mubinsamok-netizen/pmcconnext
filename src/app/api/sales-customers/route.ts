@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
@@ -52,10 +53,9 @@ export async function GET(req: Request) {
     const forbidden = await requireSalesCrmAccess();
     if (forbidden) return forbidden;
 
-    if (!isSupabaseBackend()) await ensureMasterSchema();
     const url = new URL(req.url);
     const includeClosed = url.searchParams.get("include_closed") === "true";
-    const customers = await findAllMaster("Customers");
+    const customers = await readMasterMenuData("Customers", () => findAllMaster("Customers", undefined, { fresh: true }));
     const activeCustomers = customers.filter((customer) => includeClosed || customer.active !== "FALSE");
     const view = url.searchParams.get("view");
     if (view === "history") {

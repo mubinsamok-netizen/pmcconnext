@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
@@ -43,13 +44,12 @@ export async function GET() {
     if (forbidden) return forbidden;
 
     const readSheetsTeam = async () => {
-      if (!isSupabaseBackend()) await ensureMasterSchema();
-      return await findAllMaster("Team");
+      return await findAllMaster("Team", undefined, { fresh: true });
     };
 
-    const team = isSupabaseReadEnabled("admin")
-      ? await readWithSheetsFallback("team", getSupabaseTeamMembers, readSheetsTeam)
-      : await readSheetsTeam();
+    const team = await readMasterMenuData("Team", () => isSupabaseReadEnabled("admin")
+      ? readWithSheetsFallback("team", getSupabaseTeamMembers, readSheetsTeam)
+      : readSheetsTeam());
     return NextResponse.json({ success: true, data: team.filter(isActiveRecord).map(normalizeTeamRecord) });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

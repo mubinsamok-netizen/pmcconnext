@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
@@ -86,8 +87,7 @@ export async function GET() {
   try {
     const forbidden = await requireAdmin();
     if (forbidden) return forbidden;
-    await ensureMasterSchema();
-    const rates = await findAllMaster("LaborRates");
+    const rates = await readMasterMenuData("LaborRates", () => findAllMaster("LaborRates", undefined, { fresh: true }), 120);
     return NextResponse.json({ success: true, data: rates.filter(isActive) });
   } catch (error) {
     return NextResponse.json({ error: errorMessage(error) }, { status: 500 });

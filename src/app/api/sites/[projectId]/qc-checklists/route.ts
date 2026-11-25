@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import fs from "fs";
@@ -121,8 +122,8 @@ function normalizeChecklist(row: QcChecklistRecord) {
   };
 }
 
-async function getRows(context: RouteContext) {
-  return await findAll("QC_Checklists", context.siteSheetId) as unknown as QcChecklistRecord[];
+async function getRows(context: RouteContext, fresh = false) {
+  return await findAll("QC_Checklists", context.siteSheetId, undefined, { fresh }) as unknown as QcChecklistRecord[];
 }
 
 async function getFallbackRowIndex(context: RouteContext, checklist: QcChecklistRecord) {
@@ -583,10 +584,10 @@ async function handleDelete(body: Record<string, unknown>, context: RouteContext
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
-    const rows = await getRows(routeContext);
+    const rows = await readSiteMenuData(routeContext, "qc-checklists", () => getRows(routeContext, true));
     const data = rows
       .filter((row) => row.project_id === routeContext.project.project_id && row.active !== "FALSE")
       .map(normalizeChecklist)

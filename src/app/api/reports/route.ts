@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { after, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
@@ -134,13 +135,14 @@ export async function GET(req: Request) {
       if (!projectId) return NextResponse.json({ error: "Missing project_id" }, { status: 400 });
       const context = await getSiteApiContext(projectId, false, { readOnly: true });
       if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
-      const reports = await readDailyReportDashboard(context.project.project_id, context.siteSheetId);
+      const reports = await readSiteMenuData(context, "daily-report-dashboard", () => readDailyReportDashboard(context.project.project_id, context.siteSheetId));
       return NextResponse.json({ success: true, data: reports });
     }
-    const { sheetId } = await getProjectContext(projectId);
-    if (!isSupabaseBackend()) await ensureSchema(sheetId);
+    const context = projectId ? await getSiteApiContext(projectId, false, { readOnly: true }) : null;
+    if (context && "error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const { sheetId } = context ? { sheetId: context.siteSheetId } : await getProjectContext(projectId);
 
-    let reports = await findAll("Daily_Reports", sheetId) as ReportRecord[];
+    let reports = (context ? await readSiteMenuData(context, "daily-report-list", () => findAll("Daily_Reports", sheetId, undefined, { fresh: true })) : await findAll("Daily_Reports", sheetId)) as ReportRecord[];
     if (projectId) {
       reports = reports.filter((report) => report.project_id === projectId);
     }
@@ -172,7 +174,7 @@ export async function POST(req: Request) {
     }
 
     step = "โหลดข้อมูลโครงการ";
-    const site = deferPdf ? await getSiteApiContext(project_id, false, { readOnly: true }) : null;
+    const site = deferPdf ? await getSiteApiContext(project_id, false, { readOnly: true, session }) : null;
     if (site && "error" in site) return NextResponse.json({ error: site.error }, { status: site.status });
     const project = site ? site.project as ProjectWithLine : await getProject(project_id);
     const { sheetId, driveFolderId } = site

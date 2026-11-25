@@ -10,6 +10,7 @@ import {
 } from "./supabaseCrud";
 import { isSupabaseBackend, shouldFallbackToSheets } from "./supabaseRest";
 import { isSupabaseSiteSchemaMode, resolveSupabaseProjectId } from "./supabaseSchema";
+import { invalidateMenuDataForWrite } from "./menuDataCache";
 import { invalidateProjectListForWrite } from "./projectListCache";
 
 // Convert A1 notation column index (0-based) to Letter
@@ -60,8 +61,11 @@ function isQuotaExceeded(error: unknown) {
   return message.includes("Quota exceeded");
 }
 
-function clearMasterReadCache(tableName?: MasterTable) {
-  if (tableName) invalidateProjectListForWrite(String(tableName));
+function clearMasterReadCache(tableName?: MasterTable, updatedFields?: string[]) {
+  if (tableName) {
+    invalidateProjectListForWrite(String(tableName));
+    invalidateMenuDataForWrite(String(tableName), [], updatedFields);
+  }
   if (!tableName) {
     masterReadCache.clear();
     return;
@@ -74,7 +78,10 @@ function getReadCacheKey(spreadsheetId: string, tableName: string) {
 }
 
 function clearSiteReadCache(spreadsheetId: string, tableName?: string) {
-  if (tableName) invalidateProjectListForWrite(tableName, [spreadsheetId]);
+  if (tableName) {
+    invalidateProjectListForWrite(tableName, [spreadsheetId]);
+    invalidateMenuDataForWrite(tableName, [spreadsheetId]);
+  }
   if (!tableName) {
     Array.from(siteReadCache.keys())
       .filter((key) => key.startsWith(`${spreadsheetId}:`))
@@ -377,7 +384,7 @@ function textValue(value: unknown) {
   return String(value ?? "").trim();
 }
 
-export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void) {
+export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEET_ID, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void, options: { fresh?: boolean } = {}) {
   let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseSiteConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
@@ -393,7 +400,7 @@ export async function findAll(tableName: SiteTable, spreadsheetId: string = SHEE
   }
 
   onSource?.(source);
-  return findAllFromSiteCache(spreadsheetId, String(tableName));
+  return options.fresh ? findAllFromSheet(spreadsheetId, String(tableName), SITE_SCHEMA) : findAllFromSiteCache(spreadsheetId, String(tableName));
 }
 
 export async function findAllBatch(
@@ -511,7 +518,7 @@ export async function findAllBatch(
   return result;
 }
 
-export async function findAllMaster(tableName: MasterTable, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void) {
+export async function findAllMaster(tableName: MasterTable, onSource?: (source: "supabase" | "sheets" | "sheets_fallback") => void, options: { fresh?: boolean } = {}) {
   let source: "sheets" | "sheets_fallback" = "sheets";
   const supabaseConfig = getSupabaseMasterConfig(String(tableName));
   if (shouldUseSupabase() && supabaseConfig) {
@@ -526,6 +533,7 @@ export async function findAllMaster(tableName: MasterTable, onSource?: (source: 
   }
 
   onSource?.(source);
+  if (options.fresh) return findAllFromSheet(MASTER_SHEET_ID, String(tableName), MASTER_SCHEMA);
   const cacheKey = `${MASTER_SHEET_ID}:${String(tableName)}`;
   const cached = masterReadCache.get(cacheKey);
   const now = Date.now();
@@ -677,7 +685,7 @@ export async function updateMaster(
   }
 
   const result = await updateInSheet(MASTER_SHEET_ID, MASTER_SCHEMA, String(tableName), numericRowIndex, patch);
-  clearMasterReadCache(tableName);
+  clearMasterReadCache(tableName, Object.keys(patch));
   return result;
 }
 

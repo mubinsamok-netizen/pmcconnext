@@ -11,7 +11,7 @@ export function createScheduleReadTiming() {
         metrics.push(`${name};dur=${(performance.now() - readStarted).toFixed(2)}`);
       }
     },
-    finish(response: Response, responseStarted: number, source: "none" | "supabase" | "sheets" | "sheets_fallback") {
+    finish(response: Response, responseStarted: number, source: "none" | "supabase" | "sheets" | "sheets_fallback" | "cache") {
       const finished = performance.now();
       response.headers.set("Server-Timing", [
         ...metrics,

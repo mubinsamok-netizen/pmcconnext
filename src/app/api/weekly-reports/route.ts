@@ -1,3 +1,5 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
+import { getSiteApiContext } from "@/lib/siteApi";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
@@ -308,11 +310,12 @@ export async function GET(req: Request) {
     const weekStart = searchParams.get("week_start");
     const weekEnd = searchParams.get("week_end");
     const mode = searchParams.get("mode");
-    const { sheetId } = await getProjectContext(projectId);
-    if (!isSupabaseBackend()) await ensureSchema(sheetId);
+    const context = projectId ? await getSiteApiContext(projectId, false, { readOnly: true }) : null;
+    if (context && "error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const { sheetId } = context ? { sheetId: context.siteSheetId } : await getProjectContext(projectId);
 
     if (mode === "summary" && projectId && weekStart && weekEnd) {
-      const session = await getServerSession(authOptions);
+      const session = context?.session ?? await getServerSession(authOptions);
       const project = await getProject(projectId);
       const payload = await buildWeeklyPayload({
         projectId,
@@ -325,7 +328,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, data: payload });
     }
 
-    let reports = await findAll("Weekly_Reports", sheetId) as SheetRecord[];
+    let reports = (context ? await readSiteMenuData(context, "weekly-reports", () => findAll("Weekly_Reports", sheetId, undefined, { fresh: true })) : await findAll("Weekly_Reports", sheetId)) as SheetRecord[];
     if (projectId) reports = reports.filter((report) => report.project_id === projectId);
     reports = reports.sort((a, b) => String(b.week_start || "").localeCompare(String(a.week_start || "")));
     return NextResponse.json({ success: true, data: reports });

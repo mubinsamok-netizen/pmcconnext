@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import fs from "fs";
@@ -326,8 +327,8 @@ async function attachEvidenceDataUrls(decision: CustomerDecisionRecord) {
   };
 }
 
-async function getRows(context: RouteContext) {
-  return await findAll("Customer_Decisions", context.siteSheetId) as unknown as CustomerDecisionRecord[];
+async function getRows(context: RouteContext, fresh = false) {
+  return await findAll("Customer_Decisions", context.siteSheetId, undefined, { fresh }) as unknown as CustomerDecisionRecord[];
 }
 
 async function getFallbackRowIndex(context: RouteContext, decision: CustomerDecisionRecord) {
@@ -682,7 +683,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId));
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
     const routeContext = context as RouteContext;
-    const data = await getDecisionData(routeContext);
+    const rows = await readSiteMenuData(routeContext, "customer-decision-rows", () => getRows(routeContext, true));
+    const data = await getDecisionData(routeContext, rows);
 
     return NextResponse.json({
       success: true,

@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { drive } from "@/lib/google";
@@ -48,8 +49,8 @@ function jsonStringify(value: unknown) {
   return JSON.stringify(value ?? []);
 }
 
-async function getNotes(context: RouteContext) {
-  const rows = await findAll("Site_Notes", context.siteSheetId) as unknown as NoteRow[];
+async function getNotes(context: RouteContext, fresh = false) {
+  const rows = await findAll("Site_Notes", context.siteSheetId, undefined, { fresh }) as unknown as NoteRow[];
   return rows
     .filter((row) => row.project_id === context.project.project_id)
     .sort((a, b) => {
@@ -93,13 +94,13 @@ async function uploadNoteAttachments(context: RouteContext, noteId: string, file
 export async function GET(_req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
     return NextResponse.json({
       success: true,
       project: context.project,
-      data: await getNotes(context as RouteContext),
+      data: await readSiteMenuData(context, "notes", () => getNotes(context as RouteContext, true)),
     });
   } catch (error: unknown) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

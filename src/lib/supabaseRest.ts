@@ -1,3 +1,4 @@
+import { invalidateMenuDataForWrite } from "./menuDataCache";
 import { invalidateProjectListForWrite } from "./projectListCache";
 
 type SupabaseReadScope = "projects" | "auth" | "admin" | "site";
@@ -134,6 +135,7 @@ async function supabaseWrite<T>(
     row && typeof row === "object" ? (row as Record<string, unknown>).project_id : undefined
   ))].filter((value): value is string => typeof value === "string" && Boolean(value));
   invalidateProjectListForWrite(table, scopes);
+  invalidateMenuDataForWrite(table, [...scopes, options.schema || ""], init.method === "PATCH" ? Object.keys(init.body || {}) : undefined);
   return rows as T[];
 }
 

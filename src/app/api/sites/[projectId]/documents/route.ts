@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createResumableUploadSession, findOrCreateFolder, uploadFile } from "@/lib/drive";
@@ -120,7 +121,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
     const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
 
-    const rows = await getDocumentRows(context.siteSheetId, context.project.project_id, true);
+    const rows = await readSiteMenuData(context, "documents", () => getDocumentRows(context.siteSheetId, context.project.project_id, true));
     const documents = rows
       .filter((row) => row.project_id === context.project.project_id)
       .sort((a, b) => new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime());

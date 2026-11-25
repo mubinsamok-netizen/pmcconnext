@@ -1,4 +1,6 @@
-import { findAllMaster } from "@/lib/sheetsCrud";
+import { invalidateAuthorizationCache, readCachedAuthorization } from "./menuDataCache";
+import { readProjectCatalog } from "./projectCatalog";
+import { findAllMasterRaw } from "@/lib/sheetsCrud";
 import { parseProjectIds } from "@/lib/projectIds";
 import { getAppRole, roleMatches } from "@/lib/roles";
 import { isSupabaseReadEnabled, readWithSheetsFallback } from "@/lib/supabaseRest";
@@ -18,9 +20,7 @@ type ProjectLike = Record<string, unknown> & {
 };
 type ProjectSource = ProjectLike[] | Promise<ProjectLike[]>;
 
-const ACCESS_CACHE_TTL_MS = 60 * 1000;
 const accessibleProjectIdsCache = new Map<string, {
-  expiresAt: number;
   promise: Promise<Set<string> | null>;
 }>();
 
@@ -108,18 +108,19 @@ function collectAccessibleProjectIds({
 async function readAccessibleProjectIds(user: SessionUserLike, source: "sheets" | "supabase", suppliedProjects?: ProjectSource) {
   const [userSites, team] = await Promise.all(source === "supabase"
     ? [getSupabaseUserProjectAccess(), getSupabaseTeamMembers()]
-    : [findAllMaster("UserSites"), findAllMaster("Team")]);
+    : [findAllMasterRaw("UserSites"), findAllMasterRaw("Team")]);
   const member = findActiveMember(user, team);
   const role = getAppRole(String(member?.role || user.role || ""));
   const name = normalizeText(member?.name || user.name);
   const needsAssignments = Boolean(name) && (role === "Engineer" || role === "Project Manager");
   // Staff/Foreman use explicit grants. Assignment-based roles reuse the caller's list.
-  const projects = needsAssignments ? await (suppliedProjects ?? findAllMaster("Projects")) : [];
+  const projects = needsAssignments ? await (suppliedProjects ?? readProjectCatalog()) : [];
   return collectAccessibleProjectIds({ user, userSites, team, projects });
 }
 
 export function clearProjectAccessCache() {
   accessibleProjectIdsCache.clear();
+  invalidateAuthorizationCache();
 }
 
 export async function getAccessibleProjectIds(user?: SessionUserLike | null, suppliedProjects?: ProjectSource) {
@@ -127,30 +128,21 @@ export async function getAccessibleProjectIds(user?: SessionUserLike | null, sup
   if (isAdminRole(user.role)) return null;
 
   const cacheKey = accessCacheKey(user);
-  const cached = accessibleProjectIdsCache.get(cacheKey);
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) {
-    return cached.promise;
-  }
-
-  const promise = isSupabaseReadEnabled("auth")
+  const pending = accessibleProjectIdsCache.get(cacheKey);
+  if (pending) return pending.promise;
+  const promise = readCachedAuthorization(cacheKey, () => isSupabaseReadEnabled("auth")
     ? readWithSheetsFallback(
       "authorization",
       () => readAccessibleProjectIds(user, "supabase", suppliedProjects),
       () => readAccessibleProjectIds(user, "sheets", suppliedProjects)
     )
-    : readAccessibleProjectIds(user, "sheets", suppliedProjects);
-
-  accessibleProjectIdsCache.set(cacheKey, {
-    expiresAt: now + ACCESS_CACHE_TTL_MS,
-    promise,
-  });
-
+    : readAccessibleProjectIds(user, "sheets", suppliedProjects));
+  // Share concurrent reads only; completed grants live in the invalidatable shared cache.
+  accessibleProjectIdsCache.set(cacheKey, { promise });
   try {
     return await promise;
-  } catch (error) {
-    accessibleProjectIdsCache.delete(cacheKey);
-    throw error;
+  } finally {
+    if (accessibleProjectIdsCache.get(cacheKey)?.promise === promise) accessibleProjectIdsCache.delete(cacheKey);
   }
 }
 

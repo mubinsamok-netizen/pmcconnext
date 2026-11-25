@@ -1,5 +1,7 @@
 "use client";
 
+import type { Session } from "next-auth";
+import { SessionProvider } from "next-auth/react";
 import { useState } from "react";
 import Sidebar from "./Sidebar";
 import DashboardTopBar from "./DashboardTopBar";
@@ -15,15 +17,17 @@ type SessionUserWithRole = {
 
 export default function DashboardChrome({
   user,
+  session,
   children,
 }: {
   user?: SessionUserWithRole;
+  session: Session;
   children: React.ReactNode;
 }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   return (
-    <>
+    <SessionProvider session={session} refetchOnWindowFocus={false} refetchInterval={0}>
       <Sidebar
         user={user}
         mobileOpen={mobileSidebarOpen}
@@ -36,6 +40,6 @@ export default function DashboardChrome({
           {children}
         </main>
       </div>
-    </>
+    </SessionProvider>
   );
 }

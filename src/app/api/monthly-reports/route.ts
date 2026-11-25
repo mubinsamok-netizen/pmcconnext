@@ -1,3 +1,5 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
+import { getSiteApiContext } from "@/lib/siteApi";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
@@ -456,11 +458,12 @@ export async function GET(req: Request) {
     const projectId = searchParams.get("project_id");
     const month = searchParams.get("month");
     const mode = searchParams.get("mode");
-    const { sheetId } = await getProjectContext(projectId);
-    if (!isSupabaseBackend()) await ensureSchema(sheetId);
+    const context = projectId ? await getSiteApiContext(projectId, false, { readOnly: true }) : null;
+    if (context && "error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const { sheetId } = context ? { sheetId: context.siteSheetId } : await getProjectContext(projectId);
 
     if (mode === "summary" && projectId && month) {
-      const session = await getServerSession(authOptions);
+      const session = context?.session ?? await getServerSession(authOptions);
       const project = await getProject(projectId);
       const payload = await buildMonthlyPayload({
         projectId,
@@ -472,7 +475,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, data: payload });
     }
 
-    let reports = await findAll("Monthly_Reports", sheetId) as SheetRecord[];
+    let reports = (context ? await readSiteMenuData(context, "monthly-reports", () => findAll("Monthly_Reports", sheetId, undefined, { fresh: true })) : await findAll("Monthly_Reports", sheetId)) as SheetRecord[];
     if (projectId) reports = reports.filter((report) => report.project_id === projectId);
     reports = reports.sort((a, b) => String(b.month || "").localeCompare(String(a.month || "")));
     return NextResponse.json({ success: true, data: reports });

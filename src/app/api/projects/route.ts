@@ -17,7 +17,8 @@ import { isSupabaseBackend, isSupabaseReadEnabled, readWithSheetsFallback } from
 import { getSupabaseProjects } from "@/lib/supabaseReadModel";
 import { createSupabaseSiteSchema, getSupabaseSiteSchemaName, isSupabaseSiteSchemaMode } from "@/lib/supabaseSchema";
 import { findAllBatch, findAllMaster, findAllMasterRaw, insertMaster, updateMaster } from "@/lib/sheetsCrud";
-import { readCachedProjectList, readCachedProjectHealth } from "@/lib/projectListCache";
+import { readProjectCatalog } from "@/lib/projectCatalog";
+import { readCachedProjectHealth } from "@/lib/projectListCache";
 import { createSiteSpreadsheet, ensureMasterSchema, ensureSchema } from "@/lib/sheetsSetup";
 
 type SheetRecord = Record<string, string | number | undefined>;
@@ -351,7 +352,7 @@ export async function GET(req: Request) {
     const loadProjects = async () => isSupabaseReadEnabled("projects")
       ? await readWithSheetsFallback("projects", getSupabaseProjects, readSheetsProjects)
       : readSheetsProjects();
-    const projects = cachedMode ? await readCachedProjectList(loadProjects) : await loadProjects();
+    const projects = cachedMode ? await readProjectCatalog() : await loadProjects();
     const activeProjects = projects.filter((project) => project.active !== "FALSE");
     const accessibleProjects = await filterProjectsForUser(activeProjects, session.user);
     if (mode === "basic") {

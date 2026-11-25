@@ -1,3 +1,4 @@
+import { readSiteMenuData } from "@/lib/menuDataCache";
 import { createHash } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/auditLog";
@@ -161,7 +162,7 @@ const memoReadMetrics: Record<string, string> = {
 };
 
 async function getMemoHistory(projectId: string) {
-  const readSheetHistory = async () => (await findAllMaster("AuditLogs") as SheetRecord[])
+  const readSheetHistory = async () => (await findAllMaster("AuditLogs", undefined, { fresh: true }) as SheetRecord[])
     .filter((log) => log.project_id === projectId && log.module === "site_memos")
     .sort((a, b) => new Date(String(b.timestamp || 0)).getTime() - new Date(String(a.timestamp || 0)).getTime())
     .slice(0, 12);
@@ -174,10 +175,11 @@ async function getMemoHistory(projectId: string) {
   }));
 }
 
-async function getMemoData(context: RouteContext, timings?: Record<string, number>) {
+async function getMemoData(context: RouteContext, timings?: Record<string, number>, fresh = false) {
   const started = performance.now();
   const siteRows = await findAllBatch(["Site_Memos", "Site_Memo_Evidence", "Variation_Orders"], context.siteSheetId, {
     projectId: context.project.project_id,
+    fresh,
     onTableRead: timings && ((table, durationMs) => {
       const metric = memoReadMetrics[table];
       if (metric) timings[metric] = durationMs;
@@ -952,18 +954,18 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
 
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
+    const context = await getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true });
     timings.site_context = performance.now() - started;
     if ("error" in context) return respond({ error: context.error }, context.status);
 
     const routeContext = context as RouteContext;
     if (new URL(req.url).searchParams.get("view") === "audit") {
       const auditStarted = performance.now();
-      const auditLogs = await getMemoHistory(routeContext.project.project_id);
+      const auditLogs = await readSiteMenuData(routeContext, "memo-audit", () => getMemoHistory(routeContext.project.project_id), 30, ["AuditLogs"]);
       timings.audit = performance.now() - auditStarted;
       return respond({ success: true, audit_logs: auditLogs });
     }
-    const data = await getMemoData(routeContext, timings);
+    const data = await readSiteMenuData(routeContext, "memos", () => getMemoData(routeContext, timings, true));
 
     return respond({
       success: true,
