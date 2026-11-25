@@ -1,9 +1,12 @@
+import { assertLineDeliveryEnabled } from "./lineDeliveryPolicy";
+
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
 const LINE_GROUP_ID = process.env.LINE_GROUP_ID!;
 
 type LineMessage = Record<string, unknown>;
 
 export async function sendLineMessages(messages: LineMessage[], to: string = LINE_GROUP_ID) {
+  assertLineDeliveryEnabled();
   if (!LINE_CHANNEL_ACCESS_TOKEN) {
     throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
   }
@@ -35,6 +38,7 @@ export async function sendLineMessages(messages: LineMessage[], to: string = LIN
 }
 
 export async function replyLineMessages(messages: LineMessage[], replyToken: string) {
+  assertLineDeliveryEnabled();
   if (!LINE_CHANNEL_ACCESS_TOKEN) {
     throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
   }
