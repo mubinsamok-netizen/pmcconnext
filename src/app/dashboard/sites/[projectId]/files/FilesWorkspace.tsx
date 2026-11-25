@@ -749,7 +749,7 @@ export function FilesWorkspace({ project }: { project: MasterProject }) {
     (["drive", "photos"].includes(activeTab) && Boolean(project.drive_folder_id) && driveFiles.isLoading)
   );
   const driveLoading = driveFiles.isLoading || driveRefreshing;
-  const driveError = driveRefreshError || (driveFiles.error ? "โหลดไฟล์จาก Google Drive ยังไม่ครบ รายการที่โหลดแล้วใช้งานได้ กรุณาลองโหลดต่อ" : "");
+  const driveError = driveRefreshError || (driveFiles.error ? "ลองโหลดไฟล์จาก Google Drive ต่ออัตโนมัติแล้วแต่ยังไม่สำเร็จ รายการที่โหลดแล้วใช้งานได้ กรุณาลองอีกครั้ง" : "");
   const documentsError = documents.data?.error || (documents.error ? "โหลดเอกสารอัปโหลดไม่สำเร็จ" : "");
   const defectsError = defects.data?.error || (defects.error ? "โหลดไฟล์ Defect ไม่สำเร็จ" : "");
 
