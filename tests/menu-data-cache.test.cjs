@@ -148,3 +148,13 @@ test('login timestamp updates keep site/grant caches; role edits invalidate both
   assert.equal(await read(), 2);
   assert.equal((await grant()).has('A'), false);
 });
+
+test('payment writes invalidate cached history across workspaces', async () => {
+  const { api } = cacheHarness();
+  let version = 1;
+  const read = () => api.readMasterMenuData('PaymentRequests', async () => ({ version }));
+  assert.equal((await read()).version, 1);
+  version = 2;
+  api.invalidateMenuDataForWrite('PaymentRequests');
+  assert.equal((await read()).version, 2);
+});

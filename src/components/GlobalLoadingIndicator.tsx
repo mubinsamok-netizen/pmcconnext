@@ -9,7 +9,7 @@ const MAX_VISIBLE_MS = 9000;
 
 function usesSkeleton(pathname: string) {
   return /^\/dashboard\/(projects|site-map|sales-crm|contractors|schedule)(?:\/|$)/.test(pathname) ||
-    /^\/dashboard\/sites\/[^/]+(?:\/(details|reports|memos|notes|lifecycle|files|qc-checklists|variation-orders|schedule|defects))?\/?$/.test(pathname);
+    /^\/dashboard\/sites\/[^/]+(?:\/(details|reports|memos|notes|lifecycle|files|qc-checklists|variation-orders|schedule|defects|payment-requests))?\/?$/.test(pathname);
 }
 
 function isSameAppNavigation(anchor: HTMLAnchorElement) {

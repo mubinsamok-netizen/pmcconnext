@@ -81,7 +81,7 @@ export function invalidateMenuDataForWrite(table: string, scopes: string[] = [],
     expire([tag("authorization"), tag("sites"), tag("master", name)]);
     return;
   }
-  if (["customers", "contractors", "laborrates", "auditlogs"].includes(name)) {
+  if (["customers", "contractors", "laborrates", "auditlogs", "paymentrequests"].includes(name)) {
     expire([tag("master", name)]);
     return;
   }

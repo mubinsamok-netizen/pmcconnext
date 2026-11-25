@@ -1,3 +1,4 @@
+import { readMasterMenuData } from "@/lib/menuDataCache";
 import fs from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
@@ -71,10 +72,12 @@ function buildDocumentNo(type: PaymentRequestType, requestDate: string, existing
   return `${prefix}${String(running).padStart(3, "0")}`;
 }
 
-async function getAllRows() {
-  const schema = await ensureMasterSchema();
-  if (!schema.success) throw schema.error;
-  return await findAllMaster("PaymentRequests") as unknown as PaymentRequestRecord[];
+async function getAllRows(readOnly = false) {
+  if (!readOnly) {
+    const schema = await ensureMasterSchema();
+    if (!schema.success) throw schema.error;
+  }
+  return await findAllMaster("PaymentRequests", undefined, { fresh: readOnly }) as unknown as PaymentRequestRecord[];
 }
 
 function projectRows(rows: PaymentRequestRecord[], context: RouteContext) {
@@ -182,27 +185,45 @@ async function uploadAttachments(context: RouteContext, requestId: string, formD
   }));
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const started = performance.now();
+  const metrics: string[] = [];
+  const measure = async <T,>(phase: string, work: () => Promise<T>) => {
+    const before = performance.now();
+    try { return await work(); }
+    finally { metrics.push(`${phase};dur=${(performance.now() - before).toFixed(2)}`); }
+  };
+  const respond = (body: Record<string, unknown>, status = 200) => NextResponse.json(body, {
+    status,
+    headers: { "Server-Timing": [...metrics, `total;dur=${(performance.now() - started).toFixed(2)}`].join(", ") },
+  });
   try {
     const { projectId } = await params;
-    const context = await getSiteApiContext(decodeURIComponent(projectId));
-    if ("error" in context) return NextResponse.json({ error: context.error }, { status: context.status });
+    const context = await measure("site_context", () => getSiteApiContext(decodeURIComponent(projectId), false, { readOnly: true }));
+    if ("error" in context) return respond({ error: context.error }, context.status);
+    const view = new URL(request.url).searchParams.get("view");
+    const payments = measure("payment_read", () => readMasterMenuData("PaymentRequests", () => getAllRows(true), 30));
+    if (view === "list") {
+      return respond({ success: true, project: context.project, data: projectRows(await payments, context as RouteContext) });
+    }
     const [allPaymentRows, contractors, laborRates] = await Promise.all([
-      getAllRows(),
-      findAllMaster("Contractors"),
-      findAllMaster("LaborRates"),
+      payments,
+      measure("contractors", () => readMasterMenuData("Contractors", () => findAllMaster("Contractors", undefined, { fresh: true }), 120)),
+      measure("labor_rates", () => readMasterMenuData("LaborRates", () => findAllMaster("LaborRates", undefined, { fresh: true }), 120)),
     ]);
-    const rows = projectRows(allPaymentRows, context as RouteContext);
-    return NextResponse.json({
-      success: true,
-      project: context.project,
-      data: rows,
+    const references = {
       payees: buildPayeeSuggestions(allPaymentRows),
       contractors: contractors.filter((row) => text(row.active).toUpperCase() !== "FALSE"),
       labor_rates: laborRates.filter((row) => text(row.active).toUpperCase() !== "FALSE"),
+    };
+    return respond({
+      success: true,
+      project: context.project,
+      ...(view === "references" ? {} : { data: projectRows(allPaymentRows, context as RouteContext) }),
+      ...references,
     });
   } catch (error: unknown) {
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    return respond({ error: getErrorMessage(error) }, 500);
   }
 }
 
